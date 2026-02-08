@@ -17,12 +17,13 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 raw_origins = settings.cors_origins.strip()
-allow_origins = ["*"] if raw_origins == "*" else [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+allow_all = raw_origins == "*"
+allow_origins = ["*"] if allow_all else [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
-    allow_credentials=True,
+    allow_credentials=not allow_all,
     allow_methods=["*"],
     allow_headers=["*"],
 )
