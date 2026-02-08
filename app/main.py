@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -33,7 +33,7 @@ app.include_router(api_router, prefix=settings.api_v1_prefix)
 @app.middleware("http")
 async def add_cors_headers(request: Request, call_next):
     if request.method == "OPTIONS":
-        response = await call_next(request)
+        response = Response(status_code=204)
     else:
         response = await call_next(request)
 
