@@ -1,0 +1,30 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: vtu
+      POSTGRES_PASSWORD: vtu
+      POSTGRES_DB: vtu
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://vtu:vtu@db:5432/vtu
+      SECRET_KEY: change-me
+      PAYSTACK_SECRET_KEY: sk_test_xxx
+      PAYSTACK_WEBHOOK_SECRET: whsec_xxx
+      AMIGO_BASE_URL: https://api.amigo.com
+      AMIGO_API_KEY: amigo_key
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+
+volumes:
+  pgdata:
