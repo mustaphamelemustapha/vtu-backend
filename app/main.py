@@ -16,12 +16,12 @@ app = FastAPI(title=settings.app_name)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-allow_origins = ["*"]
+allow_origins = ["https://vtu-frontend-beta.vercel.app"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -30,7 +30,7 @@ app.include_router(api_router, prefix=settings.api_v1_prefix)
 
 @app.options("/{full_path:path}")
 async def preflight_handler(full_path: str, request: Request):
-    origin = request.headers.get("origin", "*")
+    origin = request.headers.get("origin", "https://vtu-frontend-beta.vercel.app")
     response = Response(status_code=204)
     response.headers["Access-Control-Allow-Origin"] = origin
     response.headers["Vary"] = "Origin"
