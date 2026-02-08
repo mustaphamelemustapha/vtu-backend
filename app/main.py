@@ -4,6 +4,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.api.v1.routes import router as api_router
 from app.core.config import get_settings
+import logging
 from app.core.database import Base, engine
 from app.core.logging import configure_logging
 from app.middlewares.rate_limit import limiter
@@ -45,7 +46,13 @@ app.include_router(api_router, prefix=settings.api_v1_prefix)
 @app.on_event("startup")
 def ensure_tables():
     # Create tables in fresh environments to avoid 500s on first use.
-    Base.metadata.create_all(bind=engine)
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "DB unavailable on startup, skipping table creation: %s",
+            exc,
+        )
 
 @app.options("/{full_path:path}")
 async def preflight_handler(full_path: str, request: Request):
