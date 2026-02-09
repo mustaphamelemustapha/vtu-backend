@@ -87,10 +87,10 @@ def monnify_init(request: Request, payload: FundWalletRequest, user: User = Depe
             callback_url=callback_url,
         )
         return resp
-    except Exception:
+    except Exception as exc:
         transaction.status = TransactionStatus.FAILED
         db.commit()
-        raise HTTPException(status_code=502, detail="Payment initialization failed")
+        raise HTTPException(status_code=502, detail=f"Payment initialization failed: {exc}")
 
 
 @router.post("/monnify/webhook")

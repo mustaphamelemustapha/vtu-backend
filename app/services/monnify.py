@@ -41,8 +41,17 @@ def init_monnify_transaction(email: str, name: str, amount: float, reference: st
         "Content-Type": "application/json",
     }
     with httpx.Client(timeout=15) as client:
-        resp = client.post(f"{settings.monnify_base_url}/api/v1/merchant/transactions/init-transaction", json=payload, headers=headers)
-        resp.raise_for_status()
+        resp = client.post(
+            f"{settings.monnify_base_url}/api/v1/merchant/transactions/init-transaction",
+            json=payload,
+            headers=headers,
+        )
+        if resp.status_code >= 400:
+            try:
+                detail = resp.json()
+            except Exception:
+                detail = {"message": resp.text}
+            raise ValueError(f"Monnify init failed: {detail}")
         return resp.json()
 
 
