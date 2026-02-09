@@ -72,10 +72,12 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
     client = AmigoClient()
     start = time.time()
     try:
+        network_id = 1 if plan.network == "mtn" else 2 if plan.network == "glo" else 0
         response = client.purchase_data({
-            "plan_code": plan.plan_code,
-            "phone_number": payload.phone_number,
-            "reference": reference,
+            "network": network_id,
+            "mobile_number": payload.phone_number,
+            "plan": int(plan.plan_code),
+            "Ported_number": payload.ported_number,
         })
         duration_ms = round((time.time() - start) * 1000, 2)
         db.add(ApiLog(
@@ -88,11 +90,12 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             success=1,
         ))
 
-        status = response.get("status", "pending")
-        if status == "success":
+        success = response.get("success") is True
+        status = (response.get("status") or "").lower()
+        if success and status in {"delivered", "success"}:
             transaction.status = TransactionStatus.SUCCESS
-            transaction.external_reference = response.get("transaction_id")
-        elif status == "failed":
+            transaction.external_reference = response.get("reference")
+        elif not success:
             transaction.status = TransactionStatus.FAILED
             transaction.failure_reason = response.get("message", "Amigo failed")
             credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed data purchase")
