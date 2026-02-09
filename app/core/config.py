@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     paystack_secret_key: str
     paystack_webhook_secret: str
 
+    # Monnify
+    monnify_api_key: str
+    monnify_secret_key: str
+    monnify_contract_code: str
+    monnify_base_url: AnyHttpUrl
+    monnify_webhook_secret: Optional[str] = None
+
     # Amigo API
     amigo_base_url: AnyHttpUrl
     amigo_api_key: str
