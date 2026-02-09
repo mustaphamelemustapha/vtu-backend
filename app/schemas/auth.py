@@ -1,5 +1,10 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, validator
 from typing import Optional
+
+def _validate_password_length(value: str) -> str:
+    if len(value.encode("utf-8")) > 72:
+        raise ValueError("Password too long (max 72 bytes)")
+    return value
 
 
 class TokenPair(BaseModel):
@@ -13,10 +18,14 @@ class RegisterRequest(BaseModel):
     full_name: str
     password: str
 
+    _password_len = validator("password", allow_reuse=True)(_validate_password_length)
+
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+    _password_len = validator("password", allow_reuse=True)(_validate_password_length)
 
 
 class RefreshRequest(BaseModel):
@@ -30,6 +39,8 @@ class ForgotPasswordRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     token: str
     new_password: str
+
+    _password_len = validator("new_password", allow_reuse=True)(_validate_password_length)
 
 
 class Message(BaseModel):
