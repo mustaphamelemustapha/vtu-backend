@@ -25,6 +25,24 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
         return cached
 
     plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+    if not plans:
+        # Auto-seed from Amigo catalog if DB is empty
+        client = AmigoClient()
+        response = client.fetch_data_plans()
+        items = response.get("data", [])
+        for item in items:
+            plan = DataPlan(
+                network=item.get("network"),
+                plan_code=str(item.get("plan_code")),
+                plan_name=item.get("plan_name"),
+                data_size=item.get("data_size"),
+                validity=item.get("validity"),
+                base_price=Decimal(str(item.get("price", 0))),
+                is_active=True,
+            )
+            db.add(plan)
+        db.commit()
+        plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
     priced = []
     for plan in plans:
         price = get_price_for_user(db, plan, user.role)
