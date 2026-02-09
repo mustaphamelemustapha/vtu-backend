@@ -12,7 +12,7 @@ class WalletOut(BaseModel):
 
 class FundWalletRequest(BaseModel):
     amount: Decimal
-    callback_url: str
+    callback_url: str | None = None
 
 
 class LedgerOut(BaseModel):

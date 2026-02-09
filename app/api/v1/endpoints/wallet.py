@@ -30,8 +30,8 @@ def get_ledger(user: User = Depends(get_current_user), db: Session = Depends(get
 @router.post("/fund")
 @limiter.limit("5/minute")
 def fund_wallet(request: Request, payload: FundWalletRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if payload.amount <= 0:
-        raise HTTPException(status_code=400, detail="Invalid amount")
+    if payload.amount < 100:
+        raise HTTPException(status_code=400, detail="Minimum amount is 100")
 
     reference = f"FUND_{secrets.token_hex(8)}"
     transaction = Transaction(
@@ -44,13 +44,19 @@ def fund_wallet(request: Request, payload: FundWalletRequest, user: User = Depen
     db.add(transaction)
     db.commit()
 
-    paystack_response = create_paystack_checkout(
-        email=user.email,
-        amount_kobo=int(payload.amount * 100),
-        reference=reference,
-        callback_url=payload.callback_url,
-    )
-    return paystack_response
+    callback_url = payload.callback_url or request.headers.get("origin") or str(request.base_url)
+    try:
+        paystack_response = create_paystack_checkout(
+            email=user.email,
+            amount_kobo=int(payload.amount * 100),
+            reference=reference,
+            callback_url=callback_url,
+        )
+        return paystack_response
+    except Exception:
+        transaction.status = TransactionStatus.FAILED
+        db.commit()
+        raise HTTPException(status_code=502, detail="Payment initialization failed")
 
 
 @router.post("/paystack/webhook")
@@ -67,13 +73,20 @@ async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
     event = payload.get("event")
     data = payload.get("data", {})
 
-    if event == "charge.success":
-        reference = data.get("reference")
-        transaction = db.query(Transaction).filter(Transaction.reference == reference).first()
-        if transaction and transaction.status == TransactionStatus.PENDING:
+    reference = data.get("reference")
+    transaction = db.query(Transaction).filter(Transaction.reference == reference).first()
+
+    if event == "charge.success" and transaction:
+        if transaction.status != TransactionStatus.SUCCESS:
             wallet = get_or_create_wallet(db, transaction.user_id)
             credit_wallet(db, wallet, Decimal(transaction.amount), reference, "Wallet funding via Paystack")
             transaction.status = TransactionStatus.SUCCESS
+            transaction.external_reference = data.get("id")
+            db.commit()
+
+    if event == "charge.failed" and transaction:
+        if transaction.status == TransactionStatus.PENDING:
+            transaction.status = TransactionStatus.FAILED
             transaction.external_reference = data.get("id")
             db.commit()
 
