@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     monnify_contract_code: str
     monnify_base_url: AnyHttpUrl
     monnify_webhook_secret: Optional[str] = None
+    monnify_currency: str = "NGN"
+    monnify_payment_methods: str = "CARD,ACCOUNT_TRANSFER,USSD"
 
     # Amigo API
     amigo_base_url: AnyHttpUrl

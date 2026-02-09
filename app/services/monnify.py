@@ -26,15 +26,17 @@ def get_monnify_token() -> str:
 
 def init_monnify_transaction(email: str, name: str, amount: float, reference: str, callback_url: str) -> dict:
     token = get_monnify_token()
+    payment_methods = [m.strip() for m in settings.monnify_payment_methods.split(",") if m.strip()]
     payload = {
         "amount": amount,
         "customerName": name or email,
         "customerEmail": email,
         "paymentReference": reference,
         "paymentDescription": "Wallet funding",
-        "currencyCode": "NGN",
+        "currencyCode": settings.monnify_currency,
         "contractCode": settings.monnify_contract_code,
         "redirectUrl": callback_url,
+        "paymentMethods": payment_methods,
     }
     headers = {
         "Authorization": f"Bearer {token}",
