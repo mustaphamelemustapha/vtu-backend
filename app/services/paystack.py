@@ -25,3 +25,11 @@ def verify_paystack_signature(body: bytes, signature: str) -> bool:
     secret = settings.paystack_webhook_secret or settings.paystack_secret_key
     computed = hmac.new(secret.encode(), body, hashlib.sha512).hexdigest()
     return hmac.compare_digest(computed, signature)
+
+
+def verify_paystack_transaction(reference: str) -> dict:
+    headers = {"Authorization": f"Bearer {settings.paystack_secret_key}"}
+    with httpx.Client(timeout=15) as client:
+        response = client.get(f"https://api.paystack.co/transaction/verify/{reference}", headers=headers)
+        response.raise_for_status()
+        return response.json()

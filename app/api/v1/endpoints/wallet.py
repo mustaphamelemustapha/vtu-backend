@@ -7,7 +7,7 @@ from app.dependencies import get_current_user
 from app.models import User, Transaction, TransactionType, TransactionStatus
 from app.schemas.wallet import WalletOut, FundWalletRequest, LedgerOut
 from app.services.wallet import get_or_create_wallet, credit_wallet
-from app.services.paystack import create_paystack_checkout, verify_paystack_signature
+from app.services.paystack import create_paystack_checkout, verify_paystack_signature, verify_paystack_transaction
 from app.services.monnify import init_monnify_transaction, verify_monnify_signature
 from app.middlewares.rate_limit import limiter
 from app.models import WalletLedger
@@ -161,3 +161,26 @@ async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
             db.commit()
 
     return {"status": "ok"}
+
+
+@router.get("/paystack/verify")
+def paystack_verify(reference: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    transaction = db.query(Transaction).filter(Transaction.reference == reference, Transaction.user_id == user.id).first()
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    if transaction.status == TransactionStatus.SUCCESS:
+        return {"status": "success"}
+
+    try:
+        response = verify_paystack_transaction(reference)
+        data = response.get("data", {})
+        if data.get("status") == "success":
+            wallet = get_or_create_wallet(db, transaction.user_id)
+            credit_wallet(db, wallet, Decimal(transaction.amount), reference, "Wallet funding via Paystack")
+            transaction.status = TransactionStatus.SUCCESS
+            transaction.external_reference = data.get("id")
+            db.commit()
+            return {"status": "success"}
+    except Exception:
+        pass
+    return {"status": "pending"}
