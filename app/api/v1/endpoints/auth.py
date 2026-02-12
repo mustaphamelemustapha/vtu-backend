@@ -9,6 +9,8 @@ from app.middlewares.rate_limit import limiter
 from app.models import User, UserRole
 from app.schemas.auth import RegisterRequest, LoginRequest, TokenPair, RefreshRequest, Message, ForgotPasswordRequest, ResetPasswordRequest, EmailVerification
 from app.schemas.user import UserOut
+from app.dependencies import get_current_user
+from app.schemas.user import UserOut
 from app.services.wallet import get_or_create_wallet
 
 settings = get_settings()
@@ -116,3 +118,8 @@ def verify_email(payload: EmailVerification, db: Session = Depends(get_db)):
     db.commit()
 
     return Message(message="Email verified successfully")
+
+
+@router.get("/me", response_model=UserOut)
+def me(user: User = Depends(get_current_user)):
+    return user

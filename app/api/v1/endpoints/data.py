@@ -72,6 +72,8 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
 
     price = get_price_for_user(db, plan, user.role)
     wallet = get_or_create_wallet(db, user.id)
+    if Decimal(wallet.balance) < Decimal(price):
+        raise HTTPException(status_code=400, detail="Insufficient balance")
 
     reference = f"DATA_{secrets.token_hex(8)}"
     transaction = Transaction(
