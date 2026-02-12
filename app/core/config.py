@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     amigo_api_key: str
     amigo_timeout_seconds: int = 15
     amigo_retry_count: int = 2
+    amigo_test_mode: bool = False
 
     # CORS
     cors_origins: str = "http://localhost:5173,http://localhost:3000"

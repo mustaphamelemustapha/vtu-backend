@@ -4,6 +4,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from app.core.database import get_db
+from app.core.config import get_settings
 from app.dependencies import get_current_user, require_admin
 from app.models import User, DataPlan, Transaction, TransactionStatus, TransactionType, ApiLog
 from app.schemas.data import DataPlanOut, BuyDataRequest
@@ -14,6 +15,7 @@ from app.middlewares.rate_limit import limiter
 from app.utils.cache import get_cached, set_cached
 
 router = APIRouter()
+settings = get_settings()
 
 
 @router.get("/plans", response_model=list[DataPlanOut])
@@ -122,7 +124,11 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             transaction.status = TransactionStatus.PENDING
 
         db.commit()
-        return {"reference": reference, "status": transaction.status}
+        return {
+            "reference": reference,
+            "status": transaction.status,
+            "test_mode": settings.amigo_test_mode,
+        }
     except Exception as exc:
         duration_ms = round((time.time() - start) * 1000, 2)
         db.add(ApiLog(

@@ -65,4 +65,13 @@ class AmigoClient:
         return {"data": PLAN_CATALOG}
 
     def purchase_data(self, payload: dict) -> dict:
+        if settings.amigo_test_mode:
+            phone = str(payload.get("mobile_number", ""))
+            if phone.startswith("090000"):
+                return {
+                    "success": True,
+                    "reference": f"AMG-TEST-{int(time.time())}",
+                    "message": "Test mode: simulated delivery.",
+                    "status": "delivered",
+                }
         return self._request("POST", "/data/", payload)
