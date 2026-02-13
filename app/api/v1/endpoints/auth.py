@@ -58,7 +58,7 @@ def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)
 
 @router.post("/refresh", response_model=TokenPair)
 
-def refresh(payload: RefreshRequest):
+def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
     try:
         decoded = decode_token(payload.refresh_token)
     except Exception:
@@ -66,12 +66,18 @@ def refresh(payload: RefreshRequest):
     if decoded.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-    user_id = decoded.get("sub")
-    role = decoded.get("role")
+    try:
+        user_id = int(decoded.get("sub"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="User not found or inactive")
 
     return TokenPair(
-        access_token=create_access_token(user_id, role),
-        refresh_token=create_refresh_token(user_id, role),
+        access_token=create_access_token(str(user.id), user.role.value),
+        refresh_token=create_refresh_token(str(user.id), user.role.value),
     )
 
 
