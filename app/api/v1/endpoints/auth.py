@@ -7,7 +7,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.middlewares.rate_limit import limiter
 from app.models import User, UserRole
-from app.schemas.auth import RegisterRequest, LoginRequest, TokenPair, RefreshRequest, Message, ForgotPasswordRequest, ResetPasswordRequest, EmailVerification
+from app.schemas.auth import RegisterRequest, LoginRequest, TokenPair, RefreshRequest, Message, ForgotPasswordRequest, ForgotPasswordResponse, ResetPasswordRequest, EmailVerification
 from app.schemas.user import UserOut
 from app.dependencies import get_current_user
 from app.services.wallet import get_or_create_wallet
@@ -81,18 +81,23 @@ def refresh(request: Request, payload: RefreshRequest, db: Session = Depends(get
     )
 
 
-@router.post("/forgot-password", response_model=Message)
+@router.post("/forgot-password", response_model=ForgotPasswordResponse)
 @limiter.limit("5/minute")
 def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == payload.email).first()
-    if not user:
-        return Message(message="If the email exists, a reset token has been generated")
+    reset_token = None
+    if user:
+        reset_token = secrets.token_urlsafe(32)
+        user.reset_token = reset_token
+        user.reset_token_expires_at = datetime.utcnow() + timedelta(hours=2)
+        db.commit()
 
-    user.reset_token = secrets.token_urlsafe(32)
-    user.reset_token_expires_at = datetime.utcnow() + timedelta(hours=2)
-    db.commit()
-
-    return Message(message="Reset token generated. Send via email provider in production.")
+    # Avoid user enumeration: always return the same message.
+    message = "If the email exists, a reset token has been generated"
+    env = (settings.environment or "").lower()
+    if env and env != "production" and reset_token:
+        return ForgotPasswordResponse(message=message, reset_token=reset_token)
+    return ForgotPasswordResponse(message=message)
 
 
 @router.post("/reset-password", response_model=Message)
