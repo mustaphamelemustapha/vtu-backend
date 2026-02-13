@@ -57,8 +57,8 @@ def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)
 
 
 @router.post("/refresh", response_model=TokenPair)
-
-def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
+@limiter.limit("30/minute")
+def refresh(request: Request, payload: RefreshRequest, db: Session = Depends(get_db)):
     try:
         decoded = decode_token(payload.refresh_token)
     except Exception:
@@ -96,8 +96,8 @@ def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Sessio
 
 
 @router.post("/reset-password", response_model=Message)
-
-def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def reset_password(request: Request, payload: ResetPasswordRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.reset_token == payload.token).first()
     if not user or not user.reset_token_expires_at or user.reset_token_expires_at < datetime.utcnow():
         raise HTTPException(status_code=400, detail="Invalid or expired token")
@@ -111,8 +111,8 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
 
 
 @router.post("/verify-email", response_model=Message)
-
-def verify_email(payload: EmailVerification, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+def verify_email(request: Request, payload: EmailVerification, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.verification_token == payload.token).first()
     if not user or not user.verification_token_expires_at or user.verification_token_expires_at < datetime.utcnow():
         raise HTTPException(status_code=400, detail="Invalid or expired token")
