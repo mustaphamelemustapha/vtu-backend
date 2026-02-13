@@ -30,6 +30,29 @@ PLAN_CATALOG = [
     {"network": "glo", "network_id": 2, "plan_code": "512", "plan_name": "Glo 10GB", "data_size": "10GB", "validity": "30d", "price": 3990.00},
 ]
 
+NETWORK_ID_MAP = {
+    item["network"].lower(): int(item["network_id"])
+    for item in PLAN_CATALOG
+    if item.get("network") and item.get("network_id") is not None
+}
+
+
+def resolve_network_id(network: str, plan_code: str | None = None) -> int | None:
+    network_key = str(network or "").strip().lower()
+    plan_key = str(plan_code or "").strip()
+    if plan_key:
+        for item in PLAN_CATALOG:
+            if str(item.get("plan_code")) == plan_key:
+                network_id = item.get("network_id")
+                if network_id is not None:
+                    return int(network_id)
+    return NETWORK_ID_MAP.get(network_key)
+
+
+def normalize_plan_code(plan_code: str) -> int | str:
+    raw = str(plan_code or "").strip()
+    return int(raw) if raw.isdigit() else raw
+
 
 class AmigoClient:
     def __init__(self):

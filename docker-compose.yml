@@ -14,13 +14,21 @@ services:
 
   api:
     build: .
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
     environment:
       DATABASE_URL: postgresql://vtu:vtu@db:5432/vtu
       SECRET_KEY: change-me
+      AUTO_CREATE_TABLES: "false"
       PAYSTACK_SECRET_KEY: sk_test_xxx
       PAYSTACK_WEBHOOK_SECRET: whsec_xxx
+      MONNIFY_API_KEY: monnify_api_key
+      MONNIFY_SECRET_KEY: monnify_secret_key
+      MONNIFY_CONTRACT_CODE: 1234567890
+      MONNIFY_BASE_URL: https://sandbox.monnify.com
+      MONNIFY_WEBHOOK_SECRET: monnify_webhook_secret
       AMIGO_BASE_URL: https://api.amigo.com
       AMIGO_API_KEY: amigo_key
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3000
     ports:
       - "8000:8000"
     depends_on:

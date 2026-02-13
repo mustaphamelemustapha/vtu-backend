@@ -1,6 +1,27 @@
 from functools import lru_cache
-from pydantic import BaseSettings, AnyHttpUrl, PostgresDsn
-from typing import Optional, List
+import json
+from typing import Optional
+
+from pydantic import AnyHttpUrl, BaseSettings, PostgresDsn
+
+
+def parse_cors_origins(value: str) -> list[str]:
+    if not value:
+        return []
+
+    parsed: list[str]
+    raw = value.strip()
+    if raw.startswith("["):
+        try:
+            items = json.loads(raw)
+            parsed = [str(item).strip() for item in items if str(item).strip()]
+        except (TypeError, ValueError):
+            parsed = []
+    else:
+        parsed = [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+    # Preserve order and remove duplicates.
+    return list(dict.fromkeys(parsed))
 
 
 class Settings(BaseSettings):
@@ -42,6 +63,7 @@ class Settings(BaseSettings):
 
     # CORS
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
+    auto_create_tables: bool = False
 
     class Config:
         env_file = ".env"

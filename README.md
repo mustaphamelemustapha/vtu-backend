@@ -13,9 +13,12 @@ Production-ready FastAPI backend for a Nigerian VTU platform. Core modules inclu
 
 ## Environment Variables
 See `.env.example` for the full list.
+- `MONNIFY_*` values are required because Monnify routes are enabled.
+- `CORS_ORIGINS` supports comma-separated values (e.g., `http://localhost:5173,http://localhost:3000`).
+- `AUTO_CREATE_TABLES` is optional and defaults to `false`; prefer Alembic migrations.
 
 ## Setup (Local)
-1. Create and activate a virtualenv.
+1. Use Python `3.11` (recommended) and create/activate a virtualenv.
 2. Install deps: `pip install -r requirements.txt`
 3. Copy `.env.example` to `.env` and set values.
 4. Run migrations: `alembic upgrade head`
@@ -23,6 +26,8 @@ See `.env.example` for the full list.
 
 ## Docker
 `docker compose up --build`
+
+The compose setup runs `alembic upgrade head` before starting the API.
 
 ## API Documentation
 FastAPI docs:

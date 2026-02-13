@@ -10,7 +10,6 @@ from app.models import User, UserRole
 from app.schemas.auth import RegisterRequest, LoginRequest, TokenPair, RefreshRequest, Message, ForgotPasswordRequest, ResetPasswordRequest, EmailVerification
 from app.schemas.user import UserOut
 from app.dependencies import get_current_user
-from app.schemas.user import UserOut
 from app.services.wallet import get_or_create_wallet
 
 settings = get_settings()

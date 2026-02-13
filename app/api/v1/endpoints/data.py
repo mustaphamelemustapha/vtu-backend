@@ -8,7 +8,7 @@ from app.core.config import get_settings
 from app.dependencies import get_current_user, require_admin
 from app.models import User, DataPlan, Transaction, TransactionStatus, TransactionType, ApiLog
 from app.schemas.data import DataPlanOut, BuyDataRequest
-from app.services.amigo import AmigoClient
+from app.services.amigo import AmigoClient, normalize_plan_code, resolve_network_id
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
 from app.services.pricing import get_price_for_user
 from app.middlewares.rate_limit import limiter
@@ -94,11 +94,19 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
     client = AmigoClient()
     start = time.time()
     try:
-        network_id = 1 if plan.network == "mtn" else 2 if plan.network == "glo" else 0
+        network_id = resolve_network_id(plan.network, plan.plan_code)
+        if network_id is None:
+            transaction.status = TransactionStatus.FAILED
+            transaction.failure_reason = f"Unsupported network: {plan.network}"
+            credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for unsupported network")
+            transaction.status = TransactionStatus.REFUNDED
+            db.commit()
+            raise HTTPException(status_code=400, detail="Unsupported network for data purchase")
+
         response = client.purchase_data({
             "network": network_id,
             "mobile_number": payload.phone_number,
-            "plan": int(plan.plan_code),
+            "plan": normalize_plan_code(plan.plan_code),
             "Ported_number": payload.ported_number,
         })
         duration_ms = round((time.time() - start) * 1000, 2)
@@ -131,6 +139,8 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             "status": transaction.status,
             "test_mode": settings.amigo_test_mode,
         }
+    except HTTPException:
+        raise
     except Exception as exc:
         duration_ms = round((time.time() - start) * 1000, 2)
         db.add(ApiLog(
@@ -157,11 +167,12 @@ def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(
     plans = response.get("data", [])
     updated = 0
     for item in plans:
-        plan = db.query(DataPlan).filter(DataPlan.plan_code == item.get("plan_code")).first()
+        plan_code = str(item.get("plan_code"))
+        plan = db.query(DataPlan).filter(DataPlan.plan_code == plan_code).first()
         if not plan:
             plan = DataPlan(
                 network=item.get("network"),
-                plan_code=item.get("plan_code"),
+                plan_code=plan_code,
                 plan_name=item.get("plan_name"),
                 data_size=item.get("data_size"),
                 validity=item.get("validity"),

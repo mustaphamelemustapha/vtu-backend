@@ -104,7 +104,7 @@ async def monnify_webhook(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
     payload = await request.json()
-    event_type = payload.get("eventType") or payload.get("eventType")
+    event_type = payload.get("eventType")
     data = payload.get("eventData", {}) or payload.get("data", {})
 
     reference = data.get("paymentReference") or data.get("transactionReference")
@@ -129,6 +129,8 @@ async def monnify_webhook(request: Request, db: Session = Depends(get_db)):
             db.commit()
 
     return {"status": "ok"}
+
+
 @router.post("/paystack/webhook")
 async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
     signature = request.headers.get("x-paystack-signature")
