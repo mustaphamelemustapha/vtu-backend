@@ -61,6 +61,23 @@ class Settings(BaseSettings):
     amigo_retry_count: int = 2
     amigo_test_mode: bool = False
 
+    # Frontend URLs (used for email links)
+    frontend_base_url: str = "http://localhost:5173"
+
+    # Email (password reset)
+    email_provider: str = "console"  # console|resend|smtp
+    email_from: str = "AxisVTU <no-reply@axisvtu.local>"
+
+    # Resend
+    resend_api_key: Optional[str] = None
+
+    # SMTP
+    smtp_host: Optional[str] = None
+    smtp_port: int = 587
+    smtp_username: Optional[str] = None
+    smtp_password: Optional[str] = None
+    smtp_use_tls: bool = True
+
     # CORS
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
     auto_create_tables: bool = False

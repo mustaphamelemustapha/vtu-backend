@@ -11,6 +11,7 @@ from app.schemas.auth import RegisterRequest, LoginRequest, TokenPair, RefreshRe
 from app.schemas.user import UserOut
 from app.dependencies import get_current_user
 from app.services.wallet import get_or_create_wallet
+from app.services.email import send_password_reset_email
 
 settings = get_settings()
 router = APIRouter()
@@ -91,6 +92,12 @@ def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Sessio
         user.reset_token = reset_token
         user.reset_token_expires_at = datetime.utcnow() + timedelta(hours=2)
         db.commit()
+        # Send email only when the user exists. Response stays generic either way.
+        try:
+            send_password_reset_email(user.email, reset_token)
+        except Exception:
+            # Avoid leaking provider failures in the API response.
+            pass
 
     # Avoid user enumeration: always return the same message.
     message = "If the email exists, a reset token has been generated"
