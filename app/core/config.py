@@ -85,6 +85,10 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
     auto_create_tables: bool = False
 
+    # Ops: bootstrap admin users (comma-separated emails). Useful when the platform
+    # doesn't provide a shell/psql access on free plans.
+    bootstrap_admin_emails: str = ""
+
     class Config:
         env_file = ".env"
         case_sensitive = False
