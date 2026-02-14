@@ -1,18 +1,44 @@
 import secrets
+import re
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies import get_current_user
 from app.models import User, Transaction, TransactionType, TransactionStatus
-from app.schemas.wallet import WalletOut, FundWalletRequest, LedgerOut
+from app.schemas.wallet import WalletOut, FundWalletRequest, LedgerOut, BankTransferAccountsResponse, CreateBankTransferAccountsRequest, BankAccountOut
 from app.services.wallet import get_or_create_wallet, credit_wallet
 from app.services.paystack import create_paystack_checkout, verify_paystack_signature, verify_paystack_transaction
-from app.services.monnify import init_monnify_transaction, verify_monnify_signature
+from app.services.monnify import init_monnify_transaction, verify_monnify_signature, reserve_monnify_account, get_reserved_account_details
 from app.middlewares.rate_limit import limiter
 from app.models import WalletLedger
 
 router = APIRouter()
+
+def _transfer_account_reference(user: User) -> str:
+    # Stable per-user reference so we can fetch accounts later without DB storage.
+    return f"AXISVTU_{user.id}"
+
+
+def _parse_reserved_accounts(payload: dict) -> list[dict]:
+    body = payload.get("responseBody") or payload.get("data") or payload.get("response") or {}
+    accounts = body.get("accounts") or []
+    out = []
+    for a in accounts:
+        out.append(
+            {
+                "bank_name": a.get("bankName") or a.get("bank") or a.get("bank_name") or "Bank",
+                "account_number": a.get("accountNumber") or a.get("account_number") or "",
+                "account_name": a.get("accountName") or a.get("account_name"),
+            }
+        )
+    return [a for a in out if a.get("account_number")]
+
+
+def _safe_ref(prefix: str, value: str) -> str:
+    raw = f"{prefix}_{value or ''}"
+    cleaned = re.sub(r"[^A-Za-z0-9_]", "_", raw)
+    return cleaned[:64] if len(cleaned) <= 64 else cleaned[:64]
 
 
 @router.get("/me", response_model=WalletOut)
@@ -26,6 +52,53 @@ def get_ledger(user: User = Depends(get_current_user), db: Session = Depends(get
     wallet = get_or_create_wallet(db, user.id)
     entries = db.query(WalletLedger).filter(WalletLedger.wallet_id == wallet.id).order_by(WalletLedger.id.desc()).limit(50).all()
     return entries
+
+
+@router.get("/bank-transfer-accounts", response_model=BankTransferAccountsResponse)
+def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    account_reference = _transfer_account_reference(user)
+    details = get_reserved_account_details(account_reference=account_reference)
+    if details.get("__not_found__"):
+        return {
+            "provider": "monnify",
+            "account_reference": account_reference,
+            "accounts": [],
+            "requires_kyc": True,
+        }
+    accounts = _parse_reserved_accounts(details)
+    return {
+        "provider": "monnify",
+        "account_reference": account_reference,
+        "accounts": accounts,
+        "requires_kyc": False if accounts else True,
+    }
+
+
+@router.post("/bank-transfer-accounts", response_model=BankTransferAccountsResponse)
+@limiter.limit("5/minute")
+def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferAccountsRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    account_reference = _transfer_account_reference(user)
+    bvn = (payload.bvn or "").strip()
+    nin = (payload.nin or "").strip()
+    if not bvn and not nin:
+        raise HTTPException(status_code=400, detail="BVN or NIN is required to generate bank transfer accounts")
+
+    resp = reserve_monnify_account(
+        account_reference=account_reference,
+        account_name=f"AxisVTU Wallet - {user.full_name}",
+        customer_email=user.email,
+        customer_name=user.full_name,
+        bvn=bvn or None,
+        nin=nin or None,
+        get_all_available_banks=True,
+    )
+    accounts = _parse_reserved_accounts(resp)
+    return {
+        "provider": "monnify",
+        "account_reference": account_reference,
+        "accounts": accounts,
+        "requires_kyc": False if accounts else True,
+    }
 
 
 @router.post("/fund")
@@ -109,21 +182,45 @@ async def monnify_webhook(request: Request, db: Session = Depends(get_db)):
 
     reference = data.get("paymentReference") or data.get("transactionReference")
     transaction = db.query(Transaction).filter(Transaction.reference == reference).first()
-    if not transaction:
-        return {"status": "ok"}
-
     payment_status = (data.get("paymentStatus") or data.get("status") or "").upper()
 
     if payment_status in {"PAID", "SUCCESSFUL", "SUCCESS"} or (event_type and "SUCCESS" in event_type):
-        if transaction.status != TransactionStatus.SUCCESS:
-            wallet = get_or_create_wallet(db, transaction.user_id)
-            credit_wallet(db, wallet, Decimal(transaction.amount), reference, "Wallet funding via Monnify")
-            transaction.status = TransactionStatus.SUCCESS
-            transaction.external_reference = data.get("transactionReference") or data.get("paymentReference")
-            db.commit()
+        # If we initiated the payment, we will have a transaction with our reference.
+        if transaction:
+            if transaction.status != TransactionStatus.SUCCESS:
+                wallet = get_or_create_wallet(db, transaction.user_id)
+                credit_wallet(db, wallet, Decimal(transaction.amount), reference, "Wallet funding via Monnify")
+                transaction.status = TransactionStatus.SUCCESS
+                transaction.external_reference = data.get("transactionReference") or data.get("paymentReference")
+                db.commit()
+        else:
+            # Reserved account / bank transfer funding: Monnify may not use our internal reference.
+            customer = data.get("customer") or {}
+            email = (customer.get("email") or "").strip().lower()
+            amount_paid = data.get("amountPaid") or data.get("amount") or data.get("amountPaidInKobo")
+            ext_ref = data.get("transactionReference") or data.get("paymentReference") or reference
+            if email and amount_paid:
+                user = db.query(User).filter(User.email == email).first()
+                if user:
+                    # Idempotency: don't double-credit the same Monnify transactionReference.
+                    if ext_ref and db.query(Transaction).filter(Transaction.external_reference == ext_ref).first():
+                        return {"status": "ok"}
+                    amt = Decimal(str(amount_paid))
+                    tx_ref = _safe_ref("TRF", str(ext_ref or secrets.token_hex(8)))
+                    tx = Transaction(
+                        user_id=user.id,
+                        reference=tx_ref,
+                        amount=amt,
+                        status=TransactionStatus.SUCCESS,
+                        tx_type=TransactionType.WALLET_FUND,
+                        external_reference=str(ext_ref) if ext_ref else None,
+                    )
+                    db.add(tx)
+                    wallet = get_or_create_wallet(db, user.id)
+                    credit_wallet(db, wallet, amt, tx_ref, "Wallet funding via bank transfer (Monnify)")
 
     if payment_status in {"FAILED", "CANCELLED"} or (event_type and "FAILED" in event_type):
-        if transaction.status == TransactionStatus.PENDING:
+        if transaction and transaction.status == TransactionStatus.PENDING:
             transaction.status = TransactionStatus.FAILED
             transaction.external_reference = data.get("transactionReference") or data.get("paymentReference")
             db.commit()

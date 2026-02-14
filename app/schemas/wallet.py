@@ -24,3 +24,21 @@ class LedgerOut(BaseModel):
 
     class Config:
         orm_mode = True
+
+
+class CreateBankTransferAccountsRequest(BaseModel):
+    bvn: str | None = None
+    nin: str | None = None
+
+
+class BankAccountOut(BaseModel):
+    bank_name: str
+    account_number: str
+    account_name: str | None = None
+
+
+class BankTransferAccountsResponse(BaseModel):
+    provider: str
+    account_reference: str
+    accounts: list[BankAccountOut]
+    requires_kyc: bool = False
