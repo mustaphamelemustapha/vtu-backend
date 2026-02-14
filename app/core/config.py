@@ -65,11 +65,14 @@ class Settings(BaseSettings):
     frontend_base_url: str = "http://localhost:5173"
 
     # Email (password reset)
-    email_provider: str = "console"  # console|resend|smtp
+    email_provider: str = "console"  # console|resend|smtp|brevo
     email_from: str = "AxisVTU <no-reply@axisvtu.local>"
 
     # Resend
     resend_api_key: Optional[str] = None
+
+    # Brevo
+    brevo_api_key: Optional[str] = None
 
     # SMTP
     smtp_host: Optional[str] = None

@@ -20,6 +20,21 @@ def _sanitize_email_from(value: str) -> str:
 def _sanitize_email(value: str) -> str:
     return (value or "").strip()
 
+def _parse_from(value: str) -> tuple[Optional[str], str]:
+    """
+    Accept either:
+      - email@example.com
+      - Name <email@example.com>
+    Returns (name, email).
+    """
+    raw = _sanitize_email_from(value)
+    if "<" in raw and ">" in raw:
+        left, right = raw.split("<", 1)
+        name = left.strip().strip('"').strip("'") or None
+        email = right.split(">", 1)[0].strip()
+        return name, email
+    return None, raw
+
 
 def _build_reset_email_html(reset_link: str) -> str:
     # Keep HTML minimal and compatible across mail clients.
@@ -67,6 +82,18 @@ def send_password_reset_email(to_email: str, reset_token: str) -> None:
         )
         return
 
+    if provider == "brevo":
+        name, from_email = _parse_from(settings.email_from)
+        _send_via_brevo(
+            api_key=settings.brevo_api_key,
+            from_name=name,
+            from_email=from_email,
+            to_email=to_email,
+            subject=subject,
+            html=html,
+        )
+        return
+
     if provider == "smtp":
         _send_via_smtp(
             host=settings.smtp_host,
@@ -106,6 +133,32 @@ def _send_via_resend(
         res = client.post("https://api.resend.com/emails", json=payload, headers=headers)
         if res.status_code >= 400:
             raise RuntimeError(f"Resend error: {res.status_code} {res.text}")
+
+def _send_via_brevo(
+    *,
+    api_key: Optional[str],
+    from_name: Optional[str],
+    from_email: str,
+    to_email: str,
+    subject: str,
+    html: str,
+) -> None:
+    if not api_key:
+        raise ValueError("BREVO_API_KEY is required when EMAIL_PROVIDER=brevo")
+    if not from_email:
+        raise ValueError("EMAIL_FROM is required when EMAIL_PROVIDER=brevo")
+
+    payload = {
+        "sender": {"name": from_name or "AxisVTU", "email": from_email},
+        "to": [{"email": to_email}],
+        "subject": subject,
+        "htmlContent": html,
+    }
+    headers = {"api-key": api_key, "Content-Type": "application/json", "Accept": "application/json"}
+    with httpx.Client(timeout=15) as client:
+        res = client.post("https://api.brevo.com/v3/smtp/email", json=payload, headers=headers)
+        if res.status_code >= 400:
+            raise RuntimeError(f"Brevo error: {res.status_code} {res.text}")
 
 
 def _send_via_smtp(
