@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 import secrets
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -17,6 +17,17 @@ from app.services.email import send_password_reset_email
 settings = get_settings()
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _as_utc(value: datetime) -> datetime:
+    # DB might return aware (preferred) or naive timestamps depending on driver/config.
+    # Treat naive timestamps as UTC to avoid 500s in comparisons.
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _mask_email(value: str) -> str:
@@ -44,7 +55,7 @@ def register(request: Request, payload: RegisterRequest, db: Session = Depends(g
         is_verified=False,
     )
     user.verification_token = secrets.token_urlsafe(32)
-    user.verification_token_expires_at = datetime.utcnow() + timedelta(days=2)
+    user.verification_token_expires_at = _utcnow() + timedelta(days=2)
 
     db.add(user)
     db.commit()
@@ -102,7 +113,7 @@ def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Sessio
     if user:
         reset_token = secrets.token_urlsafe(32)
         user.reset_token = reset_token
-        user.reset_token_expires_at = datetime.utcnow() + timedelta(hours=2)
+        user.reset_token_expires_at = _utcnow() + timedelta(hours=2)
         db.commit()
         # Send email only when the user exists. Response stays generic either way.
         try:
@@ -128,7 +139,9 @@ def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Sessio
 @limiter.limit("10/minute")
 def reset_password(request: Request, payload: ResetPasswordRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.reset_token == payload.token).first()
-    if not user or not user.reset_token_expires_at or user.reset_token_expires_at < datetime.utcnow():
+    if not user or not user.reset_token_expires_at:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+    if _as_utc(user.reset_token_expires_at) < _utcnow():
         raise HTTPException(status_code=400, detail="Invalid or expired token")
 
     user.hashed_password = hash_password(payload.new_password)
@@ -143,7 +156,9 @@ def reset_password(request: Request, payload: ResetPasswordRequest, db: Session 
 @limiter.limit("10/minute")
 def verify_email(request: Request, payload: EmailVerification, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.verification_token == payload.token).first()
-    if not user or not user.verification_token_expires_at or user.verification_token_expires_at < datetime.utcnow():
+    if not user or not user.verification_token_expires_at:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+    if _as_utc(user.verification_token_expires_at) < _utcnow():
         raise HTTPException(status_code=400, detail="Invalid or expired token")
 
     user.is_verified = True

@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -67,3 +68,32 @@ def test_forgot_password_returns_token_in_non_production():
     assert isinstance(body.get("reset_token"), str)
     assert len(body["reset_token"]) > 10
 
+
+def test_reset_password_handles_timezone_aware_expiry():
+    # Regression: production can store timezone-aware timestamps and comparisons must not crash.
+    from app.core.security import hash_password
+
+    now_utc = datetime.now(timezone.utc)
+    user = SimpleNamespace(
+        reset_token="tok",
+        reset_token_expires_at=now_utc + timedelta(minutes=5),
+        hashed_password=hash_password("OldPassword123!"),
+    )
+
+    class _Session(_StubSession):
+        def query(self, *args, **kwargs):
+            return _StubQuery(user)
+
+    app.dependency_overrides.clear()
+
+    def _override_get_db():
+        yield _Session(user)
+
+    app.dependency_overrides[get_db] = _override_get_db
+    try:
+        with TestClient(app) as client:
+            res = client.post("/api/v1/auth/reset-password", json={"token": "tok", "new_password": "NewPassword123!"})
+        assert res.status_code == 200
+        assert res.json()["message"] == "Password reset successful"
+    finally:
+        app.dependency_overrides.clear()
