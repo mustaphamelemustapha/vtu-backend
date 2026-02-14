@@ -4,7 +4,9 @@ from app.models import PricingRule, PricingRole, DataPlan, UserRole
 
 
 def get_price_for_user(db: Session, plan: DataPlan, role: UserRole) -> Decimal:
-    pricing_role = PricingRole.USER if role == UserRole.USER else PricingRole.RESELLER
+    # Only explicit resellers get reseller pricing.
+    # Admins should see the same pricing as normal users (simplifies operations).
+    pricing_role = PricingRole.RESELLER if role == UserRole.RESELLER else PricingRole.USER
     rule = db.query(PricingRule).filter(
         PricingRule.network == plan.network,
         PricingRule.role == pricing_role,

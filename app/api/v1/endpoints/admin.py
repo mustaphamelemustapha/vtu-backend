@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from app.core.database import get_db
 from app.dependencies import require_admin
-from app.models import User, Transaction, TransactionStatus, TransactionType, PricingRule, PricingRole, ApiLog
+from app.models import User, Transaction, TransactionStatus, TransactionType, PricingRule, PricingRole, ApiLog, DataPlan
 from app.schemas.admin import (
     FundUserWalletRequest,
     PricingRuleUpdate,
@@ -53,12 +53,39 @@ def _as_utc_end(d: date) -> datetime:
 
 def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
     total_revenue = db.query(func.sum(Transaction.amount)).filter(Transaction.status == TransactionStatus.SUCCESS).scalar() or 0
+    data_revenue = (
+        db.query(func.sum(Transaction.amount))
+        .filter(
+            Transaction.status == TransactionStatus.SUCCESS,
+            Transaction.tx_type == TransactionType.DATA,
+        )
+        .scalar()
+        or 0
+    )
+    # Estimate cost from the current plan catalog base_price (not historical).
+    data_cost_estimate = (
+        db.query(func.sum(DataPlan.base_price))
+        .select_from(Transaction)
+        .join(DataPlan, Transaction.data_plan_code == DataPlan.plan_code)
+        .filter(
+            Transaction.status == TransactionStatus.SUCCESS,
+            Transaction.tx_type == TransactionType.DATA,
+        )
+        .scalar()
+        or 0
+    )
+    gross_profit_estimate = data_revenue - data_cost_estimate
+    gross_margin_pct = (float(gross_profit_estimate) / float(data_revenue) * 100.0) if float(data_revenue) else 0.0
     total_users = db.query(func.count(User.id)).scalar() or 0
     daily_tx = db.query(func.count(Transaction.id)).filter(Transaction.status == TransactionStatus.SUCCESS).scalar() or 0
     api_success = db.query(func.count(ApiLog.id)).filter(ApiLog.success == 1).scalar() or 0
     api_failed = db.query(func.count(ApiLog.id)).filter(ApiLog.success == 0).scalar() or 0
     return {
         "total_revenue": total_revenue,
+        "data_revenue": data_revenue,
+        "data_cost_estimate": data_cost_estimate,
+        "gross_profit_estimate": gross_profit_estimate,
+        "gross_margin_pct": round(gross_margin_pct, 2),
         "total_users": total_users,
         "daily_transactions": daily_tx,
         "api_success": api_success,
@@ -201,10 +228,16 @@ def fund_user_wallet(payload: FundUserWalletRequest, admin=Depends(require_admin
 @router.post("/pricing")
 
 def update_pricing(payload: PricingRuleUpdate, admin=Depends(require_admin), db: Session = Depends(get_db)):
-    role = PricingRole.USER if payload.role == "user" else PricingRole.RESELLER
-    rule = db.query(PricingRule).filter(PricingRule.network == payload.network, PricingRule.role == role).first()
+    raw_role = (payload.role or "").strip().lower()
+    if raw_role not in {"user", "reseller"}:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    role = PricingRole.USER if raw_role == "user" else PricingRole.RESELLER
+    network = (payload.network or "").strip().lower()
+    if not network:
+        raise HTTPException(status_code=400, detail="Network is required")
+    rule = db.query(PricingRule).filter(PricingRule.network == network, PricingRule.role == role).first()
     if not rule:
-        rule = PricingRule(network=payload.network, role=role, margin=payload.margin)
+        rule = PricingRule(network=network, role=role, margin=payload.margin)
         db.add(rule)
     else:
         rule.margin = payload.margin

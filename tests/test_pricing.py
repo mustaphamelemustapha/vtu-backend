@@ -31,3 +31,11 @@ def test_pricing_reseller_rule():
     db = DummyDB(rule)
     price = get_price_for_user(db, plan, UserRole.RESELLER)
     assert price == Decimal("90")
+
+
+def test_pricing_admin_uses_user_pricing():
+    plan = DataPlan(network="mtn", base_price=Decimal("100"), plan_code="X", plan_name="X", data_size="1GB", validity="1d")
+    rule = PricingRule(network="mtn", role=PricingRole.USER, margin=Decimal("15"))
+    db = DummyDB(rule)
+    price = get_price_for_user(db, plan, UserRole.ADMIN)
+    assert price == Decimal("115")
