@@ -9,6 +9,18 @@ import httpx
 from app.core.config import get_settings
 
 
+def _sanitize_email_from(value: str) -> str:
+    # Render env vars are often pasted with surrounding quotes; Resend rejects that.
+    v = (value or "").strip()
+    if len(v) >= 2 and ((v[0] == v[-1] == '"') or (v[0] == v[-1] == "'")):
+        v = v[1:-1].strip()
+    return v
+
+
+def _sanitize_email(value: str) -> str:
+    return (value or "").strip()
+
+
 def _build_reset_email_html(reset_link: str) -> str:
     # Keep HTML minimal and compatible across mail clients.
     return f"""
@@ -37,6 +49,7 @@ def send_password_reset_email(to_email: str, reset_token: str) -> None:
     reset_link = f"{settings.frontend_base_url.rstrip('/')}/app/?reset=1&token={reset_token}"
     subject = "Reset your AxisVTU password"
     html = _build_reset_email_html(reset_link)
+    to_email = _sanitize_email(to_email)
 
     provider = (settings.email_provider or "console").lower()
     if provider == "console":
@@ -47,7 +60,7 @@ def send_password_reset_email(to_email: str, reset_token: str) -> None:
     if provider == "resend":
         _send_via_resend(
             api_key=settings.resend_api_key,
-            email_from=settings.email_from,
+            email_from=_sanitize_email_from(settings.email_from),
             to_email=to_email,
             subject=subject,
             html=html,
@@ -61,7 +74,7 @@ def send_password_reset_email(to_email: str, reset_token: str) -> None:
             username=settings.smtp_username,
             password=settings.smtp_password,
             use_tls=settings.smtp_use_tls,
-            email_from=settings.email_from,
+            email_from=_sanitize_email_from(settings.email_from),
             to_email=to_email,
             subject=subject,
             html=html,
@@ -125,4 +138,3 @@ def _send_via_smtp(
         if username and password:
             server.login(username, password)
         server.send_message(msg)
-
