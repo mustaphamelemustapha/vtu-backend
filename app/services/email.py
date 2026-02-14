@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import smtplib
 from email.message import EmailMessage
+from email.utils import parseaddr
 from typing import Optional
 
 import httpx
@@ -28,12 +29,13 @@ def _parse_from(value: str) -> tuple[Optional[str], str]:
     Returns (name, email).
     """
     raw = _sanitize_email_from(value)
-    if "<" in raw and ">" in raw:
-        left, right = raw.split("<", 1)
-        name = left.strip().strip('"').strip("'") or None
-        email = right.split(">", 1)[0].strip()
-        return name, email
-    return None, raw
+    name, email = parseaddr(raw)
+    name = (name or "").strip() or None
+    email = (email or "").strip()
+    # If parseaddr fails (malformed input), fall back to the raw string.
+    if not email:
+        return None, raw.strip()
+    return name, email
 
 
 def _build_reset_email_html(reset_link: str) -> str:
