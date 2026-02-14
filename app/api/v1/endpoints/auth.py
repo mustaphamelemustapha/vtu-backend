@@ -8,7 +8,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.middlewares.rate_limit import limiter
 from app.models import User, UserRole
-from app.schemas.auth import RegisterRequest, LoginRequest, TokenPair, RefreshRequest, Message, ForgotPasswordRequest, ForgotPasswordResponse, ResetPasswordRequest, EmailVerification
+from app.schemas.auth import RegisterRequest, LoginRequest, TokenPair, RefreshRequest, Message, ForgotPasswordRequest, ForgotPasswordResponse, ResetPasswordRequest, ChangePasswordRequest, UpdateMeRequest, EmailVerification
 from app.schemas.user import UserOut
 from app.dependencies import get_current_user
 from app.services.wallet import get_or_create_wallet
@@ -172,3 +172,36 @@ def verify_email(request: Request, payload: EmailVerification, db: Session = Dep
 @router.get("/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user)):
     return user
+
+
+@router.patch("/me", response_model=UserOut)
+def update_me(payload: UpdateMeRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    full_name = (payload.full_name or "").strip()
+    if len(full_name) < 2:
+        raise HTTPException(status_code=400, detail="Full name is too short")
+    if len(full_name) > 255:
+        raise HTTPException(status_code=400, detail="Full name is too long")
+
+    user.full_name = full_name
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@router.post("/change-password", response_model=Message)
+@limiter.limit("5/minute")
+def change_password(
+    request: Request,
+    payload: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    if not verify_password(payload.current_password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    user.hashed_password = hash_password(payload.new_password)
+    # Invalidate any outstanding reset tokens.
+    user.reset_token = None
+    user.reset_token_expires_at = None
+    db.commit()
+    return Message(message="Password updated successfully")

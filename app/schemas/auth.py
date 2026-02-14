@@ -48,6 +48,17 @@ class ResetPasswordRequest(BaseModel):
     _password_len = validator("new_password", allow_reuse=True)(_validate_password_length)
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+    _password_len = validator("new_password", allow_reuse=True)(_validate_password_length)
+
+
+class UpdateMeRequest(BaseModel):
+    full_name: str
+
+
 class Message(BaseModel):
     message: str
 
