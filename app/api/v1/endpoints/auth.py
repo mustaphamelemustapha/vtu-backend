@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import logging
 import secrets
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
@@ -15,6 +16,17 @@ from app.services.email import send_password_reset_email
 
 settings = get_settings()
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def _mask_email(value: str) -> str:
+    try:
+        local, domain = value.split("@", 1)
+    except ValueError:
+        return "***"
+    if not local:
+        return f"***@{domain}"
+    return f"{local[:2]}***@{domain}"
 
 
 @router.post("/register", response_model=UserOut)
@@ -95,9 +107,14 @@ def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Sessio
         # Send email only when the user exists. Response stays generic either way.
         try:
             send_password_reset_email(user.email, reset_token)
-        except Exception:
-            # Avoid leaking provider failures in the API response.
-            pass
+        except Exception as exc:
+            # Avoid leaking provider failures in the API response; log for ops/debugging.
+            logger.warning(
+                "Password reset email send failed to=%s provider=%s error=%s",
+                _mask_email(user.email),
+                settings.email_provider,
+                exc,
+            )
 
     # Avoid user enumeration: always return the same message.
     message = "If the email exists, a reset token has been generated"
