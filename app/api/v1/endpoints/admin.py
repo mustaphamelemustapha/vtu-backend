@@ -3,10 +3,10 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, select, union_all, String, cast
 from app.core.database import get_db
 from app.dependencies import require_admin
-from app.models import User, Transaction, TransactionStatus, TransactionType, PricingRule, PricingRole, ApiLog, DataPlan
+from app.models import User, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, ApiLog, DataPlan
 from app.schemas.admin import (
     FundUserWalletRequest,
     PricingRuleUpdate,
@@ -113,62 +113,97 @@ def list_all_transactions(
     status_enum = _coerce_status(status)
     type_enum = _coerce_type(tx_type)
 
-    query = (
-        db.query(Transaction, User.email.label("user_email"))
+    base_sel = (
+        select(
+            Transaction.id.label("id"),
+            Transaction.created_at.label("created_at"),
+            Transaction.user_id.label("user_id"),
+            User.email.label("user_email"),
+            Transaction.reference.label("reference"),
+            cast(Transaction.tx_type, String).label("tx_type"),
+            Transaction.amount.label("amount"),
+            cast(Transaction.status, String).label("status"),
+            Transaction.network.label("network"),
+            Transaction.data_plan_code.label("data_plan_code"),
+            Transaction.external_reference.label("external_reference"),
+            Transaction.failure_reason.label("failure_reason"),
+        )
+        .select_from(Transaction)
         .join(User, Transaction.user_id == User.id)
     )
-
-    if q:
-        needle = f"%{q.strip()}%"
-        query = query.filter(
-            or_(
-                Transaction.reference.ilike(needle),
-                Transaction.external_reference.ilike(needle),
-                Transaction.data_plan_code.ilike(needle),
-                User.email.ilike(needle),
-            )
+    extra_sel = (
+        select(
+            ServiceTransaction.id.label("id"),
+            ServiceTransaction.created_at.label("created_at"),
+            ServiceTransaction.user_id.label("user_id"),
+            User.email.label("user_email"),
+            ServiceTransaction.reference.label("reference"),
+            ServiceTransaction.tx_type.label("tx_type"),
+            ServiceTransaction.amount.label("amount"),
+            ServiceTransaction.status.label("status"),
+            ServiceTransaction.provider.label("network"),
+            ServiceTransaction.product_code.label("data_plan_code"),
+            ServiceTransaction.external_reference.label("external_reference"),
+            ServiceTransaction.failure_reason.label("failure_reason"),
         )
-
-    if status_enum is not None:
-        query = query.filter(Transaction.status == status_enum)
-    if type_enum is not None:
-        query = query.filter(Transaction.tx_type == type_enum)
-    if network:
-        query = query.filter(Transaction.network == network.strip().lower())
-
-    if from_date:
-        query = query.filter(Transaction.created_at >= _as_utc_start(from_date))
-    if to_date:
-        query = query.filter(Transaction.created_at <= _as_utc_end(to_date))
-
-    total = query.count()
-    rows = (
-        query.order_by(Transaction.id.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
+        .select_from(ServiceTransaction)
+        .join(User, ServiceTransaction.user_id == User.id)
     )
 
+    combined = union_all(base_sel, extra_sel).subquery("all_tx")
+
+    where = []
+    if q:
+        needle = f"%{q.strip()}%"
+        where.append(
+            or_(
+                combined.c.reference.ilike(needle),
+                combined.c.external_reference.ilike(needle),
+                combined.c.data_plan_code.ilike(needle),
+                combined.c.user_email.ilike(needle),
+            )
+        )
+    if status_enum is not None:
+        where.append(combined.c.status == status_enum.value)
+    if type_enum is not None:
+        where.append(combined.c.tx_type == type_enum.value)
+    if network:
+        where.append(combined.c.network == network.strip().lower())
+    if from_date:
+        where.append(combined.c.created_at >= _as_utc_start(from_date))
+    if to_date:
+        where.append(combined.c.created_at <= _as_utc_end(to_date))
+
+    total = db.execute(select(func.count()).select_from(combined).where(*where)).scalar() or 0
+    rows = db.execute(
+        select(combined)
+        .where(*where)
+        .order_by(combined.c.created_at.desc(), combined.c.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+
     items = []
-    for tx, user_email in rows:
+    for r in rows:
+        # Selecting a subquery flattens columns; SQLAlchemy returns Row objects with named attrs.
         items.append(
             {
-                "id": tx.id,
-                "created_at": tx.created_at,
-                "user_id": tx.user_id,
-                "user_email": user_email,
-                "reference": tx.reference,
-                "tx_type": tx.tx_type,
-                "amount": tx.amount,
-                "status": tx.status,
-                "network": tx.network,
-                "data_plan_code": tx.data_plan_code,
-                "external_reference": tx.external_reference,
-                "failure_reason": tx.failure_reason,
+                "id": r.id,
+                "created_at": r.created_at,
+                "user_id": r.user_id,
+                "user_email": r.user_email,
+                "reference": r.reference,
+                "tx_type": r.tx_type,
+                "amount": r.amount,
+                "status": r.status,
+                "network": r.network,
+                "data_plan_code": r.data_plan_code,
+                "external_reference": r.external_reference,
+                "failure_reason": r.failure_reason,
             }
         )
 
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+    return {"items": items, "total": int(total), "page": page, "page_size": page_size}
 
 
 @router.get("/users", response_model=AdminUsersResponse)

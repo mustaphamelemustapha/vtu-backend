@@ -15,6 +15,10 @@ class TransactionStatus(str, enum.Enum):
 class TransactionType(str, enum.Enum):
     DATA = "data"
     WALLET_FUND = "wallet_fund"
+    AIRTIME = "airtime"
+    CABLE = "cable"
+    ELECTRICITY = "electricity"
+    EXAM = "exam"
 
 
 class Transaction(Base, TimestampMixin):
