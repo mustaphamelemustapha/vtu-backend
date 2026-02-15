@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
+from sqlalchemy import inspect
 from app.core.database import get_db
 from app.dependencies import get_current_user
 from app.models import User, Transaction, ServiceTransaction
@@ -12,7 +13,13 @@ router = APIRouter()
 
 def list_transactions(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     base = db.query(Transaction).filter(Transaction.user_id == user.id).all()
-    extra = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == user.id).all()
+    extra = []
+    try:
+        if inspect(db.bind).has_table("service_transactions"):
+            extra = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == user.id).all()
+    except Exception:
+        # On hosted environments, new tables might not exist until a redeploy. Avoid breaking history.
+        extra = []
 
     items: list[dict] = []
     for tx in base:

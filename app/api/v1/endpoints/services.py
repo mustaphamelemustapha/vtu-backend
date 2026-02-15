@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
+from sqlalchemy import inspect
 
 from app.core.database import get_db
 from app.dependencies import get_current_user
@@ -23,6 +24,18 @@ router = APIRouter()
 
 def _ref(prefix: str) -> str:
     return f"{prefix}_{secrets.token_hex(8)}"
+
+def _ensure_service_table(db: Session):
+    try:
+        if not inspect(db.bind).has_table("service_transactions"):
+            raise HTTPException(
+                status_code=503,
+                detail="Services database is not ready yet. Enable AUTO_CREATE_TABLES=true once and redeploy to create required tables.",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="Services database is not ready yet.")
 
 
 @router.get("/catalog", response_model=ServicesCatalogOut)
@@ -52,6 +65,7 @@ def services_catalog(user: User = Depends(get_current_user)):
 @router.post("/airtime/purchase")
 @limiter.limit("5/minute")
 def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_service_table(db)
     wallet = get_or_create_wallet(db, user.id)
     amount = Decimal(payload.amount)
     if Decimal(wallet.balance) < amount:
@@ -94,6 +108,7 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
 @router.post("/cable/purchase")
 @limiter.limit("5/minute")
 def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_service_table(db)
     wallet = get_or_create_wallet(db, user.id)
     amount = Decimal(payload.amount)
     if Decimal(wallet.balance) < amount:
@@ -141,6 +156,7 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
 @router.post("/electricity/purchase")
 @limiter.limit("5/minute")
 def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_service_table(db)
     wallet = get_or_create_wallet(db, user.id)
     amount = Decimal(payload.amount)
     if Decimal(wallet.balance) < amount:
@@ -188,6 +204,7 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
 @router.post("/exam/purchase")
 @limiter.limit("5/minute")
 def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    _ensure_service_table(db)
     # For pins we price "amount" as a fixed demo price per pin for now.
     unit_price = Decimal("2000.00")
     total_amount = unit_price * Decimal(int(payload.quantity or 1))
@@ -234,4 +251,3 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
     tx.status = TransactionStatus.REFUNDED.value
     db.commit()
     raise HTTPException(status_code=502, detail=tx.failure_reason)
-

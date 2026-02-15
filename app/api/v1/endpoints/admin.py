@@ -3,7 +3,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_, select, union_all, String, cast
+from sqlalchemy import func, or_, select, union_all, String, cast, inspect
 from app.core.database import get_db
 from app.dependencies import require_admin
 from app.models import User, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, ApiLog, DataPlan
@@ -131,26 +131,34 @@ def list_all_transactions(
         .select_from(Transaction)
         .join(User, Transaction.user_id == User.id)
     )
-    extra_sel = (
-        select(
-            ServiceTransaction.id.label("id"),
-            ServiceTransaction.created_at.label("created_at"),
-            ServiceTransaction.user_id.label("user_id"),
-            User.email.label("user_email"),
-            ServiceTransaction.reference.label("reference"),
-            ServiceTransaction.tx_type.label("tx_type"),
-            ServiceTransaction.amount.label("amount"),
-            ServiceTransaction.status.label("status"),
-            ServiceTransaction.provider.label("network"),
-            ServiceTransaction.product_code.label("data_plan_code"),
-            ServiceTransaction.external_reference.label("external_reference"),
-            ServiceTransaction.failure_reason.label("failure_reason"),
-        )
-        .select_from(ServiceTransaction)
-        .join(User, ServiceTransaction.user_id == User.id)
-    )
+    has_services = False
+    try:
+        has_services = inspect(db.bind).has_table("service_transactions")
+    except Exception:
+        has_services = False
 
-    combined = union_all(base_sel, extra_sel).subquery("all_tx")
+    if has_services:
+        extra_sel = (
+            select(
+                ServiceTransaction.id.label("id"),
+                ServiceTransaction.created_at.label("created_at"),
+                ServiceTransaction.user_id.label("user_id"),
+                User.email.label("user_email"),
+                ServiceTransaction.reference.label("reference"),
+                ServiceTransaction.tx_type.label("tx_type"),
+                ServiceTransaction.amount.label("amount"),
+                ServiceTransaction.status.label("status"),
+                ServiceTransaction.provider.label("network"),
+                ServiceTransaction.product_code.label("data_plan_code"),
+                ServiceTransaction.external_reference.label("external_reference"),
+                ServiceTransaction.failure_reason.label("failure_reason"),
+            )
+            .select_from(ServiceTransaction)
+            .join(User, ServiceTransaction.user_id == User.id)
+        )
+        combined = union_all(base_sel, extra_sel).subquery("all_tx")
+    else:
+        combined = base_sel.subquery("all_tx")
 
     where = []
     if q:
