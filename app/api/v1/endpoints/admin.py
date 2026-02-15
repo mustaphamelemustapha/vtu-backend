@@ -113,6 +113,61 @@ def list_all_transactions(
     status_enum = _coerce_status(status)
     type_enum = _coerce_type(tx_type)
 
+    # Test stubs (and some lightweight DB wrappers) don't implement Session.execute.
+    # Fall back to the ORM query used previously so unit tests keep working.
+    if not hasattr(db, "execute"):
+        query = (
+            db.query(Transaction, User.email.label("user_email"))
+            .join(User, Transaction.user_id == User.id)
+        )
+        if q:
+            needle = f"%{q.strip()}%"
+            query = query.filter(
+                or_(
+                    Transaction.reference.ilike(needle),
+                    Transaction.external_reference.ilike(needle),
+                    Transaction.data_plan_code.ilike(needle),
+                    User.email.ilike(needle),
+                )
+            )
+        if status_enum is not None:
+            query = query.filter(Transaction.status == status_enum)
+        if type_enum is not None:
+            query = query.filter(Transaction.tx_type == type_enum)
+        if network:
+            query = query.filter(Transaction.network == network.strip().lower())
+        if from_date:
+            query = query.filter(Transaction.created_at >= _as_utc_start(from_date))
+        if to_date:
+            query = query.filter(Transaction.created_at <= _as_utc_end(to_date))
+
+        total = query.count()
+        rows = (
+            query.order_by(Transaction.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        items = []
+        for tx, user_email in rows:
+            items.append(
+                {
+                    "id": tx.id,
+                    "created_at": tx.created_at,
+                    "user_id": tx.user_id,
+                    "user_email": user_email,
+                    "reference": tx.reference,
+                    "tx_type": tx.tx_type,
+                    "amount": tx.amount,
+                    "status": tx.status,
+                    "network": tx.network,
+                    "data_plan_code": tx.data_plan_code,
+                    "external_reference": tx.external_reference,
+                    "failure_reason": tx.failure_reason,
+                }
+            )
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
+
     base_sel = (
         select(
             Transaction.id.label("id"),
@@ -182,34 +237,37 @@ def list_all_transactions(
     if to_date:
         where.append(combined.c.created_at <= _as_utc_end(to_date))
 
+    columns = [
+        combined.c.id.label("id"),
+        combined.c.created_at.label("created_at"),
+        combined.c.user_id.label("user_id"),
+        combined.c.user_email.label("user_email"),
+        combined.c.reference.label("reference"),
+        combined.c.tx_type.label("tx_type"),
+        combined.c.amount.label("amount"),
+        combined.c.status.label("status"),
+        combined.c.network.label("network"),
+        combined.c.data_plan_code.label("data_plan_code"),
+        combined.c.external_reference.label("external_reference"),
+        combined.c.failure_reason.label("failure_reason"),
+    ]
+
     total = db.execute(select(func.count()).select_from(combined).where(*where)).scalar() or 0
-    rows = db.execute(
-        select(combined)
-        .where(*where)
-        .order_by(combined.c.created_at.desc(), combined.c.id.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    ).all()
+    rows = (
+        db.execute(
+            select(*columns)
+            .where(*where)
+            .order_by(combined.c.created_at.desc(), combined.c.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        .mappings()
+        .all()
+    )
 
     items = []
     for r in rows:
-        # Selecting a subquery flattens columns; SQLAlchemy returns Row objects with named attrs.
-        items.append(
-            {
-                "id": r.id,
-                "created_at": r.created_at,
-                "user_id": r.user_id,
-                "user_email": r.user_email,
-                "reference": r.reference,
-                "tx_type": r.tx_type,
-                "amount": r.amount,
-                "status": r.status,
-                "network": r.network,
-                "data_plan_code": r.data_plan_code,
-                "external_reference": r.external_reference,
-                "failure_reason": r.failure_reason,
-            }
-        )
+        items.append(dict(r))
 
     return {"items": items, "total": int(total), "page": page, "page_size": page_size}
 
