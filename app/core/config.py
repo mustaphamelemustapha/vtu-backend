@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     amigo_timeout_seconds: int = 15
     amigo_retry_count: int = 2
     amigo_test_mode: bool = False
+    # Provider endpoint paths (Amigo deployments differ; keep these configurable).
+    amigo_data_purchase_path: str = "/data/"
+    amigo_plans_path: str = "/plans/efficiency"
 
     # Frontend URLs (used for email links)
     frontend_base_url: str = "http://localhost:5173"

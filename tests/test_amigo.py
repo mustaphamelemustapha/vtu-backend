@@ -47,3 +47,28 @@ def test_parse_efficiency_plans_extracts_rows():
     assert parsed[0]["plan_code"] == "5000"
     assert parsed[0]["data_size"] == "1GB"
     assert parsed[0]["validity"] == "30d"
+
+
+def test_purchase_data_falls_back_on_404(monkeypatch):
+    # Ensure the client tries alternate paths when configured purchase path is wrong.
+    from app.services.amigo import AmigoApiError, AmigoClient, settings as amigo_settings
+
+    monkeypatch.setattr(amigo_settings, "amigo_test_mode", False, raising=False)
+    monkeypatch.setattr(amigo_settings, "amigo_data_purchase_path", "/wrong/", raising=False)
+
+    client = AmigoClient()
+    calls = []
+
+    def _fake_request(method, path, payload=None, **kwargs):
+        calls.append(path)
+        if path == "/wrong/":
+            raise AmigoApiError("Not found", status_code=404)
+        if path == "/data/":
+            return {"success": True, "status": "delivered", "reference": "OK"}
+        raise AmigoApiError("Unexpected", status_code=400)
+
+    monkeypatch.setattr(client, "_request", _fake_request)
+    out = client.purchase_data({"network": 1, "mobile_number": "080", "plan": 1001})
+    assert out["success"] is True
+    assert "/wrong/" in calls
+    assert "/data/" in calls

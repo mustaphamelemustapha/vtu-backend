@@ -162,6 +162,8 @@ class AmigoClient:
         self.api_key = settings.amigo_api_key
         self.timeout = settings.amigo_timeout_seconds
         self.retry_count = settings.amigo_retry_count
+        self.data_purchase_path = str(getattr(settings, "amigo_data_purchase_path", "/data/") or "/data/").strip() or "/data/"
+        self.plans_path = str(getattr(settings, "amigo_plans_path", "/plans/efficiency") or "/plans/efficiency").strip() or "/plans/efficiency"
 
     def _headers(self) -> dict:
         return {
@@ -238,7 +240,7 @@ class AmigoClient:
         if settings.amigo_test_mode:
             return {"data": PLAN_CATALOG}
         try:
-            response = self._request("GET", "/plans/efficiency")
+            response = self._request("GET", self.plans_path)
             parsed = parse_efficiency_plans(response)
             if parsed:
                 return {"data": parsed}
@@ -260,4 +262,33 @@ class AmigoClient:
         extra_headers = {}
         if idempotency_key:
             extra_headers["Idempotency-Key"] = idempotency_key
-        return self._request("POST", "/data/", payload, extra_headers=extra_headers)
+
+        # Some Amigo deployments mount the same API behind different prefixes.
+        # If we get a 404 from the configured path, try a small set of safe fallbacks.
+        candidates = [
+            self.data_purchase_path,
+            "/data/",
+            "/api/data/",
+            "/v1/data/",
+            "/api/v1/data/",
+        ]
+        tried = []
+        last_exc: AmigoApiError | None = None
+        for path in candidates:
+            path = (path or "").strip()
+            if not path:
+                continue
+            if not path.startswith("/"):
+                path = "/" + path
+            tried.append(path)
+            try:
+                return self._request("POST", path, payload, extra_headers=extra_headers)
+            except AmigoApiError as exc:
+                last_exc = exc
+                if exc.status_code == 404:
+                    continue
+                raise
+
+        message = "Amigo endpoint not found (404) on all known purchase paths."
+        logger.warning("%s base_url=%s tried=%s", message, self.base_url, tried)
+        raise AmigoApiError(message, status_code=404, raw=str(tried)) from last_exc
