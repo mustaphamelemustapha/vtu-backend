@@ -10,10 +10,12 @@ from app.models import User, Transaction, ServiceTransaction, TransactionStatus,
 from app.schemas.admin import (
     FundUserWalletRequest,
     PricingRuleUpdate,
+    PricingRulesResponse,
     AdminTransactionsResponse,
     AdminUsersResponse,
 )
 from app.services.wallet import get_or_create_wallet, credit_wallet
+from app.services.pricing import build_service_pricing_key, parse_pricing_key
 
 router = APIRouter()
 
@@ -80,12 +82,39 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
     daily_tx = db.query(func.count(Transaction.id)).filter(Transaction.status == TransactionStatus.SUCCESS).scalar() or 0
     api_success = db.query(func.count(ApiLog.id)).filter(ApiLog.success == 1).scalar() or 0
     api_failed = db.query(func.count(ApiLog.id)).filter(ApiLog.success == 0).scalar() or 0
+    service_revenue = 0
+    service_cost_estimate = 0
+    service_profit_estimate = 0
+    try:
+        if inspect(db.bind).has_table("service_transactions"):
+            rows = (
+                db.query(ServiceTransaction)
+                .filter(ServiceTransaction.status == TransactionStatus.SUCCESS.value)
+                .all()
+            )
+            for tx in rows:
+                amt = float(tx.amount or 0)
+                meta = tx.meta or {}
+                base = meta.get("base_amount")
+                try:
+                    base_num = float(base) if base is not None else amt
+                except Exception:
+                    base_num = amt
+                service_revenue += amt
+                service_cost_estimate += base_num
+            service_profit_estimate = service_revenue - service_cost_estimate
+    except Exception:
+        # Keep analytics endpoint resilient when the service table is not yet available.
+        pass
     return {
         "total_revenue": total_revenue,
         "data_revenue": data_revenue,
         "data_cost_estimate": data_cost_estimate,
         "gross_profit_estimate": gross_profit_estimate,
         "gross_margin_pct": round(gross_margin_pct, 2),
+        "service_revenue": round(float(service_revenue), 2),
+        "service_cost_estimate": round(float(service_cost_estimate), 2),
+        "service_profit_estimate": round(float(service_profit_estimate), 2),
         "total_users": total_users,
         "daily_transactions": daily_tx,
         "api_success": api_success,
@@ -334,8 +363,21 @@ def update_pricing(payload: PricingRuleUpdate, admin=Depends(require_admin), db:
         raise HTTPException(status_code=400, detail="Invalid role")
     role = PricingRole.USER if raw_role == "user" else PricingRole.RESELLER
     network = (payload.network or "").strip().lower()
-    if not network:
-        raise HTTPException(status_code=400, detail="Network is required")
+    tx_type = (payload.tx_type or "").strip().lower()
+    provider = (payload.provider or "").strip().lower()
+
+    if tx_type and tx_type != "data":
+        if tx_type not in {"airtime", "cable", "electricity", "exam"}:
+            raise HTTPException(status_code=400, detail="Invalid tx_type")
+        if not provider and network:
+            provider = network
+        if not provider:
+            raise HTTPException(status_code=400, detail="Provider is required")
+        network = build_service_pricing_key(tx_type, provider)
+    else:
+        if not network:
+            raise HTTPException(status_code=400, detail="Network is required")
+
     rule = db.query(PricingRule).filter(PricingRule.network == network, PricingRule.role == role).first()
     if not rule:
         rule = PricingRule(network=network, role=role, margin=payload.margin)
@@ -343,7 +385,27 @@ def update_pricing(payload: PricingRuleUpdate, admin=Depends(require_admin), db:
     else:
         rule.margin = payload.margin
     db.commit()
-    return {"status": "ok"}
+    return {"status": "ok", "network": network}
+
+
+@router.get("/pricing", response_model=PricingRulesResponse)
+def list_pricing(admin=Depends(require_admin), db: Session = Depends(get_db)):
+    rows = db.query(PricingRule).order_by(PricingRule.network.asc(), PricingRule.role.asc()).all()
+    items = []
+    for row in rows:
+        parsed = parse_pricing_key(row.network)
+        items.append(
+            {
+                "id": row.id,
+                "network": row.network,
+                "tx_type": parsed["tx_type"],
+                "provider": parsed.get("provider"),
+                "role": row.role.value if hasattr(row.role, "value") else str(row.role),
+                "margin": row.margin,
+                "kind": parsed["kind"],
+            }
+        )
+    return {"items": items}
 
 
 @router.post("/users/{user_id}/suspend")

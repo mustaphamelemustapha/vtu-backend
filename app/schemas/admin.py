@@ -14,9 +14,25 @@ class FundUserWalletRequest(BaseModel):
 
 
 class PricingRuleUpdate(BaseModel):
+    network: Optional[str] = None
+    tx_type: Optional[str] = None
+    provider: Optional[str] = None
+    role: str = "user"
+    margin: Decimal
+
+
+class PricingRuleOut(BaseModel):
+    id: int
     network: str
+    tx_type: str
+    provider: Optional[str] = None
     role: str
     margin: Decimal
+    kind: str
+
+
+class PricingRulesResponse(BaseModel):
+    items: list[PricingRuleOut]
 
 
 class AdminTransactionOut(BaseModel):

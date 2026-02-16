@@ -18,6 +18,7 @@ from app.schemas.services import (
 )
 from app.services.bills import MockBillsProvider
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
+from app.services.pricing import get_service_charge_for_user
 
 router = APIRouter()
 
@@ -67,8 +68,17 @@ def services_catalog(user: User = Depends(get_current_user)):
 def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _ensure_service_table(db)
     wallet = get_or_create_wallet(db, user.id)
-    amount = Decimal(payload.amount)
-    if Decimal(wallet.balance) < amount:
+    base_amount = Decimal(payload.amount)
+    charge_amount, margin = get_service_charge_for_user(
+        db,
+        tx_type=TransactionType.AIRTIME.value,
+        provider=payload.network,
+        base_amount=base_amount,
+        user_role=user.role,
+    )
+    if charge_amount <= 0:
+        raise HTTPException(status_code=400, detail="Final amount must be greater than zero")
+    if Decimal(wallet.balance) < charge_amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
     reference = _ref("AIRTIME")
@@ -76,20 +86,26 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
         user_id=user.id,
         reference=reference,
         tx_type=TransactionType.AIRTIME.value,
-        amount=amount,
+        amount=charge_amount,
         status=TransactionStatus.PENDING.value,
         provider=payload.network.strip().lower(),
         customer=payload.phone_number.strip(),
-        meta={"network": payload.network.strip().lower(), "phone_number": payload.phone_number.strip()},
+        meta={
+            "network": payload.network.strip().lower(),
+            "phone_number": payload.phone_number.strip(),
+            "base_amount": str(base_amount),
+            "margin_applied": str(margin),
+            "charge_amount": str(charge_amount),
+        },
     )
     db.add(tx)
     db.commit()
     db.refresh(tx)
 
-    debit_wallet(db, wallet, amount, reference, "Airtime purchase")
+    debit_wallet(db, wallet, charge_amount, reference, "Airtime purchase")
 
     provider = MockBillsProvider()
-    result = provider.purchase_airtime(tx.provider or "", tx.customer or "", float(amount))
+    result = provider.purchase_airtime(tx.provider or "", tx.customer or "", float(base_amount))
     if result.success:
         tx.status = TransactionStatus.SUCCESS.value
         tx.external_reference = result.external_reference
@@ -99,7 +115,7 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
         return {"reference": reference, "status": tx.status}
 
     tx.failure_reason = result.message or "Provider failed"
-    credit_wallet(db, wallet, amount, reference, "Auto refund for failed airtime purchase")
+    credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed airtime purchase")
     tx.status = TransactionStatus.REFUNDED.value
     db.commit()
     raise HTTPException(status_code=502, detail=tx.failure_reason)
@@ -110,8 +126,17 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
 def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _ensure_service_table(db)
     wallet = get_or_create_wallet(db, user.id)
-    amount = Decimal(payload.amount)
-    if Decimal(wallet.balance) < amount:
+    base_amount = Decimal(payload.amount)
+    charge_amount, margin = get_service_charge_for_user(
+        db,
+        tx_type=TransactionType.CABLE.value,
+        provider=payload.provider,
+        base_amount=base_amount,
+        user_role=user.role,
+    )
+    if charge_amount <= 0:
+        raise HTTPException(status_code=400, detail="Final amount must be greater than zero")
+    if Decimal(wallet.balance) < charge_amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
     reference = _ref("CABLE")
@@ -119,7 +144,7 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
         user_id=user.id,
         reference=reference,
         tx_type=TransactionType.CABLE.value,
-        amount=amount,
+        amount=charge_amount,
         status=TransactionStatus.PENDING.value,
         provider=payload.provider.strip().lower(),
         customer=payload.smartcard_number.strip(),
@@ -128,16 +153,19 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
             "provider": payload.provider.strip().lower(),
             "smartcard_number": payload.smartcard_number.strip(),
             "package_code": payload.package_code.strip(),
+            "base_amount": str(base_amount),
+            "margin_applied": str(margin),
+            "charge_amount": str(charge_amount),
         },
     )
     db.add(tx)
     db.commit()
     db.refresh(tx)
 
-    debit_wallet(db, wallet, amount, reference, "Cable subscription")
+    debit_wallet(db, wallet, charge_amount, reference, "Cable subscription")
 
     provider = MockBillsProvider()
-    result = provider.purchase_cable(tx.provider or "", tx.customer or "", tx.product_code or "", float(amount))
+    result = provider.purchase_cable(tx.provider or "", tx.customer or "", tx.product_code or "", float(base_amount))
     if result.success:
         tx.status = TransactionStatus.SUCCESS.value
         tx.external_reference = result.external_reference
@@ -147,7 +175,7 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
         return {"reference": reference, "status": tx.status}
 
     tx.failure_reason = result.message or "Provider failed"
-    credit_wallet(db, wallet, amount, reference, "Auto refund for failed cable purchase")
+    credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed cable purchase")
     tx.status = TransactionStatus.REFUNDED.value
     db.commit()
     raise HTTPException(status_code=502, detail=tx.failure_reason)
@@ -158,8 +186,17 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
 def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _ensure_service_table(db)
     wallet = get_or_create_wallet(db, user.id)
-    amount = Decimal(payload.amount)
-    if Decimal(wallet.balance) < amount:
+    base_amount = Decimal(payload.amount)
+    charge_amount, margin = get_service_charge_for_user(
+        db,
+        tx_type=TransactionType.ELECTRICITY.value,
+        provider=payload.disco,
+        base_amount=base_amount,
+        user_role=user.role,
+    )
+    if charge_amount <= 0:
+        raise HTTPException(status_code=400, detail="Final amount must be greater than zero")
+    if Decimal(wallet.balance) < charge_amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
     reference = _ref("ELECTRICITY")
@@ -167,7 +204,7 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
         user_id=user.id,
         reference=reference,
         tx_type=TransactionType.ELECTRICITY.value,
-        amount=amount,
+        amount=charge_amount,
         status=TransactionStatus.PENDING.value,
         provider=payload.disco.strip().lower(),
         customer=payload.meter_number.strip(),
@@ -176,16 +213,19 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
             "disco": payload.disco.strip().lower(),
             "meter_number": payload.meter_number.strip(),
             "meter_type": payload.meter_type.strip().lower(),
+            "base_amount": str(base_amount),
+            "margin_applied": str(margin),
+            "charge_amount": str(charge_amount),
         },
     )
     db.add(tx)
     db.commit()
     db.refresh(tx)
 
-    debit_wallet(db, wallet, amount, reference, "Electricity purchase")
+    debit_wallet(db, wallet, charge_amount, reference, "Electricity purchase")
 
     provider = MockBillsProvider()
-    result = provider.purchase_electricity(tx.provider or "", tx.customer or "", tx.product_code or "", float(amount))
+    result = provider.purchase_electricity(tx.provider or "", tx.customer or "", tx.product_code or "", float(base_amount))
     if result.success:
         tx.status = TransactionStatus.SUCCESS.value
         tx.external_reference = result.external_reference
@@ -195,7 +235,7 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
         return {"reference": reference, "status": tx.status, "token": (tx.meta or {}).get("token")}
 
     tx.failure_reason = result.message or "Provider failed"
-    credit_wallet(db, wallet, amount, reference, "Auto refund for failed electricity purchase")
+    credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed electricity purchase")
     tx.status = TransactionStatus.REFUNDED.value
     db.commit()
     raise HTTPException(status_code=502, detail=tx.failure_reason)
@@ -207,10 +247,19 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
     _ensure_service_table(db)
     # For pins we price "amount" as a fixed demo price per pin for now.
     unit_price = Decimal("2000.00")
-    total_amount = unit_price * Decimal(int(payload.quantity or 1))
+    base_total_amount = unit_price * Decimal(int(payload.quantity or 1))
+    charge_amount, margin = get_service_charge_for_user(
+        db,
+        tx_type=TransactionType.EXAM.value,
+        provider=payload.exam,
+        base_amount=base_total_amount,
+        user_role=user.role,
+    )
+    if charge_amount <= 0:
+        raise HTTPException(status_code=400, detail="Final amount must be greater than zero")
 
     wallet = get_or_create_wallet(db, user.id)
-    if Decimal(wallet.balance) < total_amount:
+    if Decimal(wallet.balance) < charge_amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
     reference = _ref("EXAM")
@@ -218,7 +267,7 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
         user_id=user.id,
         reference=reference,
         tx_type=TransactionType.EXAM.value,
-        amount=total_amount,
+        amount=charge_amount,
         status=TransactionStatus.PENDING.value,
         provider=payload.exam.strip().lower(),
         customer=(payload.phone_number or "").strip() or None,
@@ -228,13 +277,16 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
             "quantity": int(payload.quantity or 1),
             "phone_number": (payload.phone_number or "").strip() or None,
             "unit_price": str(unit_price),
+            "base_amount": str(base_total_amount),
+            "margin_applied": str(margin),
+            "charge_amount": str(charge_amount),
         },
     )
     db.add(tx)
     db.commit()
     db.refresh(tx)
 
-    debit_wallet(db, wallet, total_amount, reference, "Exam pin purchase")
+    debit_wallet(db, wallet, charge_amount, reference, "Exam pin purchase")
 
     provider = MockBillsProvider()
     result = provider.purchase_exam_pin(tx.provider or "", int(payload.quantity or 1), tx.customer)
@@ -247,7 +299,7 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
         return {"reference": reference, "status": tx.status, "pins": (tx.meta or {}).get("pins", [])}
 
     tx.failure_reason = result.message or "Provider failed"
-    credit_wallet(db, wallet, total_amount, reference, "Auto refund for failed exam pin purchase")
+    credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed exam pin purchase")
     tx.status = TransactionStatus.REFUNDED.value
     db.commit()
     raise HTTPException(status_code=502, detail=tx.failure_reason)
