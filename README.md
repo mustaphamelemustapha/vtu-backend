@@ -66,6 +66,7 @@ FastAPI docs:
 - Monitoring runbook: `docs/OPERATIONS_MONITORING.md`
 - 4-day launch checklist: `docs/LAUNCH_4_DAY_CHECKLIST.md`
 - Local endpoint check: `PROD_BACKEND_BASE_URL=https://<your-domain> python scripts/check_health.py`
+- Production smoke run: `python scripts/prod_smoke.py --base-url https://<your-domain>`
 
 ## Sample Amigo API Payloads
 Fetch data plans (example response):

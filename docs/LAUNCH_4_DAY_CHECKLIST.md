@@ -28,6 +28,8 @@ Use this as the execution checklist before public launch.
   - Fund wallet
   - Verify payment callback
   - Confirm wallet balance update
+- Run automated smoke:
+  - `python scripts/prod_smoke.py --base-url https://<your-backend-domain>`
 - Confirm no 500s in Render logs during tests.
 
 ## Day 3: Product QA Sweep

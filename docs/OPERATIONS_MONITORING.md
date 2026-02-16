@@ -65,6 +65,15 @@ You can also run the same check locally:
 
 - `PROD_BACKEND_BASE_URL=https://<your-backend-domain> python scripts/check_health.py`
 
+## GitHub Actions Production Smoke (Recommended)
+
+This repo includes `/.github/workflows/prod-smoke.yml`:
+
+- Runs every 6 hours and on manual trigger
+- Executes auth/wallet smoke checks using `scripts/prod_smoke.py`
+- Reuses the same repository secret:
+  - `PROD_BACKEND_BASE_URL=https://<your-backend-domain>`
+
 ## First Response Playbook
 
 When alerts fire:

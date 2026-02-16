@@ -1,0 +1,62 @@
+name: Production Smoke
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      skip_wallet_fund:
+        description: "Skip wallet funding initialization check"
+        required: false
+        default: false
+        type: boolean
+      skip_forgot_password:
+        description: "Skip forgot-password endpoint check"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: "requirements.txt"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Validate required secrets
+        env:
+          PROD_BACKEND_BASE_URL: ${{ secrets.PROD_BACKEND_BASE_URL }}
+        run: |
+          if [ -z "$PROD_BACKEND_BASE_URL" ]; then
+            echo "Missing required secret: PROD_BACKEND_BASE_URL"
+            exit 1
+          fi
+
+      - name: Run production smoke checks
+        env:
+          PROD_BACKEND_BASE_URL: ${{ secrets.PROD_BACKEND_BASE_URL }}
+          SKIP_WALLET_FUND: ${{ github.event.inputs.skip_wallet_fund || 'false' }}
+          SKIP_FORGOT_PASSWORD: ${{ github.event.inputs.skip_forgot_password || 'false' }}
+        run: |
+          ARGS=""
+          if [ "$SKIP_WALLET_FUND" = "true" ]; then
+            ARGS="$ARGS --skip-wallet-fund"
+          fi
+          if [ "$SKIP_FORGOT_PASSWORD" = "true" ]; then
+            ARGS="$ARGS --skip-forgot-password"
+          fi
+          python scripts/prod_smoke.py --base-url "$PROD_BACKEND_BASE_URL" $ARGS
