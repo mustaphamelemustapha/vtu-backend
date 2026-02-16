@@ -19,6 +19,8 @@ class SmokeContext:
     api_prefix: str
     timeout_seconds: float
     verify_tls: bool
+    retries: int
+    retry_delay_seconds: float
 
 
 def _random_suffix(length: int = 6) -> str:
@@ -51,12 +53,32 @@ def _request(
     expected_status: int = 200,
     **kwargs: Any,
 ) -> httpx.Response:
-    try:
-        resp = client.request(method, url, **kwargs)
-    except httpx.HTTPError as exc:
-        raise RuntimeError(f"{step_name} request failed: {exc}") from exc
-    _assert_status(resp, expected_status, step_name)
-    return resp
+    retries = int(kwargs.pop("retries", 0))
+    retry_delay_seconds = float(kwargs.pop("retry_delay_seconds", 0.0))
+    last_error: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            resp = client.request(method, url, **kwargs)
+            if resp.status_code in {502, 503, 504} and attempt < retries:
+                print(
+                    f"{step_name}: transient HTTP {resp.status_code}, "
+                    f"retrying ({attempt + 1}/{retries})..."
+                )
+                time.sleep(retry_delay_seconds)
+                continue
+            _assert_status(resp, expected_status, step_name)
+            return resp
+        except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.ConnectError, httpx.RemoteProtocolError) as exc:
+            last_error = exc
+            if attempt >= retries:
+                raise RuntimeError(f"{step_name} request failed: {exc}") from exc
+            print(f"{step_name}: transient error ({exc}), retrying ({attempt + 1}/{retries})...")
+            time.sleep(retry_delay_seconds)
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"{step_name} request failed: {exc}") from exc
+    if last_error:
+        raise RuntimeError(f"{step_name} request failed: {last_error}") from last_error
+    raise RuntimeError(f"{step_name} failed unexpectedly.")
 
 
 def run_smoke(
@@ -68,6 +90,8 @@ def run_smoke(
     full_name: str,
     timeout_seconds: float,
     verify_tls: bool,
+    retries: int,
+    retry_delay_seconds: float,
     check_wallet_fund: bool,
     check_forgot_password: bool,
     cleanup_created_user: bool,
@@ -77,6 +101,8 @@ def run_smoke(
         api_prefix="/" + api_prefix.strip("/"),
         timeout_seconds=timeout_seconds,
         verify_tls=verify_tls,
+        retries=retries,
+        retry_delay_seconds=retry_delay_seconds,
     )
 
     run_id = f"{int(time.time())}-{_random_suffix()}"
@@ -96,8 +122,22 @@ def run_smoke(
 
     with httpx.Client(timeout=ctx.timeout_seconds, verify=ctx.verify_tls) as client:
         _step("Health checks")
-        healthz = _request(client, "GET", f"{ctx.base_url}/healthz", step_name="GET /healthz")
-        readyz = _request(client, "GET", f"{ctx.base_url}/readyz", step_name="GET /readyz")
+        healthz = _request(
+            client,
+            "GET",
+            f"{ctx.base_url}/healthz",
+            step_name="GET /healthz",
+            retries=ctx.retries,
+            retry_delay_seconds=ctx.retry_delay_seconds,
+        )
+        readyz = _request(
+            client,
+            "GET",
+            f"{ctx.base_url}/readyz",
+            step_name="GET /readyz",
+            retries=ctx.retries,
+            retry_delay_seconds=ctx.retry_delay_seconds,
+        )
         print(f"/healthz -> {healthz.status_code}")
         print(f"/readyz -> {readyz.status_code}")
 
@@ -111,6 +151,8 @@ def run_smoke(
                 step_name="POST /auth/register",
                 expected_status=200,
                 json=payload,
+                retries=ctx.retries,
+                retry_delay_seconds=ctx.retry_delay_seconds,
             )
             created_user = True
             print(f"Registered throwaway user: {email}")
@@ -123,6 +165,8 @@ def run_smoke(
             step_name="POST /auth/login",
             expected_status=200,
             json={"email": email, "password": password},
+            retries=ctx.retries,
+            retry_delay_seconds=ctx.retry_delay_seconds,
         ).json()
         access_token = login["access_token"]
         refresh_token = login["refresh_token"]
@@ -137,6 +181,8 @@ def run_smoke(
             step_name="POST /auth/refresh",
             expected_status=200,
             json={"refresh_token": refresh_token},
+            retries=ctx.retries,
+            retry_delay_seconds=ctx.retry_delay_seconds,
         )
         print("Refresh successful")
 
@@ -148,6 +194,8 @@ def run_smoke(
             step_name="GET /auth/me",
             expected_status=200,
             headers=auth_headers,
+            retries=ctx.retries,
+            retry_delay_seconds=ctx.retry_delay_seconds,
         ).json()
         print(f"Authenticated user: {me.get('email')}")
 
@@ -159,6 +207,8 @@ def run_smoke(
             step_name="GET /wallet/me",
             expected_status=200,
             headers=auth_headers,
+            retries=ctx.retries,
+            retry_delay_seconds=ctx.retry_delay_seconds,
         ).json()
         print(f"Wallet balance: {wallet.get('balance')}")
 
@@ -172,6 +222,8 @@ def run_smoke(
                 expected_status=200,
                 headers=auth_headers,
                 json={"amount": 100, "callback_url": f"{ctx.base_url}/app/wallet"},
+                retries=ctx.retries,
+                retry_delay_seconds=ctx.retry_delay_seconds,
             )
             print("Wallet funding initialization passed")
 
@@ -184,6 +236,8 @@ def run_smoke(
                 step_name="POST /auth/forgot-password",
                 expected_status=200,
                 json={"email": email},
+                retries=ctx.retries,
+                retry_delay_seconds=ctx.retry_delay_seconds,
             )
             print("Forgot password endpoint passed")
 
@@ -196,6 +250,8 @@ def run_smoke(
                 step_name="DELETE /auth/delete-me",
                 expected_status=200,
                 headers={"Authorization": f"Bearer {access_token}"},
+                retries=ctx.retries,
+                retry_delay_seconds=ctx.retry_delay_seconds,
             )
             print("Cleanup completed")
 
@@ -210,6 +266,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--password", default=None, help="Existing user password")
     parser.add_argument("--full-name", default="AxisVTU Smoke User", help="Name for throwaway user registration")
     parser.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout in seconds")
+    parser.add_argument("--retries", type=int, default=3, help="Retries for transient network/5xx errors")
+    parser.add_argument(
+        "--retry-delay",
+        type=float,
+        default=5.0,
+        help="Delay between retries in seconds",
+    )
     parser.add_argument("--insecure", action="store_true", help="Disable TLS certificate verification")
     parser.add_argument(
         "--skip-wallet-fund",
@@ -239,6 +302,8 @@ def main() -> None:
         full_name=args.full_name,
         timeout_seconds=args.timeout,
         verify_tls=not args.insecure,
+        retries=max(0, args.retries),
+        retry_delay_seconds=max(0.0, args.retry_delay),
         check_wallet_fund=not args.skip_wallet_fund,
         check_forgot_password=not args.skip_forgot_password,
         cleanup_created_user=not args.keep_user,
