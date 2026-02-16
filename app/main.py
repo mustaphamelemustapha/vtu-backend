@@ -1,7 +1,9 @@
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from app.api.v1.routes import router as api_router
 from app.core.config import get_settings, parse_cors_origins
 import logging
@@ -18,6 +20,15 @@ configure_logging()
 app = FastAPI(title=settings.app_name)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.exception_handler(SQLAlchemyTimeoutError)
+async def sqlalchemy_timeout_handler(request, exc):
+    logging.getLogger(__name__).warning("Database pool timeout on %s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Service is busy. Please retry in a moment."},
+    )
 
 configured_origins = parse_cors_origins(settings.cors_origins or "")
 allow_origins = list(

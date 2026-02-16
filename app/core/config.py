@@ -37,6 +37,11 @@ class Settings(BaseSettings):
 
     # Database
     database_url: PostgresDsn
+    db_pool_size: int = 5
+    db_max_overflow: int = 5
+    db_pool_timeout: int = 15
+    db_pool_recycle: int = 1200
+    db_pool_pre_ping: bool = True
 
     # Redis (optional)
     redis_url: Optional[str] = None

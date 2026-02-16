@@ -16,6 +16,12 @@ See `.env.example` for the full list.
 - `MONNIFY_*` values are required because Monnify routes are enabled.
 - `CORS_ORIGINS` supports comma-separated values (e.g., `http://localhost:5173,http://localhost:3000`).
 - `AUTO_CREATE_TABLES` is optional and defaults to `false`; prefer Alembic migrations.
+- Database pool tuning (important in production):
+  - `DB_POOL_SIZE` (default `5`)
+  - `DB_MAX_OVERFLOW` (default `5`)
+  - `DB_POOL_TIMEOUT` seconds (default `15`)
+  - `DB_POOL_RECYCLE` seconds (default `1200`)
+  - `DB_POOL_PRE_PING` (default `true`)
 
 ## Setup (Local)
 1. Use Python `3.11` (recommended) and create/activate a virtualenv.

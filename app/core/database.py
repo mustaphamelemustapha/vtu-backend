@@ -41,13 +41,21 @@ def _build_connect_args(database_url: str) -> dict:
 
 database_url = _resolve_database_url(str(settings.database_url))
 
+_pool_kwargs = {}
+if database_url.startswith("postgresql"):
+    _pool_kwargs = {
+        "pool_pre_ping": settings.db_pool_pre_ping,
+        "pool_recycle": settings.db_pool_recycle,
+        "pool_size": settings.db_pool_size,
+        "max_overflow": settings.db_max_overflow,
+        "pool_timeout": settings.db_pool_timeout,
+        # Reuse hot connections first to reduce churn under burst traffic.
+        "pool_use_lifo": True,
+    }
+
 engine = create_engine(
     database_url,
-    pool_pre_ping=True,
-    pool_recycle=300,
-    pool_size=2,
-    max_overflow=0,
-    pool_timeout=30,
+    **_pool_kwargs,
     connect_args=_build_connect_args(database_url),
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
