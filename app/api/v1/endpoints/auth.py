@@ -205,3 +205,19 @@ def change_password(
     user.reset_token_expires_at = None
     db.commit()
     return Message(message="Password updated successfully")
+
+
+@router.delete("/delete-me", response_model=Message)
+@limiter.limit("2/hour")
+def delete_me(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    user.is_active = False
+    user.reset_token = None
+    user.reset_token_expires_at = None
+    user.verification_token = None
+    user.verification_token_expires_at = None
+    db.commit()
+    return Message(message="Account deleted successfully")

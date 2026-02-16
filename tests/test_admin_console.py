@@ -141,3 +141,18 @@ def test_admin_users_lists_users():
     assert body["total"] == 1
     assert body["items"][0]["email"] == "user@example.com"
 
+
+def test_admin_pricing_endpoints_require_admin():
+    user = SimpleNamespace(id=1, email="user@example.com", full_name="User", role=UserRole.USER, is_active=True)
+    with _client_with_state(current_user=user, users=[user], tx_rows=[]) as client:
+        list_res = client.get("/api/v1/admin/pricing", headers=_auth_headers("1", "user"))
+        update_res = client.post(
+            "/api/v1/admin/pricing",
+            headers=_auth_headers("1", "user"),
+            json={"network": "mtn", "role": "user", "margin": 10},
+        )
+
+    assert list_res.status_code == 403
+    assert update_res.status_code == 403
+    assert list_res.json()["detail"] == "Admin access required"
+    assert update_res.json()["detail"] == "Admin access required"

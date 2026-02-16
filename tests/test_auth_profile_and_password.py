@@ -125,3 +125,29 @@ def test_change_password_updates_hash():
     assert user.reset_token is None
     assert user.reset_token_expires_at is None
 
+
+def test_delete_me_deactivates_account():
+    user = SimpleNamespace(
+        id=1,
+        email="user@example.com",
+        full_name="User",
+        role=UserRole.USER,
+        is_active=True,
+        is_verified=True,
+        hashed_password=hash_password("Password123!"),
+        reset_token="tok",
+        reset_token_expires_at="anything",
+        verification_token="v_tok",
+        verification_token_expires_at="v_anything",
+    )
+
+    with _client_with_user(user) as client:
+        res = client.delete("/api/v1/auth/delete-me", headers=_auth_headers("1", "user"))
+
+    assert res.status_code == 200
+    assert res.json()["message"] == "Account deleted successfully"
+    assert user.is_active is False
+    assert user.reset_token is None
+    assert user.reset_token_expires_at is None
+    assert user.verification_token is None
+    assert user.verification_token_expires_at is None
