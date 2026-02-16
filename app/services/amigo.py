@@ -1,6 +1,7 @@
 import time
 import logging
 import httpx
+from urllib.parse import urlparse, urlunparse
 from app.core.config import get_settings
 
 
@@ -31,10 +32,18 @@ PLAN_CATALOG = [
 ]
 
 NETWORK_ID_MAP = {
-    item["network"].lower(): int(item["network_id"])
-    for item in PLAN_CATALOG
-    if item.get("network") and item.get("network_id") is not None
+    "mtn": 1,
+    "glo": 2,
+    "airtel": 4,
+    "9mobile": 9,
 }
+NETWORK_ID_MAP.update(
+    {
+        item["network"].lower(): int(item["network_id"])
+        for item in PLAN_CATALOG
+        if item.get("network") and item.get("network_id") is not None
+    }
+)
 
 
 def resolve_network_id(network: str, plan_code: str | None = None) -> int | None:
@@ -54,40 +63,191 @@ def normalize_plan_code(plan_code: str) -> int | str:
     return int(raw) if raw.isdigit() else raw
 
 
+def normalize_amigo_base_url(raw_url: str) -> str:
+    url = str(raw_url or "").strip()
+    if not url:
+        return "https://amigo.ng/api"
+
+    if "api.amigo.com" in url:
+        logger.warning("Legacy AMIGO_BASE_URL detected (%s). Switching to https://amigo.ng/api", url)
+        return "https://amigo.ng/api"
+
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    path = (parsed.path or "").rstrip("/")
+    if host == "amigo.ng" and not path:
+        path = "/api"
+
+    scheme = parsed.scheme or "https"
+    netloc = parsed.netloc or host
+    normalized = urlunparse((scheme, netloc, path, "", "", ""))
+    return normalized.rstrip("/")
+
+
+def _format_data_size(value) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if number >= 1:
+        if number.is_integer():
+            return f"{int(number)}GB"
+        return f"{number:g}GB"
+    mb = int(round(number * 1024))
+    return f"{mb}MB"
+
+
+def _format_validity(value) -> str:
+    if value in (None, ""):
+        return "30d"
+    try:
+        number = int(value)
+        return f"{number}d"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def parse_efficiency_plans(payload: dict) -> list[dict]:
+    if not isinstance(payload, dict):
+        return []
+    networks = ("mtn", "glo", "airtel", "9mobile")
+    items = []
+    for network in networks:
+        rows = payload.get(network.upper()) or payload.get(network) or []
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            plan_code = row.get("plan_id") or row.get("plan_code") or row.get("id")
+            if plan_code in (None, ""):
+                continue
+            price = row.get("price")
+            if price in (None, ""):
+                continue
+            try:
+                price_value = float(price)
+            except (TypeError, ValueError):
+                continue
+            data_size = _format_data_size(row.get("data_capacity") or row.get("data_size"))
+            validity = _format_validity(row.get("validity"))
+            plan_name = row.get("plan_name") or f"{network.upper()} {data_size}".strip()
+            items.append(
+                {
+                    "network": network,
+                    "network_id": NETWORK_ID_MAP.get(network),
+                    "plan_code": str(plan_code),
+                    "plan_name": plan_name,
+                    "data_size": data_size,
+                    "validity": validity,
+                    "price": price_value,
+                }
+            )
+    return items
+
+
+class AmigoApiError(Exception):
+    def __init__(self, message: str, *, status_code: int | None = None, raw: str | None = None):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+        self.raw = raw
+
+
 class AmigoClient:
     def __init__(self):
-        self.base_url = str(settings.amigo_base_url)
+        self.base_url = normalize_amigo_base_url(str(settings.amigo_base_url))
         self.api_key = settings.amigo_api_key
         self.timeout = settings.amigo_timeout_seconds
         self.retry_count = settings.amigo_retry_count
 
     def _headers(self) -> dict:
-        return {"X-API-Key": self.api_key, "Content-Type": "application/json"}
+        return {
+            "X-API-Key": self.api_key,
+            "Authorization": f"Token {self.api_key}",
+            "Content-Type": "application/json",
+        }
 
-    def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
+    def _extract_error_message(self, response: httpx.Response) -> str:
+        try:
+            data = response.json()
+        except ValueError:
+            data = {}
+        if isinstance(data, dict):
+            for key in ("message", "detail", "error", "errors"):
+                value = data.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+                if isinstance(value, list) and value:
+                    first = value[0]
+                    if isinstance(first, str) and first.strip():
+                        return first.strip()
+                    if isinstance(first, dict):
+                        msg = first.get("message") or first.get("detail")
+                        if isinstance(msg, str) and msg.strip():
+                            return msg.strip()
+        text = (response.text or "").strip()
+        return text[:300] if text else f"HTTP {response.status_code}"
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        *,
+        extra_headers: dict | None = None,
+    ) -> dict:
         url = f"{self.base_url}{path}"
         last_exc = None
         for attempt in range(self.retry_count + 1):
             start = time.time()
             try:
                 with httpx.Client(timeout=self.timeout) as client:
-                    response = client.request(method, url, json=payload, headers=self._headers())
+                    headers = self._headers()
+                    if extra_headers:
+                        headers.update(extra_headers)
+                    response = client.request(method, url, json=payload, headers=headers)
                 duration_ms = round((time.time() - start) * 1000, 2)
                 logger.info("Amigo API %s %s status=%s duration=%sms", method, path, response.status_code, duration_ms)
-                response.raise_for_status()
-                return response.json()
-            except Exception as exc:
+                if response.status_code >= 500 and attempt < self.retry_count:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                if response.status_code >= 400:
+                    message = self._extract_error_message(response)
+                    raise AmigoApiError(message, status_code=response.status_code, raw=response.text)
+                try:
+                    return response.json()
+                except ValueError as exc:
+                    raise AmigoApiError("Amigo returned invalid JSON response.", status_code=response.status_code, raw=response.text) from exc
+            except AmigoApiError as exc:
                 last_exc = exc
+                if attempt < self.retry_count:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise last_exc
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+                last_exc = AmigoApiError("Unable to reach data provider.", raw=str(exc))
                 if attempt < self.retry_count:
                     time.sleep(0.5 * (attempt + 1))
                     continue
                 raise last_exc
 
     def fetch_data_plans(self) -> dict:
-        # Amigo does not provide a full catalog endpoint; use the published catalog.
+        if settings.amigo_test_mode:
+            return {"data": PLAN_CATALOG}
+        try:
+            response = self._request("GET", "/plans/efficiency")
+            parsed = parse_efficiency_plans(response)
+            if parsed:
+                return {"data": parsed}
+            logger.warning("Amigo plans response parsed to 0 items. Falling back to local catalog.")
+        except Exception as exc:
+            logger.warning("Failed to fetch Amigo plans dynamically: %s", exc)
         return {"data": PLAN_CATALOG}
 
-    def purchase_data(self, payload: dict) -> dict:
+    def purchase_data(self, payload: dict, idempotency_key: str | None = None) -> dict:
         if settings.amigo_test_mode:
             phone = str(payload.get("mobile_number", ""))
             if phone.startswith("090000"):
@@ -97,4 +257,7 @@ class AmigoClient:
                     "message": "Test mode: simulated delivery.",
                     "status": "delivered",
                 }
-        return self._request("POST", "/data/", payload)
+        extra_headers = {}
+        if idempotency_key:
+            extra_headers["Idempotency-Key"] = idempotency_key
+        return self._request("POST", "/data/", payload, extra_headers=extra_headers)

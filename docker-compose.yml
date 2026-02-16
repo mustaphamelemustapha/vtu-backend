@@ -26,7 +26,7 @@ services:
       MONNIFY_CONTRACT_CODE: 1234567890
       MONNIFY_BASE_URL: https://sandbox.monnify.com
       MONNIFY_WEBHOOK_SECRET: monnify_webhook_secret
-      AMIGO_BASE_URL: https://api.amigo.com
+      AMIGO_BASE_URL: https://amigo.ng/api
       AMIGO_API_KEY: amigo_key
       CORS_ORIGINS: http://localhost:5173,http://localhost:3000
     ports:

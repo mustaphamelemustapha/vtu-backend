@@ -8,7 +8,7 @@ from app.core.config import get_settings
 from app.dependencies import get_current_user, require_admin
 from app.models import User, DataPlan, Transaction, TransactionStatus, TransactionType, ApiLog
 from app.schemas.data import DataPlanOut, BuyDataRequest
-from app.services.amigo import AmigoClient, normalize_plan_code, resolve_network_id
+from app.services.amigo import AmigoClient, AmigoApiError, normalize_plan_code, resolve_network_id
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
 from app.services.pricing import get_price_for_user
 from app.middlewares.rate_limit import limiter
@@ -16,6 +16,10 @@ from app.utils.cache import get_cached, set_cached
 
 router = APIRouter()
 settings = get_settings()
+
+def _safe_reason(value: str, limit: int = 255) -> str:
+    text = str(value or "").strip()
+    return text[:limit] if text else "Unknown provider error"
 
 
 @router.get("/plans", response_model=list[DataPlanOut])
@@ -103,12 +107,16 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             db.commit()
             raise HTTPException(status_code=400, detail="Unsupported network for data purchase")
 
-        response = client.purchase_data({
-            "network": network_id,
-            "mobile_number": payload.phone_number,
-            "plan": normalize_plan_code(plan.plan_code),
-            "Ported_number": payload.ported_number,
-        })
+        response = client.purchase_data(
+            {
+                "network": network_id,
+                "mobile_number": payload.phone_number,
+                "plan": normalize_plan_code(plan.plan_code),
+                "Ported_number": payload.ported_number,
+                "ported_number": payload.ported_number,
+            },
+            idempotency_key=reference,
+        )
         duration_ms = round((time.time() - start) * 1000, 2)
         db.add(ApiLog(
             user_id=user.id,
@@ -141,6 +149,26 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
         }
     except HTTPException:
         raise
+    except AmigoApiError as exc:
+        duration_ms = round((time.time() - start) * 1000, 2)
+        db.add(ApiLog(
+            user_id=user.id,
+            service="amigo",
+            endpoint="/data/purchase",
+            status_code=exc.status_code or 502,
+            duration_ms=duration_ms,
+            reference=reference,
+            success=0,
+        ))
+        transaction.status = TransactionStatus.FAILED
+        transaction.failure_reason = _safe_reason(exc.message)
+        credit_wallet(db, wallet, Decimal(price), reference, "Auto refund due to Amigo error")
+        transaction.status = TransactionStatus.REFUNDED
+        db.commit()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Data provider failed: {_safe_reason(exc.message, 140)}. Wallet refunded.",
+        )
     except Exception as exc:
         duration_ms = round((time.time() - start) * 1000, 2)
         db.add(ApiLog(
@@ -153,11 +181,11 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             success=0,
         ))
         transaction.status = TransactionStatus.FAILED
-        transaction.failure_reason = str(exc)
+        transaction.failure_reason = _safe_reason(str(exc))
         credit_wallet(db, wallet, Decimal(price), reference, "Auto refund due to Amigo error")
         transaction.status = TransactionStatus.REFUNDED
         db.commit()
-        raise HTTPException(status_code=502, detail="Amigo API error")
+        raise HTTPException(status_code=502, detail="Data provider temporarily unavailable. Wallet refunded.")
 
 
 @router.post("/sync")

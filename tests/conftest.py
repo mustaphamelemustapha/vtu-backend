@@ -21,7 +21,7 @@ def _set_test_env() -> None:
         "MONNIFY_WEBHOOK_SECRET": "monnify_webhook_secret",
         "MONNIFY_CURRENCY": "NGN",
         "MONNIFY_PAYMENT_METHODS": "CARD,ACCOUNT_TRANSFER,USSD",
-        "AMIGO_BASE_URL": "https://api.amigo.com",
+        "AMIGO_BASE_URL": "https://amigo.ng/api",
         "AMIGO_API_KEY": "amigo_key",
         "AMIGO_TIMEOUT_SECONDS": "15",
         "AMIGO_RETRY_COUNT": "2",
