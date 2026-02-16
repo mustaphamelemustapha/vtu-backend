@@ -60,6 +60,10 @@ FastAPI docs:
 - `POST /api/v1/admin/users/{user_id}/suspend`
 - `POST /api/v1/admin/users/{user_id}/activate`
 
+### Ops Endpoints
+- `GET /healthz` (liveness)
+- `GET /readyz` (database readiness)
+
 ## Sample Amigo API Payloads
 Fetch data plans (example response):
 ```json

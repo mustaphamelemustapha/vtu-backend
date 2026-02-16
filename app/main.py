@@ -3,10 +3,12 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from sqlalchemy import text
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from app.api.v1.routes import router as api_router
 from app.core.config import get_settings, parse_cors_origins
 import logging
+import time
 from app.core.database import Base, engine, SessionLocal
 from app.core.logging import configure_logging
 from app.middlewares.rate_limit import limiter
@@ -20,6 +22,7 @@ configure_logging()
 app = FastAPI(title=settings.app_name)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+_started_at = time.time()
 
 
 @app.exception_handler(SQLAlchemyTimeoutError)
@@ -105,3 +108,33 @@ def ensure_tables():
 @app.get("/")
 def root():
     return {"status": "ok"}
+
+
+@app.get("/healthz")
+def healthz():
+    # Liveness: process is up.
+    return {
+        "status": "ok",
+        "uptime_seconds": int(max(0, time.time() - _started_at)),
+        "service": settings.app_name,
+    }
+
+
+@app.get("/readyz")
+def readyz():
+    # Readiness: database is reachable.
+    db = SessionLocal()
+    try:
+        db.execute(text("SELECT 1"))
+        return {
+            "status": "ready",
+            "uptime_seconds": int(max(0, time.time() - _started_at)),
+        }
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Readiness DB check failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "detail": "database_unavailable"},
+        )
+    finally:
+        db.close()
