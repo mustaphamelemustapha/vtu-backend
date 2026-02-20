@@ -251,35 +251,50 @@ class AmigoClient:
 
     def purchase_data(self, payload: dict, idempotency_key: str | None = None) -> dict:
         if settings.amigo_test_mode:
-            phone = str(payload.get("mobile_number", ""))
-            if phone.startswith("090000"):
+            phone = str(payload.get("mobile_number", "")).strip()
+            # In explicit test mode we never hit the external provider.
+            if phone.startswith("0000"):
                 return {
-                    "success": True,
-                    "reference": f"AMG-TEST-{int(time.time())}",
-                    "message": "Test mode: simulated delivery.",
-                    "status": "delivered",
+                    "success": False,
+                    "reference": f"AMG-TEST-FAIL-{int(time.time())}",
+                    "message": "Test mode: simulated provider failure.",
+                    "status": "failed",
                 }
+            return {
+                "success": True,
+                "reference": f"AMG-TEST-{int(time.time())}",
+                "message": "Test mode: simulated delivery.",
+                "status": "delivered",
+            }
         extra_headers = {}
         if idempotency_key:
             extra_headers["Idempotency-Key"] = idempotency_key
 
         # Some Amigo deployments mount the same API behind different prefixes.
         # If we get a 404 from the configured path, try a small set of safe fallbacks.
-        candidates = [
-            self.data_purchase_path,
-            "/data/",
-            "/api/data/",
-            "/v1/data/",
-            "/api/v1/data/",
-        ]
-        tried = []
-        last_exc: AmigoApiError | None = None
+        base_path = urlparse(self.base_url).path.rstrip("/").lower()
+        candidates = [self.data_purchase_path, "/data/", "/v1/data/"]
+        if not base_path.endswith("/api"):
+            candidates.extend(["/api/data/", "/api/v1/data/"])
+
+        # De-duplicate while preserving order.
+        deduped = []
+        seen = set()
         for path in candidates:
             path = (path or "").strip()
             if not path:
                 continue
             if not path.startswith("/"):
                 path = "/" + path
+            if path in seen:
+                continue
+            seen.add(path)
+            deduped.append(path)
+
+        candidates = deduped
+        tried = []
+        last_exc: AmigoApiError | None = None
+        for path in candidates:
             tried.append(path)
             try:
                 return self._request("POST", path, payload, extra_headers=extra_headers)
@@ -289,6 +304,9 @@ class AmigoClient:
                     continue
                 raise
 
-        message = "Amigo endpoint not found (404) on all known purchase paths."
+        message = (
+            "Amigo endpoint not found (404) on all known purchase paths. "
+            "Confirm base URL/path from Amigo dashboard or enable AMIGO_TEST_MODE."
+        )
         logger.warning("%s base_url=%s tried=%s", message, self.base_url, tried)
         raise AmigoApiError(message, status_code=404, raw=str(tried)) from last_exc

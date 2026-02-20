@@ -167,7 +167,10 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
         db.commit()
         raise HTTPException(
             status_code=502,
-            detail=f"Data provider failed: {_safe_reason(exc.message, 140)}. Wallet refunded.",
+            detail=(
+                f"Data provider failed: {_safe_reason(exc.message, 140)}. Wallet refunded. "
+                "If this persists, set AMIGO_TEST_MODE=true temporarily."
+            ),
         )
     except Exception as exc:
         duration_ms = round((time.time() - start) * 1000, 2)
