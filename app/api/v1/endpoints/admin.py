@@ -52,6 +52,34 @@ def _as_utc_end(d: date) -> datetime:
     return datetime.combine(d, time.max).replace(tzinfo=timezone.utc)
 
 
+def _normalize_status_value(value) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "value"):
+        return str(value.value).lower()
+    raw = str(value).strip()
+    if not raw:
+        return ""
+    for member in TransactionStatus:
+        if raw.lower() == member.value.lower() or raw.upper() == member.name:
+            return member.value
+    return raw.lower()
+
+
+def _normalize_type_value(value) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "value"):
+        return str(value.value).lower()
+    raw = str(value).strip()
+    if not raw:
+        return ""
+    for member in TransactionType:
+        if raw.lower() == member.value.lower() or raw.upper() == member.name:
+            return member.value
+    return raw.lower()
+
+
 @router.get("/analytics")
 
 def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
@@ -204,9 +232,9 @@ def list_all_transactions(
                     "user_id": tx.user_id,
                     "user_email": user_email,
                     "reference": tx.reference,
-                    "tx_type": tx.tx_type,
+                    "tx_type": _normalize_type_value(tx.tx_type),
                     "amount": tx.amount,
-                    "status": tx.status,
+                    "status": _normalize_status_value(tx.status),
                     "network": tx.network,
                     "data_plan_code": tx.data_plan_code,
                     "external_reference": tx.external_reference,
@@ -274,9 +302,9 @@ def list_all_transactions(
             )
         )
     if status_enum is not None:
-        where.append(combined.c.status == status_enum.value)
+        where.append(func.lower(combined.c.status) == status_enum.value.lower())
     if type_enum is not None:
-        where.append(combined.c.tx_type == type_enum.value)
+        where.append(func.lower(combined.c.tx_type) == type_enum.value.lower())
     if network:
         where.append(combined.c.network == network.strip().lower())
     if from_date:
@@ -314,7 +342,10 @@ def list_all_transactions(
 
     items = []
     for r in rows:
-        items.append(dict(r))
+        row = dict(r)
+        row["status"] = _normalize_status_value(row.get("status"))
+        row["tx_type"] = _normalize_type_value(row.get("tx_type"))
+        items.append(row)
 
     return {"items": items, "total": int(total), "page": page, "page_size": page_size}
 
