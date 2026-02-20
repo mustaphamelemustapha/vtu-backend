@@ -225,6 +225,9 @@ class AmigoClient:
                     raise AmigoApiError("Amigo returned invalid JSON response.", status_code=response.status_code, raw=response.text) from exc
             except AmigoApiError as exc:
                 last_exc = exc
+                # Do not retry definitive client/path/auth errors.
+                if exc.status_code is not None and exc.status_code < 500 and exc.status_code != 429:
+                    raise last_exc
                 if attempt < self.retry_count:
                     time.sleep(0.5 * (attempt + 1))
                     continue
