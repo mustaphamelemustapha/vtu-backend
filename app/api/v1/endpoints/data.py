@@ -9,6 +9,7 @@ from app.dependencies import get_current_user, require_admin
 from app.models import User, DataPlan, Transaction, TransactionStatus, TransactionType, ApiLog
 from app.schemas.data import DataPlanOut, BuyDataRequest
 from app.services.amigo import AmigoClient, AmigoApiError, normalize_plan_code, resolve_network_id
+from app.services.fraud import enforce_purchase_limits
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
 from app.services.pricing import get_price_for_user
 from app.middlewares.rate_limit import limiter
@@ -76,6 +77,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
 
     price = get_price_for_user(db, plan, user.role)
     wallet = get_or_create_wallet(db, user.id)
+    enforce_purchase_limits(db, user_id=user.id, amount=Decimal(price), tx_type=TransactionType.DATA.value)
     if Decimal(wallet.balance) < Decimal(price):
         raise HTTPException(status_code=400, detail="Insufficient balance")
 

@@ -1,5 +1,6 @@
 from functools import lru_cache
 import json
+from decimal import Decimal
 from typing import Optional
 
 from pydantic import AnyHttpUrl, BaseSettings, PostgresDsn
@@ -68,6 +69,12 @@ class Settings(BaseSettings):
     # Provider endpoint paths (Amigo deployments differ; keep these configurable).
     amigo_data_purchase_path: str = "/data/"
     amigo_plans_path: str = "/plans/efficiency"
+
+    # Fraud / abuse guardrails for purchases
+    fraud_guard_enabled: bool = True
+    fraud_single_tx_limit_ngn: Decimal = Decimal("50000")
+    fraud_daily_total_limit_ngn: Decimal = Decimal("200000")
+    fraud_daily_purchase_count_limit: int = 25
 
     # Frontend URLs (used for email links)
     frontend_base_url: str = "http://localhost:5173"

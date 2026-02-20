@@ -72,3 +72,24 @@ class AdminUsersResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class AdminReportOut(BaseModel):
+    id: int
+    created_at: datetime
+    user_id: int
+    user_email: str
+    transaction_reference: str
+    tx_type: str
+    category: str
+    reason: str
+    status: str
+    admin_note: Optional[str] = None
+    resolved_at: Optional[datetime] = None
+
+
+class AdminReportsResponse(BaseModel):
+    items: list[AdminReportOut]
+    total: int
+    page: int
+    page_size: int

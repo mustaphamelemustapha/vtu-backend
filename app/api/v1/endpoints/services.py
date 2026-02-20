@@ -17,6 +17,7 @@ from app.schemas.services import (
     ServicesCatalogOut,
 )
 from app.services.bills import MockBillsProvider
+from app.services.fraud import enforce_purchase_limits
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
 from app.services.pricing import get_service_charge_for_user
 
@@ -78,6 +79,7 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
     )
     if charge_amount <= 0:
         raise HTTPException(status_code=400, detail="Final amount must be greater than zero")
+    enforce_purchase_limits(db, user_id=user.id, amount=charge_amount, tx_type=TransactionType.AIRTIME.value)
     if Decimal(wallet.balance) < charge_amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
@@ -136,6 +138,7 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
     )
     if charge_amount <= 0:
         raise HTTPException(status_code=400, detail="Final amount must be greater than zero")
+    enforce_purchase_limits(db, user_id=user.id, amount=charge_amount, tx_type=TransactionType.CABLE.value)
     if Decimal(wallet.balance) < charge_amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
@@ -196,6 +199,7 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
     )
     if charge_amount <= 0:
         raise HTTPException(status_code=400, detail="Final amount must be greater than zero")
+    enforce_purchase_limits(db, user_id=user.id, amount=charge_amount, tx_type=TransactionType.ELECTRICITY.value)
     if Decimal(wallet.balance) < charge_amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
@@ -257,6 +261,7 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
     )
     if charge_amount <= 0:
         raise HTTPException(status_code=400, detail="Final amount must be greater than zero")
+    enforce_purchase_limits(db, user_id=user.id, amount=charge_amount, tx_type=TransactionType.EXAM.value)
 
     wallet = get_or_create_wallet(db, user.id)
     if Decimal(wallet.balance) < charge_amount:

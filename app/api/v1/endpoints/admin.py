@@ -6,13 +6,14 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, select, union_all, String, cast, inspect
 from app.core.database import get_db
 from app.dependencies import require_admin
-from app.models import User, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, ApiLog, DataPlan
+from app.models import User, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, ApiLog, DataPlan, TransactionDispute, DisputeStatus
 from app.schemas.admin import (
     FundUserWalletRequest,
     PricingRuleUpdate,
     PricingRulesResponse,
     AdminTransactionsResponse,
     AdminUsersResponse,
+    AdminReportsResponse,
 )
 from app.services.wallet import get_or_create_wallet, credit_wallet
 from app.services.pricing import build_service_pricing_key, parse_pricing_key
@@ -85,6 +86,8 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
     service_revenue = 0
     service_cost_estimate = 0
     service_profit_estimate = 0
+    reports_open = 0
+    reports_resolved = 0
     try:
         if inspect(db.bind).has_table("service_transactions"):
             rows = (
@@ -103,6 +106,19 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
                 service_revenue += amt
                 service_cost_estimate += base_num
             service_profit_estimate = service_revenue - service_cost_estimate
+        if inspect(db.bind).has_table("transaction_disputes"):
+            reports_open = (
+                db.query(func.count(TransactionDispute.id))
+                .filter(TransactionDispute.status == DisputeStatus.OPEN)
+                .scalar()
+                or 0
+            )
+            reports_resolved = (
+                db.query(func.count(TransactionDispute.id))
+                .filter(TransactionDispute.status == DisputeStatus.RESOLVED)
+                .scalar()
+                or 0
+            )
     except Exception:
         # Keep analytics endpoint resilient when the service table is not yet available.
         pass
@@ -119,6 +135,8 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
         "daily_transactions": daily_tx,
         "api_success": api_success,
         "api_failed": api_failed,
+        "reports_open": int(reports_open),
+        "reports_resolved": int(reports_resolved),
     }
 
 @router.get("/transactions", response_model=AdminTransactionsResponse)
@@ -338,6 +356,71 @@ def list_users(
                 "role": u.role,
                 "is_active": u.is_active,
                 "is_verified": u.is_verified,
+            }
+        )
+
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/reports", response_model=AdminReportsResponse)
+def list_reports(
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db),
+    q: Optional[str] = None,
+    status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+):
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be >= 1")
+    if page_size < 1 or page_size > 200:
+        raise HTTPException(status_code=400, detail="page_size must be between 1 and 200")
+    try:
+        if not inspect(db.bind).has_table("transaction_disputes"):
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
+    except Exception:
+        return {"items": [], "total": 0, "page": page, "page_size": page_size}
+
+    query = (
+        db.query(TransactionDispute, User.email.label("user_email"))
+        .join(User, TransactionDispute.user_id == User.id)
+    )
+    if q:
+        needle = f"%{q.strip()}%"
+        query = query.filter(
+            or_(
+                TransactionDispute.transaction_reference.ilike(needle),
+                TransactionDispute.reason.ilike(needle),
+                User.email.ilike(needle),
+            )
+        )
+    if status:
+        status_raw = status.strip().lower()
+        if status_raw in {DisputeStatus.OPEN.value, DisputeStatus.RESOLVED.value, DisputeStatus.REJECTED.value}:
+            query = query.filter(TransactionDispute.status == DisputeStatus(status_raw))
+
+    total = query.count()
+    rows = (
+        query.order_by(TransactionDispute.created_at.desc(), TransactionDispute.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    items = []
+    for report, user_email in rows:
+        items.append(
+            {
+                "id": report.id,
+                "created_at": report.created_at,
+                "user_id": report.user_id,
+                "user_email": user_email,
+                "transaction_reference": report.transaction_reference,
+                "tx_type": report.tx_type,
+                "category": report.category,
+                "reason": report.reason,
+                "status": report.status.value if hasattr(report.status, "value") else str(report.status),
+                "admin_note": report.admin_note,
+                "resolved_at": report.resolved_at,
             }
         )
 
