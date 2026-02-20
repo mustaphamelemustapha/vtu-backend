@@ -58,8 +58,10 @@ This repo includes a scheduled workflow (`.github/workflows/healthcheck.yml`).
 Set repository secret:
 
 - `PROD_BACKEND_BASE_URL` = `https://<your-backend-domain>`
+  - Do not include `/api` or `/api/v1` in this secret.
 
-It will run every 30 minutes and on manual trigger, validating both `/healthz` and `/readyz`.
+It will run every 2 hours and on manual trigger, validating both `/healthz` and `/readyz`.
+The script includes retries and backoff to reduce false failures during provider cold starts.
 
 You can also run the same check locally:
 
