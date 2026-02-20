@@ -13,7 +13,9 @@ from app.schemas.admin import (
     PricingRulesResponse,
     AdminTransactionsResponse,
     AdminUsersResponse,
+    AdminReportOut,
     AdminReportsResponse,
+    AdminReportActionRequest,
 )
 from app.services.wallet import get_or_create_wallet, credit_wallet
 from app.services.pricing import build_service_pricing_key, parse_pricing_key
@@ -78,6 +80,10 @@ def _normalize_type_value(value) -> str:
         if raw.lower() == member.value.lower() or raw.upper() == member.name:
             return member.value
     return raw.lower()
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 @router.get("/analytics")
@@ -456,6 +462,65 @@ def list_reports(
         )
 
     return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.patch("/reports/{report_id}", response_model=AdminReportOut)
+def update_report(
+    report_id: int,
+    payload: AdminReportActionRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    try:
+        if not inspect(db.bind).has_table("transaction_disputes"):
+            raise HTTPException(status_code=503, detail="Reports table is not ready yet")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="Reports table is not ready yet")
+
+    report = db.query(TransactionDispute).filter(TransactionDispute.id == report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    status_raw = (payload.status or "").strip().lower()
+    note_raw = (payload.admin_note or "").strip()
+    if not status_raw and not note_raw:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+
+    if status_raw:
+        allowed = {DisputeStatus.OPEN.value, DisputeStatus.RESOLVED.value, DisputeStatus.REJECTED.value}
+        if status_raw not in allowed:
+            raise HTTPException(status_code=400, detail="Invalid report status")
+        next_status = DisputeStatus(status_raw)
+        report.status = next_status
+        if next_status == DisputeStatus.OPEN:
+            report.resolved_at = None
+            report.resolved_by = None
+        else:
+            report.resolved_at = _utcnow()
+            report.resolved_by = admin.email
+
+    if payload.admin_note is not None:
+        report.admin_note = note_raw or None
+
+    db.commit()
+    db.refresh(report)
+
+    user = db.query(User).filter(User.id == report.user_id).first()
+    return {
+        "id": report.id,
+        "created_at": report.created_at,
+        "user_id": report.user_id,
+        "user_email": user.email if user else "",
+        "transaction_reference": report.transaction_reference,
+        "tx_type": report.tx_type,
+        "category": report.category,
+        "reason": report.reason,
+        "status": report.status.value if hasattr(report.status, "value") else str(report.status),
+        "admin_note": report.admin_note,
+        "resolved_at": report.resolved_at,
+    }
 
 
 @router.post("/fund-wallet")

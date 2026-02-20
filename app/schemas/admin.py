@@ -93,3 +93,8 @@ class AdminReportsResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class AdminReportActionRequest(BaseModel):
+    status: Optional[str] = None
+    admin_note: Optional[str] = None
