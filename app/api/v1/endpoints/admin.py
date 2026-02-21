@@ -1,4 +1,4 @@
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timezone, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, select, union_all, String, cast, inspect
 from app.core.database import get_db
 from app.dependencies import require_admin
-from app.models import User, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, ApiLog, DataPlan, TransactionDispute, DisputeStatus
+from app.models import User, Wallet, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, ApiLog, DataPlan, TransactionDispute, DisputeStatus
 from app.schemas.admin import (
     FundUserWalletRequest,
     PricingRuleUpdate,
@@ -86,6 +86,14 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _ensure_utc(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 @router.get("/analytics")
 
 def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
@@ -122,7 +130,50 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
     service_profit_estimate = 0
     reports_open = 0
     reports_resolved = 0
+    period_starts = {}
+    period_profit_estimates = {
+        "daily": {"revenue": 0.0, "cost_estimate": 0.0, "profit_estimate": 0.0, "tx_count": 0},
+        "weekly": {"revenue": 0.0, "cost_estimate": 0.0, "profit_estimate": 0.0, "tx_count": 0},
+        "monthly": {"revenue": 0.0, "cost_estimate": 0.0, "profit_estimate": 0.0, "tx_count": 0},
+    }
+    now_utc = _utcnow()
+    day_start_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start_utc = day_start_utc - timedelta(days=day_start_utc.weekday())
+    month_start_utc = day_start_utc.replace(day=1)
+    period_starts["daily"] = day_start_utc
+    period_starts["weekly"] = week_start_utc
+    period_starts["monthly"] = month_start_utc
+
+    def _apply_period_totals(created_at, revenue: float, cost: float):
+        created_utc = _ensure_utc(created_at)
+        if not created_utc:
+            return
+        for key, start_at in period_starts.items():
+            if created_utc >= start_at:
+                target = period_profit_estimates[key]
+                target["revenue"] += revenue
+                target["cost_estimate"] += cost
+                target["profit_estimate"] += revenue - cost
+                target["tx_count"] += 1
+
     try:
+        data_period_rows = (
+            db.query(Transaction.created_at, Transaction.amount, DataPlan.base_price)
+            .outerjoin(DataPlan, Transaction.data_plan_code == DataPlan.plan_code)
+            .filter(
+                Transaction.status == TransactionStatus.SUCCESS,
+                Transaction.created_at >= month_start_utc,
+            )
+            .all()
+        )
+        for created_at, amount, base_price in data_period_rows:
+            revenue_num = float(amount or 0)
+            try:
+                cost_num = float(base_price) if base_price is not None else revenue_num
+            except Exception:
+                cost_num = revenue_num
+            _apply_period_totals(created_at, revenue_num, cost_num)
+
         if inspect(db.bind).has_table("service_transactions"):
             rows = (
                 db.query(ServiceTransaction)
@@ -140,6 +191,22 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
                 service_revenue += amt
                 service_cost_estimate += base_num
             service_profit_estimate = service_revenue - service_cost_estimate
+            service_period_rows = (
+                db.query(ServiceTransaction.created_at, ServiceTransaction.amount, ServiceTransaction.meta)
+                .filter(
+                    ServiceTransaction.status == TransactionStatus.SUCCESS.value,
+                    ServiceTransaction.created_at >= month_start_utc,
+                )
+                .all()
+            )
+            for created_at, amount, meta in service_period_rows:
+                revenue_num = float(amount or 0)
+                base = (meta or {}).get("base_amount") if isinstance(meta, dict) else None
+                try:
+                    cost_num = float(base) if base is not None else revenue_num
+                except Exception:
+                    cost_num = revenue_num
+                _apply_period_totals(created_at, revenue_num, cost_num)
         if inspect(db.bind).has_table("transaction_disputes"):
             reports_open = (
                 db.query(func.count(TransactionDispute.id))
@@ -156,6 +223,16 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
     except Exception:
         # Keep analytics endpoint resilient when the service table is not yet available.
         pass
+
+    period_profit_payload = {}
+    for key, values in period_profit_estimates.items():
+        period_profit_payload[key] = {
+            "revenue": round(float(values["revenue"]), 2),
+            "cost_estimate": round(float(values["cost_estimate"]), 2),
+            "profit_estimate": round(float(values["profit_estimate"]), 2),
+            "tx_count": int(values["tx_count"]),
+        }
+
     return {
         "total_revenue": total_revenue,
         "data_revenue": data_revenue,
@@ -171,6 +248,7 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
         "api_failed": api_failed,
         "reports_open": int(reports_open),
         "reports_resolved": int(reports_resolved),
+        "profit_period_estimates": period_profit_payload,
     }
 
 @router.get("/transactions", response_model=AdminTransactionsResponse)
@@ -397,6 +475,98 @@ def list_users(
         )
 
     return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.get("/users/{user_id}/details")
+def get_user_details(
+    user_id: int,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    wallet = db.query(Wallet).filter(Wallet.user_id == user_id).first()
+    recent_items = []
+
+    data_rows = (
+        db.query(Transaction)
+        .filter(Transaction.user_id == user_id)
+        .order_by(Transaction.created_at.desc(), Transaction.id.desc())
+        .limit(20)
+        .all()
+    )
+    for tx in data_rows:
+        recent_items.append(
+            {
+                "id": tx.id,
+                "created_at": tx.created_at,
+                "reference": tx.reference,
+                "tx_type": _normalize_type_value(tx.tx_type),
+                "status": _normalize_status_value(tx.status),
+                "amount": tx.amount,
+                "network": tx.network,
+                "data_plan_code": tx.data_plan_code,
+                "external_reference": tx.external_reference,
+                "failure_reason": tx.failure_reason,
+            }
+        )
+
+    has_services = False
+    try:
+        has_services = inspect(db.bind).has_table("service_transactions")
+    except Exception:
+        has_services = False
+
+    if has_services:
+        service_rows = (
+            db.query(ServiceTransaction)
+            .filter(ServiceTransaction.user_id == user_id)
+            .order_by(ServiceTransaction.created_at.desc(), ServiceTransaction.id.desc())
+            .limit(20)
+            .all()
+        )
+        for tx in service_rows:
+            recent_items.append(
+                {
+                    "id": tx.id,
+                    "created_at": tx.created_at,
+                    "reference": tx.reference,
+                    "tx_type": _normalize_type_value(tx.tx_type),
+                    "status": _normalize_status_value(tx.status),
+                    "amount": tx.amount,
+                    "network": tx.provider,
+                    "data_plan_code": tx.product_code,
+                    "external_reference": tx.external_reference,
+                    "failure_reason": tx.failure_reason,
+                }
+            )
+
+    floor_utc = datetime.min.replace(tzinfo=timezone.utc)
+    recent_items.sort(
+        key=lambda item: _ensure_utc(item.get("created_at")) or floor_utc,
+        reverse=True,
+    )
+    recent_items = recent_items[:20]
+
+    return {
+        "user": {
+            "id": user.id,
+            "created_at": user.created_at,
+            "email": user.email,
+            "full_name": user.full_name,
+            "role": user.role.value if hasattr(user.role, "value") else str(user.role),
+            "is_active": user.is_active,
+            "is_verified": user.is_verified,
+        },
+        "wallet": {
+            "balance": wallet.balance if wallet else 0,
+            "is_locked": wallet.is_locked if wallet else False,
+            "updated_at": wallet.updated_at if wallet else None,
+        },
+        "recent_transactions": recent_items,
+    }
 
 
 @router.get("/reports", response_model=AdminReportsResponse)
