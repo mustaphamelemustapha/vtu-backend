@@ -224,10 +224,12 @@ class AmigoClient:
         payload: dict | None = None,
         *,
         extra_headers: dict | None = None,
+        retry_count_override: int | None = None,
     ) -> dict:
         url = f"{self.base_url}{path}"
         last_exc = None
-        for attempt in range(self.retry_count + 1):
+        retry_count = self.retry_count if retry_count_override is None else max(0, int(retry_count_override))
+        for attempt in range(retry_count + 1):
             start = time.time()
             try:
                 with httpx.Client(timeout=self.timeout) as client:
@@ -237,7 +239,7 @@ class AmigoClient:
                     response = client.request(method, url, json=payload, headers=headers)
                 duration_ms = round((time.time() - start) * 1000, 2)
                 logger.info("Amigo API %s %s status=%s duration=%sms", method, path, response.status_code, duration_ms)
-                if response.status_code >= 500 and attempt < self.retry_count:
+                if response.status_code >= 500 and attempt < retry_count:
                     time.sleep(0.5 * (attempt + 1))
                     continue
                 if response.status_code >= 400:
@@ -252,13 +254,13 @@ class AmigoClient:
                 # Do not retry definitive client/path/auth errors.
                 if exc.status_code is not None and exc.status_code < 500 and exc.status_code != 429:
                     raise last_exc
-                if attempt < self.retry_count:
+                if attempt < retry_count:
                     time.sleep(0.5 * (attempt + 1))
                     continue
                 raise last_exc
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 last_exc = AmigoApiError("Unable to reach data provider.", raw=str(exc))
-                if attempt < self.retry_count:
+                if attempt < retry_count:
                     time.sleep(0.5 * (attempt + 1))
                     continue
                 raise last_exc
@@ -324,7 +326,15 @@ class AmigoClient:
         for path in candidates:
             tried.append(path)
             try:
-                return self._request("POST", path, payload, extra_headers=extra_headers)
+                # Purchase requests are intentionally single-attempt to avoid
+                # accidental duplicate provider debits on retry.
+                return self._request(
+                    "POST",
+                    path,
+                    payload,
+                    extra_headers=extra_headers,
+                    retry_count_override=0,
+                )
             except AmigoApiError as exc:
                 last_exc = exc
                 if exc.status_code == 404:

@@ -182,7 +182,6 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 "mobile_number": payload.phone_number,
                 "plan": normalize_plan_code(plan.plan_code),
                 "Ported_number": payload.ported_number,
-                "ported_number": payload.ported_number,
             },
             idempotency_key=reference,
         )
