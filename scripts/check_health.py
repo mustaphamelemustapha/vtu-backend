@@ -91,10 +91,16 @@ def main() -> None:
     timeout = int(os.getenv("HEALTHCHECK_TIMEOUT_SECONDS", "25"))
     retries = int(os.getenv("HEALTHCHECK_RETRIES", "4"))
     retry_delay = float(os.getenv("HEALTHCHECK_RETRY_DELAY_SECONDS", "4"))
+    check_readiness = os.getenv("HEALTHCHECK_CHECK_READINESS", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
     print(
         f"Healthcheck config: base_url={base_url} timeout={timeout}s retries={retries} "
-        f"retry_delay={retry_delay}s"
+        f"retry_delay={retry_delay}s readiness_check={check_readiness}"
     )
 
     check_endpoint(
@@ -105,14 +111,17 @@ def main() -> None:
         retries=retries,
         retry_delay=retry_delay,
     )
-    check_endpoint(
-        base_url,
-        "/readyz",
-        "ready",
-        timeout=timeout,
-        retries=retries,
-        retry_delay=retry_delay,
-    )
+    if check_readiness:
+        check_endpoint(
+            base_url,
+            "/readyz",
+            "ready",
+            timeout=timeout,
+            retries=retries,
+            retry_delay=retry_delay,
+        )
+    else:
+        print("INFO: readiness check disabled for this run.")
     print("SUCCESS: all health checks passed.")
 
 

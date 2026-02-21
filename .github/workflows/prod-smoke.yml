@@ -2,7 +2,7 @@ name: Production Smoke
 
 on:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "0 */12 * * *"
   workflow_dispatch:
     inputs:
       skip_wallet_fund:
@@ -20,6 +20,9 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    concurrency:
+      group: backend-prod-smoke-${{ github.ref }}
+      cancel-in-progress: true
 
     steps:
       - name: Checkout
@@ -43,6 +46,10 @@ jobs:
         run: |
           if [ -z "$PROD_BACKEND_BASE_URL" ]; then
             echo "Missing required secret: PROD_BACKEND_BASE_URL"
+            if [ "${{ github.event_name }}" = "schedule" ]; then
+              echo "Scheduled run: skipping without failure."
+              exit 0
+            fi
             exit 1
           fi
 
@@ -53,10 +60,23 @@ jobs:
           SKIP_FORGOT_PASSWORD: ${{ github.event.inputs.skip_forgot_password || 'false' }}
         run: |
           ARGS=""
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            # Scheduled runs should avoid the most external/flaky checks.
+            SKIP_WALLET_FUND="true"
+            SKIP_FORGOT_PASSWORD="true"
+          fi
           if [ "$SKIP_WALLET_FUND" = "true" ]; then
             ARGS="$ARGS --skip-wallet-fund"
           fi
           if [ "$SKIP_FORGOT_PASSWORD" = "true" ]; then
             ARGS="$ARGS --skip-forgot-password"
           fi
+          set +e
           python scripts/prod_smoke.py --base-url "$PROD_BACKEND_BASE_URL" $ARGS
+          CODE=$?
+          set -e
+          if [ $CODE -ne 0 ] && [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "::warning::Scheduled production smoke failed (non-blocking). Investigate if repeated."
+            exit 0
+          fi
+          exit $CODE

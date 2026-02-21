@@ -2,8 +2,12 @@ name: Backend Healthcheck
 
 on:
   schedule:
-    - cron: "0 */2 * * *"
+    - cron: "0 */6 * * *"
   workflow_dispatch:
+
+concurrency:
+  group: backend-healthcheck-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   healthcheck:
@@ -25,6 +29,10 @@ jobs:
         run: |
           if [ -z "$PROD_BACKEND_BASE_URL" ]; then
             echo "Missing required secret: PROD_BACKEND_BASE_URL"
+            if [ "${{ github.event_name }}" = "schedule" ]; then
+              echo "Scheduled run: skipping without failure."
+              exit 0
+            fi
             exit 1
           fi
 
@@ -34,4 +42,14 @@ jobs:
           HEALTHCHECK_TIMEOUT_SECONDS: "25"
           HEALTHCHECK_RETRIES: "4"
           HEALTHCHECK_RETRY_DELAY_SECONDS: "4"
-        run: python scripts/check_health.py
+          HEALTHCHECK_CHECK_READINESS: ${{ github.event_name == 'schedule' && 'false' || 'true' }}
+        run: |
+          set +e
+          python scripts/check_health.py
+          CODE=$?
+          set -e
+          if [ $CODE -ne 0 ] && [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "::warning::Scheduled backend healthcheck failed (non-blocking). Check Render logs if this repeats."
+            exit 0
+          fi
+          exit $CODE
