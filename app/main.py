@@ -52,11 +52,14 @@ allow_origins = list(
         + [
             "https://vtu-frontend-beta.vercel.app",
             "https://vtu-frontend-git-main-mmt-ech-globe.vercel.app",
-            *( [frontend_origin] if frontend_origin else [] ),
+            "https://axisvtu.vercel.app",
+            *([frontend_origin] if frontend_origin else []),
         ]
     )
 )
-allow_origin_regex = r"^https:\/\/vtu-frontend(?:-[A-Za-z0-9-]+)?\.vercel\.app$"
+allow_origin_regex = (
+    r"^https:\/\/(?:vtu-frontend|axisvtu)(?:-[A-Za-z0-9-]+)?\.vercel\.app$"
+)
 
 logging.getLogger(__name__).info(
     "CORS allow_origins=%s allow_origin_regex=%s",
