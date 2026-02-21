@@ -9,6 +9,7 @@ from app.api.v1.routes import router as api_router
 from app.core.config import get_settings, parse_cors_origins
 import logging
 import time
+from urllib.parse import urlparse
 from app.core.database import Base, engine, SessionLocal
 from app.core.logging import configure_logging
 from app.middlewares.rate_limit import limiter
@@ -34,19 +35,39 @@ async def sqlalchemy_timeout_handler(request, exc):
     )
 
 configured_origins = parse_cors_origins(settings.cors_origins or "")
+def _origin_from_url(raw: str) -> str | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    parsed = urlparse(text)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return None
+
+
+frontend_origin = _origin_from_url(settings.frontend_base_url)
 allow_origins = list(
     dict.fromkeys(
         configured_origins
         + [
             "https://vtu-frontend-beta.vercel.app",
             "https://vtu-frontend-git-main-mmt-ech-globe.vercel.app",
+            *( [frontend_origin] if frontend_origin else [] ),
         ]
     )
+)
+allow_origin_regex = r"^https:\/\/vtu-frontend(?:-[A-Za-z0-9-]+)?\.vercel\.app$"
+
+logging.getLogger(__name__).info(
+    "CORS allow_origins=%s allow_origin_regex=%s",
+    allow_origins,
+    allow_origin_regex,
 )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allow_origins,
+    allow_origin_regex=allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
