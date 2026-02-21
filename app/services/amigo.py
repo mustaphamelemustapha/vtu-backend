@@ -161,7 +161,9 @@ def parse_efficiency_plans(payload: dict) -> list[dict]:
                 {
                     "network": network,
                     "network_id": NETWORK_ID_MAP.get(network),
-                    "plan_code": canonical_plan_code(network, provider_plan_code),
+                    # Keep plan_code in provider-native format for compatibility;
+                    # canonicalization is handled during DB upsert/purchase resolution.
+                    "plan_code": provider_plan_code,
                     "provider_plan_code": provider_plan_code,
                     "plan_name": plan_name,
                     "data_size": data_size,
