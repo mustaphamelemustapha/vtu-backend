@@ -36,6 +36,7 @@ NETWORK_ID_MAP = {
     "glo": 2,
     "airtel": 4,
     "9mobile": 9,
+    "etisalat": 9,
 }
 NETWORK_ID_MAP.update(
     {
@@ -46,9 +47,30 @@ NETWORK_ID_MAP.update(
 )
 
 
+def split_plan_code(plan_code: str | None) -> tuple[str | None, str]:
+    raw = str(plan_code or "").strip()
+    if ":" in raw:
+        network_hint, provider_code = raw.split(":", 1)
+        network_hint = network_hint.strip().lower()
+        provider_code = provider_code.strip()
+        if network_hint in NETWORK_ID_MAP and provider_code:
+            return network_hint, provider_code
+    return None, raw
+
+
+def canonical_plan_code(network: str, plan_code: str | None) -> str:
+    network_key = str(network or "").strip().lower()
+    _, provider_code = split_plan_code(plan_code)
+    if network_key and provider_code:
+        return f"{network_key}:{provider_code}"
+    return provider_code
+
+
 def resolve_network_id(network: str, plan_code: str | None = None) -> int | None:
     network_key = str(network or "").strip().lower()
-    plan_key = str(plan_code or "").strip()
+    network_hint, plan_key = split_plan_code(plan_code)
+    if network_hint:
+        network_key = network_hint
     if plan_key:
         for item in PLAN_CATALOG:
             if str(item.get("plan_code")) == plan_key:
@@ -59,7 +81,7 @@ def resolve_network_id(network: str, plan_code: str | None = None) -> int | None
 
 
 def normalize_plan_code(plan_code: str) -> int | str:
-    raw = str(plan_code or "").strip()
+    _, raw = split_plan_code(plan_code)
     return int(raw) if raw.isdigit() else raw
 
 
@@ -134,11 +156,13 @@ def parse_efficiency_plans(payload: dict) -> list[dict]:
             data_size = _format_data_size(row.get("data_capacity") or row.get("data_size"))
             validity = _format_validity(row.get("validity"))
             plan_name = row.get("plan_name") or f"{network.upper()} {data_size}".strip()
+            provider_plan_code = str(plan_code)
             items.append(
                 {
                     "network": network,
                     "network_id": NETWORK_ID_MAP.get(network),
-                    "plan_code": str(plan_code),
+                    "plan_code": canonical_plan_code(network, provider_plan_code),
+                    "provider_plan_code": provider_plan_code,
                     "plan_name": plan_name,
                     "data_size": data_size,
                     "validity": validity,

@@ -8,7 +8,14 @@ from app.core.config import get_settings
 from app.dependencies import get_current_user, require_admin
 from app.models import User, DataPlan, Transaction, TransactionStatus, TransactionType, ApiLog
 from app.schemas.data import DataPlanOut, BuyDataRequest
-from app.services.amigo import AmigoClient, AmigoApiError, normalize_plan_code, resolve_network_id
+from app.services.amigo import (
+    AmigoClient,
+    AmigoApiError,
+    canonical_plan_code,
+    normalize_plan_code,
+    resolve_network_id,
+    split_plan_code,
+)
 from app.services.fraud import enforce_purchase_limits
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
 from app.services.pricing import get_price_for_user
@@ -23,6 +30,57 @@ def _safe_reason(value: str, limit: int = 255) -> str:
     return text[:limit] if text else "Unknown provider error"
 
 
+def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
+    network = str(item.get("network") or "").strip().lower()
+    if not network:
+        return False
+
+    incoming_code = str(item.get("plan_code") or "").strip()
+    if not incoming_code:
+        return False
+
+    canonical_code = canonical_plan_code(network, incoming_code)
+    if not canonical_code:
+        return False
+
+    _, provider_code = split_plan_code(canonical_code)
+    plan = (
+        db.query(DataPlan)
+        .filter(DataPlan.plan_code == canonical_code)
+        .first()
+    )
+    if not plan and provider_code:
+        # Migrate legacy records that used plain numeric codes.
+        plan = (
+            db.query(DataPlan)
+            .filter(DataPlan.network == network, DataPlan.plan_code == provider_code)
+            .first()
+        )
+        if plan:
+            plan.plan_code = canonical_code
+
+    if not plan:
+        plan = DataPlan(
+            network=network,
+            plan_code=canonical_code,
+            plan_name=str(item.get("plan_name") or "").strip() or f"{network.upper()} {provider_code}",
+            data_size=str(item.get("data_size") or "").strip() or "—",
+            validity=str(item.get("validity") or "").strip() or "30d",
+            base_price=Decimal(str(item.get("price", 0))),
+            is_active=True,
+        )
+        db.add(plan)
+        return True
+
+    plan.network = network
+    plan.plan_name = str(item.get("plan_name") or plan.plan_name).strip() or plan.plan_name
+    plan.data_size = str(item.get("data_size") or plan.data_size).strip() or plan.data_size
+    plan.validity = str(item.get("validity") or plan.validity).strip() or plan.validity
+    plan.base_price = Decimal(str(item.get("price", plan.base_price)))
+    plan.is_active = True
+    return True
+
+
 @router.get("/plans", response_model=list[DataPlanOut])
 
 def list_data_plans(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -32,24 +90,19 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
         return cached
 
     plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
-    if not plans:
-        # Auto-seed from Amigo catalog if DB is empty
+    should_sync = not plans
+    if should_sync:
+        # Auto-seed/refresh from provider when DB is empty or a newly supported
+        # network (e.g. Airtel) is missing.
         client = AmigoClient()
         response = client.fetch_data_plans()
         items = response.get("data", [])
+        touched = 0
         for item in items:
-            plan = DataPlan(
-                network=item.get("network"),
-                plan_code=str(item.get("plan_code")),
-                plan_name=item.get("plan_name"),
-                data_size=item.get("data_size"),
-                validity=item.get("validity"),
-                base_price=Decimal(str(item.get("price", 0))),
-                is_active=True,
-            )
-            db.add(plan)
-        db.commit()
-        plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+            touched += 1 if _upsert_plan_from_provider(db, item) else 0
+        if touched:
+            db.commit()
+            plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
     priced = []
     for plan in plans:
         price = get_price_for_user(db, plan, user.role)
@@ -71,7 +124,21 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
 @router.post("/purchase")
 @limiter.limit("5/minute")
 def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    plan = db.query(DataPlan).filter(DataPlan.plan_code == payload.plan_code, DataPlan.is_active == True).first()
+    plan_code_input = str(payload.plan_code or "").strip()
+    plan = db.query(DataPlan).filter(DataPlan.plan_code == plan_code_input, DataPlan.is_active == True).first()
+    if not plan and ":" not in plan_code_input and plan_code_input:
+        suffix_matches = (
+            db.query(DataPlan)
+            .filter(DataPlan.plan_code.like(f"%:{plan_code_input}"), DataPlan.is_active == True)
+            .all()
+        )
+        if len(suffix_matches) == 1:
+            plan = suffix_matches[0]
+        elif len(suffix_matches) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Plan code is ambiguous across multiple networks. Refresh plans and retry.",
+            )
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
 
@@ -200,25 +267,6 @@ def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(
     plans = response.get("data", [])
     updated = 0
     for item in plans:
-        plan_code = str(item.get("plan_code"))
-        plan = db.query(DataPlan).filter(DataPlan.plan_code == plan_code).first()
-        if not plan:
-            plan = DataPlan(
-                network=item.get("network"),
-                plan_code=plan_code,
-                plan_name=item.get("plan_name"),
-                data_size=item.get("data_size"),
-                validity=item.get("validity"),
-                base_price=Decimal(str(item.get("price", 0))),
-                is_active=True,
-            )
-            db.add(plan)
-        else:
-            plan.plan_name = item.get("plan_name", plan.plan_name)
-            plan.data_size = item.get("data_size", plan.data_size)
-            plan.validity = item.get("validity", plan.validity)
-            plan.base_price = Decimal(str(item.get("price", plan.base_price)))
-            plan.is_active = True
-        updated += 1
+        updated += 1 if _upsert_plan_from_provider(db, item) else 0
     db.commit()
     return {"updated": updated}
