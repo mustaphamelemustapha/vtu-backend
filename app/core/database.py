@@ -1,4 +1,5 @@
 import importlib.util
+import logging
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from urllib.parse import urlparse
@@ -10,6 +11,7 @@ class Base(DeclarativeBase):
 
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 def _resolve_database_url(database_url: str) -> str:
@@ -43,12 +45,37 @@ database_url = _resolve_database_url(str(settings.database_url))
 
 _pool_kwargs = {}
 if database_url.startswith("postgresql"):
+    configured_pool_size = int(settings.db_pool_size)
+    configured_max_overflow = int(settings.db_max_overflow)
+    configured_pool_timeout = int(settings.db_pool_timeout)
+
+    # Guardrails for production stability: too-small pools cause frequent 503
+    # under normal concurrent requests (auth + dashboard bootstrap + polling).
+    pool_size = max(5, configured_pool_size)
+    max_overflow = max(5, configured_max_overflow)
+    pool_timeout = max(8, configured_pool_timeout)
+
+    if (
+        pool_size != configured_pool_size
+        or max_overflow != configured_max_overflow
+        or pool_timeout != configured_pool_timeout
+    ):
+        logger.warning(
+            "Adjusted DB pool settings for stability: pool_size %s->%s, max_overflow %s->%s, pool_timeout %s->%s",
+            configured_pool_size,
+            pool_size,
+            configured_max_overflow,
+            max_overflow,
+            configured_pool_timeout,
+            pool_timeout,
+        )
+
     _pool_kwargs = {
         "pool_pre_ping": settings.db_pool_pre_ping,
         "pool_recycle": settings.db_pool_recycle,
-        "pool_size": settings.db_pool_size,
-        "max_overflow": settings.db_max_overflow,
-        "pool_timeout": settings.db_pool_timeout,
+        "pool_size": pool_size,
+        "max_overflow": max_overflow,
+        "pool_timeout": pool_timeout,
         # Reuse hot connections first to reduce churn under burst traffic.
         "pool_use_lifo": True,
     }
