@@ -234,7 +234,13 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
     db.commit()
     db.refresh(transaction)
 
-    debit_wallet(db, wallet, Decimal(price), reference, "Data purchase")
+    debit_wallet(
+        db,
+        wallet,
+        Decimal(price),
+        reference,
+        f"Data purchase to {str(payload.phone_number or '').strip()}",
+    )
 
     client = AmigoClient()
     start = time.time()

@@ -1,12 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import inspect
+import re
 from app.core.database import get_db
 from app.dependencies import get_current_user
-from app.models import User, Transaction, ServiceTransaction, TransactionDispute, DisputeStatus
+from app.models import User, Transaction, ServiceTransaction, TransactionDispute, DisputeStatus, WalletLedger, Wallet
 from app.schemas.transaction import TransactionOut, TransactionReportOut, TransactionReportRequest
 
 router = APIRouter()
+_PHONE_PATTERN = re.compile(r"(\+?\d[\d\s-]{8,18}\d)")
 
 
 def _has_dispute_table(db: Session) -> bool:
@@ -49,10 +51,44 @@ def _find_user_tx_type(db: Session, *, user_id: int, reference: str) -> str | No
     return None
 
 
+def _extract_recipient_phone(description: str | None) -> str | None:
+    text = str(description or "").strip()
+    if not text:
+        return None
+    match = _PHONE_PATTERN.search(text)
+    if not match:
+        return None
+    raw = match.group(1).strip()
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) < 10:
+        return None
+    if raw.startswith("+"):
+        return f"+{digits}"
+    return digits
+
+
 @router.get("/me", response_model=list[TransactionOut])
 
 def list_transactions(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     base = db.query(Transaction).filter(Transaction.user_id == user.id).all()
+    recipient_phone_by_ref: dict[str, str] = {}
+    if base:
+        refs = [str(tx.reference) for tx in base if tx.reference]
+        if refs:
+            rows = (
+                db.query(WalletLedger.reference, WalletLedger.description)
+                .join(Wallet, Wallet.id == WalletLedger.wallet_id)
+                .filter(Wallet.user_id == user.id, WalletLedger.reference.in_(refs))
+                .order_by(WalletLedger.id.desc())
+                .all()
+            )
+            for reference, description in rows:
+                ref = str(reference or "").strip()
+                if not ref or ref in recipient_phone_by_ref:
+                    continue
+                recipient_phone = _extract_recipient_phone(description)
+                if recipient_phone:
+                    recipient_phone_by_ref[ref] = recipient_phone
     extra = []
     try:
         if inspect(db.bind).has_table("service_transactions"):
@@ -75,6 +111,11 @@ def list_transactions(user: User = Depends(get_current_user), db: Session = Depe
 
     items: list[dict] = []
     for tx in base:
+        meta = None
+        if _normalize_tx_type(tx.tx_type) == "data":
+            recipient_phone = recipient_phone_by_ref.get(str(tx.reference))
+            if recipient_phone:
+                meta = {"recipient_phone": recipient_phone}
         items.append(
             {
                 "id": tx.id,
@@ -87,7 +128,7 @@ def list_transactions(user: User = Depends(get_current_user), db: Session = Depe
                 "tx_type": tx.tx_type,
                 "external_reference": tx.external_reference,
                 "failure_reason": tx.failure_reason,
-                "meta": None,
+                "meta": meta,
                 "has_open_report": tx.reference in open_report_refs,
             }
         )
