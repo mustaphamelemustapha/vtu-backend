@@ -25,9 +25,81 @@ from app.utils.cache import get_cached, set_cached
 router = APIRouter()
 settings = get_settings()
 
+
+_SUCCESS_STATUS = {"success", "successful", "delivered", "completed", "ok", "done"}
+_PENDING_STATUS = {"pending", "processing", "queued", "in_progress", "accepted", "submitted"}
+_FAILURE_STATUS = {"failed", "fail", "error", "rejected", "declined", "cancelled", "canceled", "refunded"}
+
+_SUCCESS_HINTS = ("successfully", "delivered", "gifted", "completed")
+_FAILURE_HINTS = ("failed", "unsuccessful", "unable", "error", "rejected", "declined", "cancelled", "canceled")
+_PENDING_HINTS = ("pending", "processing", "queued", "in progress", "submitted")
+
+
 def _safe_reason(value: str, limit: int = 255) -> str:
     text = str(value or "").strip()
     return text[:limit] if text else "Unknown provider error"
+
+
+def _normalize_provider_text(value) -> str:
+    return str(value or "").strip().lower()
+
+
+def _provider_bool(value) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        return None
+    raw = _normalize_provider_text(value)
+    if raw in {"true", "1", "yes", "ok", "success", "successful", "delivered"}:
+        return True
+    if raw in {"false", "0", "no", "failed", "fail", "error", "unsuccessful"}:
+        return False
+    return None
+
+
+def _contains_any(text: str, hints: tuple[str, ...]) -> bool:
+    return any(hint in text for hint in hints)
+
+
+def _classify_provider_outcome(response: dict) -> tuple[TransactionStatus, str]:
+    status_text = _normalize_provider_text(
+        response.get("status") or response.get("delivery_status") or response.get("state")
+    )
+    message_text = _normalize_provider_text(response.get("message") or response.get("detail") or "")
+    error_text = _normalize_provider_text(response.get("error") or response.get("errors") or "")
+    success_flag = _provider_bool(response.get("success"))
+
+    success_signal = (
+        success_flag is True
+        or status_text in _SUCCESS_STATUS
+        or _contains_any(message_text, _SUCCESS_HINTS)
+    )
+    failure_signal = (
+        success_flag is False
+        or status_text in _FAILURE_STATUS
+        or bool(error_text)
+        or _contains_any(message_text, _FAILURE_HINTS)
+    )
+    pending_signal = status_text in _PENDING_STATUS or _contains_any(message_text, _PENDING_HINTS)
+
+    if success_signal and not failure_signal:
+        return TransactionStatus.SUCCESS, ""
+    if failure_signal and not success_signal:
+        reason = (
+            response.get("message")
+            or response.get("detail")
+            or response.get("error")
+            or response.get("errors")
+            or "Data provider rejected purchase"
+        )
+        return TransactionStatus.FAILED, _safe_reason(str(reason))
+    if pending_signal or (success_signal and failure_signal):
+        return TransactionStatus.PENDING, ""
+    return TransactionStatus.PENDING, ""
 
 
 def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
@@ -196,23 +268,29 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             success=1,
         ))
 
-        success = response.get("success") is True
-        status = (response.get("status") or "").lower()
-        if success and status in {"delivered", "success"}:
+        outcome_status, outcome_reason = _classify_provider_outcome(response)
+        if outcome_status == TransactionStatus.SUCCESS:
             transaction.status = TransactionStatus.SUCCESS
-            transaction.external_reference = response.get("reference")
-        elif not success:
+            transaction.failure_reason = None
+            transaction.external_reference = (
+                response.get("reference")
+                or response.get("transaction_reference")
+                or response.get("transaction_id")
+            )
+        elif outcome_status == TransactionStatus.FAILED:
             transaction.status = TransactionStatus.FAILED
-            transaction.failure_reason = response.get("message", "Amigo failed")
+            transaction.failure_reason = outcome_reason or _safe_reason(response.get("message"))
             credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed data purchase")
             transaction.status = TransactionStatus.REFUNDED
         else:
             transaction.status = TransactionStatus.PENDING
+            transaction.failure_reason = None
 
         db.commit()
         return {
             "reference": reference,
             "status": transaction.status,
+            "message": str(response.get("message") or "").strip(),
             "test_mode": settings.amigo_test_mode,
         }
     except HTTPException:
