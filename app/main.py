@@ -135,6 +135,7 @@ def root():
 
 
 @app.get("/healthz")
+@app.head("/healthz")
 def healthz():
     # Liveness: process is up.
     return {
