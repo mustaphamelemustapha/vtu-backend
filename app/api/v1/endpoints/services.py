@@ -16,7 +16,7 @@ from app.schemas.services import (
     ExamPurchaseRequest,
     ServicesCatalogOut,
 )
-from app.services.bills import MockBillsProvider
+from app.services.bills import get_bills_provider
 from app.services.fraud import enforce_purchase_limits
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
 from app.services.pricing import get_service_charge_for_user
@@ -106,7 +106,7 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
 
     debit_wallet(db, wallet, charge_amount, reference, "Airtime purchase")
 
-    provider = MockBillsProvider()
+    provider = get_bills_provider()
     result = provider.purchase_airtime(tx.provider or "", tx.customer or "", float(base_amount))
     if result.success:
         tx.status = TransactionStatus.SUCCESS.value
@@ -155,6 +155,7 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
         meta={
             "provider": payload.provider.strip().lower(),
             "smartcard_number": payload.smartcard_number.strip(),
+            "phone_number": payload.phone_number.strip(),
             "package_code": payload.package_code.strip(),
             "base_amount": str(base_amount),
             "margin_applied": str(margin),
@@ -167,8 +168,14 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
 
     debit_wallet(db, wallet, charge_amount, reference, "Cable subscription")
 
-    provider = MockBillsProvider()
-    result = provider.purchase_cable(tx.provider or "", tx.customer or "", tx.product_code or "", float(base_amount))
+    provider = get_bills_provider()
+    result = provider.purchase_cable(
+        tx.provider or "",
+        tx.customer or "",
+        tx.product_code or "",
+        float(base_amount),
+        payload.phone_number.strip(),
+    )
     if result.success:
         tx.status = TransactionStatus.SUCCESS.value
         tx.external_reference = result.external_reference
@@ -217,6 +224,7 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
             "disco": payload.disco.strip().lower(),
             "meter_number": payload.meter_number.strip(),
             "meter_type": payload.meter_type.strip().lower(),
+            "phone_number": payload.phone_number.strip(),
             "base_amount": str(base_amount),
             "margin_applied": str(margin),
             "charge_amount": str(charge_amount),
@@ -228,8 +236,14 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
 
     debit_wallet(db, wallet, charge_amount, reference, "Electricity purchase")
 
-    provider = MockBillsProvider()
-    result = provider.purchase_electricity(tx.provider or "", tx.customer or "", tx.product_code or "", float(base_amount))
+    provider = get_bills_provider()
+    result = provider.purchase_electricity(
+        tx.provider or "",
+        tx.customer or "",
+        tx.product_code or "",
+        float(base_amount),
+        payload.phone_number.strip(),
+    )
     if result.success:
         tx.status = TransactionStatus.SUCCESS.value
         tx.external_reference = result.external_reference
@@ -293,7 +307,7 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
 
     debit_wallet(db, wallet, charge_amount, reference, "Exam pin purchase")
 
-    provider = MockBillsProvider()
+    provider = get_bills_provider()
     result = provider.purchase_exam_pin(tx.provider or "", int(payload.quantity or 1), tx.customer)
     if result.success:
         tx.status = TransactionStatus.SUCCESS.value

@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     amigo_data_purchase_path: str = "/data/"
     amigo_plans_path: str = "/plans/efficiency"
 
+    # VTPass API (airtime, cable, electricity, exam)
+    vtpass_base_url: AnyHttpUrl = "https://vtpass.com/api"
+    vtpass_api_key: Optional[str] = None
+    vtpass_public_key: Optional[str] = None
+    vtpass_secret_key: Optional[str] = None
+    vtpass_timeout_seconds: int = 20
+    vtpass_enabled: bool = False
+
     # Fraud / abuse guardrails for purchases
     fraud_guard_enabled: bool = True
     fraud_single_tx_limit_ngn: Decimal = Decimal("50000")
