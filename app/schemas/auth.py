@@ -29,6 +29,10 @@ class LoginRequest(BaseModel):
     _password_len = validator("password", allow_reuse=True)(_validate_password_length)
 
 
+class LookupRequest(BaseModel):
+    identifier: str
+
+
 class RefreshRequest(BaseModel):
     refresh_token: str
 

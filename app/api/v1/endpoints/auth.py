@@ -8,7 +8,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.middlewares.rate_limit import limiter
 from app.models import User, UserRole
-from app.schemas.auth import RegisterRequest, LoginRequest, TokenPair, RefreshRequest, Message, ForgotPasswordRequest, ForgotPasswordResponse, ResetPasswordRequest, ChangePasswordRequest, UpdateMeRequest, EmailVerification
+from app.schemas.auth import RegisterRequest, LoginRequest, TokenPair, RefreshRequest, Message, ForgotPasswordRequest, ForgotPasswordResponse, ResetPasswordRequest, ChangePasswordRequest, UpdateMeRequest, EmailVerification, LookupRequest
 from app.schemas.user import UserOut
 from app.dependencies import get_current_user
 from app.services.wallet import get_or_create_wallet
@@ -101,6 +101,22 @@ def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)
         access_token=create_access_token(str(user.id), user.role.value),
         refresh_token=create_refresh_token(str(user.id), user.role.value),
     )
+
+
+@router.post("/lookup")
+@limiter.limit("20/minute")
+def lookup_user(request: Request, payload: LookupRequest, db: Session = Depends(get_db)):
+    identifier = (payload.identifier or "").strip()
+    user = None
+    if "@" in identifier:
+        user = db.query(User).filter(User.email == identifier).first()
+    else:
+        phone = _normalize_phone(identifier)
+        if phone:
+            user = db.query(User).filter(User.phone_number == phone).first()
+    if not user:
+        return {"exists": False}
+    return {"exists": True, "full_name": user.full_name, "email": user.email, "phone_number": user.phone_number}
 
 
 @router.post("/refresh", response_model=TokenPair)
