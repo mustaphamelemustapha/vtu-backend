@@ -59,6 +59,7 @@ allow_origins = list(
 )
 allow_origin_regex = (
     r"^https:\/\/(?:vtu-frontend|axisvtu)(?:-[A-Za-z0-9-]+)?\.vercel\.app$"
+    r"|^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$"
 )
 
 logging.getLogger(__name__).info(
