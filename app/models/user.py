@@ -16,6 +16,7 @@ class User(Base, TimestampMixin):
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, nullable=False, index=True)
+    phone_number = Column(String(32), nullable=True, index=True)
     full_name = Column(String(255), nullable=False)
     hashed_password = Column(String(255), nullable=False)
     role = Column(Enum(UserRole), nullable=False, default=UserRole.USER)

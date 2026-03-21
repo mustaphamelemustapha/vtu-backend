@@ -40,12 +40,27 @@ def _mask_email(value: str) -> str:
     return f"{local[:2]}***@{domain}"
 
 
+def _normalize_phone(value: str | None) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if not digits:
+        return None
+    return digits
+
+
 @router.post("/register", response_model=UserOut)
 @limiter.limit("10/minute")
 def register(request: Request, payload: RegisterRequest, db: Session = Depends(get_db)):
     existing = db.query(User).filter(User.email == payload.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
+    normalized_phone = _normalize_phone(payload.phone_number)
+    if normalized_phone:
+        phone_owner = db.query(User).filter(User.phone_number == normalized_phone).first()
+        if phone_owner:
+            raise HTTPException(status_code=400, detail="Phone number already registered")
 
     user = User(
         email=payload.email,
@@ -53,6 +68,7 @@ def register(request: Request, payload: RegisterRequest, db: Session = Depends(g
         hashed_password=hash_password(payload.password),
         role=UserRole.USER,
         is_verified=False,
+        phone_number=normalized_phone,
     )
     user.verification_token = secrets.token_urlsafe(32)
     user.verification_token_expires_at = _utcnow() + timedelta(days=2)
@@ -68,7 +84,14 @@ def register(request: Request, payload: RegisterRequest, db: Session = Depends(g
 @router.post("/login", response_model=TokenPair)
 @limiter.limit("10/minute")
 def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == payload.email).first()
+    identifier = (payload.email or "").strip()
+    user = None
+    if "@" in identifier:
+        user = db.query(User).filter(User.email == identifier).first()
+    else:
+        phone = _normalize_phone(identifier)
+        if phone:
+            user = db.query(User).filter(User.phone_number == phone).first()
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not user.is_active:

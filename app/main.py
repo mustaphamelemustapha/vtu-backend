@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from sqlalchemy import text
+from sqlalchemy import text, inspect
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from app.api.v1.routes import router as api_router
 from app.core.config import get_settings, parse_cors_origins
@@ -118,6 +118,7 @@ def _bootstrap_admins() -> None:
 def ensure_tables():
     if not settings.auto_create_tables:
         _bootstrap_admins()
+        _ensure_user_phone_column()
         return
 
     # Optional local fallback for fresh environments.
@@ -129,10 +130,27 @@ def ensure_tables():
             exc,
         )
     _bootstrap_admins()
+    _ensure_user_phone_column()
 
 @app.get("/")
 def root():
     return {"status": "ok"}
+
+
+def _ensure_user_phone_column() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("users"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("users")}
+        if "phone_number" in cols:
+            return
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE users ADD COLUMN phone_number VARCHAR(32)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_phone_number ON users (phone_number)"))
+        logging.getLogger(__name__).info("Added users.phone_number column for phone login.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure phone_number column: %s", exc)
 
 
 @app.get("/healthz")

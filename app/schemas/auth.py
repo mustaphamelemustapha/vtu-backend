@@ -16,13 +16,14 @@ class TokenPair(BaseModel):
 class RegisterRequest(BaseModel):
     email: EmailStr
     full_name: str
+    phone_number: Optional[str] = None
     password: str
 
     _password_len = validator("password", allow_reuse=True)(_validate_password_length)
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: str
     password: str
 
     _password_len = validator("password", allow_reuse=True)(_validate_password_length)
