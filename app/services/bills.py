@@ -52,6 +52,15 @@ def _cable_service_id(provider: str) -> str:
     return key
 
 
+def _data_service_id(network: str) -> str:
+    key = str(network or "").strip().lower()
+    if key in {"9mobile", "etisalat", "t2"}:
+        return "etisalat-data"
+    if key in {"mtn", "glo", "airtel"}:
+        return f"{key}-data"
+    return f"{key}-data"
+
+
 ELECTRICITY_SERVICE_MAP = {
     "ikeja": "ikeja-electric",
     "eko": "eko-electric",
@@ -94,10 +103,31 @@ class VTPassBillsProvider:
             "Content-Type": "application/json",
         }
 
+    def _get_headers(self) -> dict:
+        headers = {
+            "api-key": self.api_key,
+            "Content-Type": "application/json",
+        }
+        if self.public_key:
+            headers["public-key"] = self.public_key
+        if self.secret_key:
+            headers["secret-key"] = self.secret_key
+        return headers
+
     def _post(self, path: str, payload: dict) -> dict:
         url = f"{self.base_url}{path}"
         with httpx.Client(timeout=self.timeout) as client:
             res = client.post(url, json=payload, headers=self._post_headers())
+        data = res.json() if res.content else {}
+        if res.status_code >= 400:
+            message = data.get("response_description") or data.get("message") or "VTpass error"
+            raise RuntimeError(message)
+        return data
+
+    def _get(self, path: str, params: dict | None = None) -> dict:
+        url = f"{self.base_url}{path}"
+        with httpx.Client(timeout=self.timeout) as client:
+            res = client.get(url, params=params, headers=self._get_headers())
         data = res.json() if res.content else {}
         if res.status_code >= 400:
             message = data.get("response_description") or data.get("message") or "VTpass error"
@@ -168,6 +198,43 @@ class VTPassBillsProvider:
     def purchase_exam_pin(self, exam: str, quantity: int, phone_number: str | None = None) -> ProviderResult:
         # Exam pin vending varies per product; keep mock behavior until UI collects VTPass fields.
         return MockBillsProvider().purchase_exam_pin(exam, quantity, phone_number)
+
+    def fetch_data_variations(self, network: str) -> list[dict]:
+        service_id = _data_service_id(network)
+        data = self._get("/service-variations", params={"serviceID": service_id})
+        content = data.get("content") or {}
+        variations = content.get("variations") or content.get("varations") or content.get("variation") or []
+        if isinstance(variations, dict):
+            return list(variations.values())
+        if isinstance(variations, list):
+            return variations
+        return []
+
+    def purchase_data(
+        self,
+        network: str,
+        phone_number: str,
+        plan_code: str,
+        amount: float | None = None,
+        request_id: str | None = None,
+    ) -> ProviderResult:
+        payload = {
+            "request_id": request_id or _vtpass_request_id(),
+            "serviceID": _data_service_id(network),
+            "variation_code": str(plan_code),
+            "billersCode": str(phone_number),
+            "phone": str(phone_number),
+        }
+        if amount is not None:
+            payload["amount"] = float(amount)
+        data = self._post("/pay", payload)
+        result = self._parse_result(data)
+        if result.meta is not None:
+            result.meta.setdefault("vtpass", {})
+            result.meta["vtpass"]["request_id"] = payload["request_id"]
+            result.meta["vtpass"]["service_id"] = payload["serviceID"]
+            result.meta["vtpass"]["variation_code"] = payload["variation_code"]
+        return result
 
 
 def get_bills_provider():
