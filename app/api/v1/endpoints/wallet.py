@@ -4,16 +4,24 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from app.core.database import get_db
+from app.core.config import get_settings
 from app.dependencies import get_current_user
 from app.models import User, Transaction, TransactionType, TransactionStatus
 from app.schemas.wallet import WalletOut, FundWalletRequest, LedgerOut, BankTransferAccountsResponse, CreateBankTransferAccountsRequest, BankAccountOut
 from app.services.wallet import get_or_create_wallet, credit_wallet
-from app.services.paystack import create_paystack_checkout, verify_paystack_signature, verify_paystack_transaction
+from app.services.paystack import (
+    create_paystack_checkout,
+    verify_paystack_signature,
+    verify_paystack_transaction,
+    get_or_create_dedicated_account,
+    PaystackError,
+)
 from app.services.monnify import init_monnify_transaction, verify_monnify_signature, reserve_monnify_account, get_reserved_account_details
 from app.middlewares.rate_limit import limiter
 from app.models import WalletLedger
 
 router = APIRouter()
+settings = get_settings()
 
 def _transfer_account_reference(user: User) -> str:
     # Stable per-user reference so we can fetch accounts later without DB storage.
@@ -33,6 +41,18 @@ def _parse_reserved_accounts(payload: dict) -> list[dict]:
             }
         )
     return [a for a in out if a.get("account_number")]
+
+
+def _parse_paystack_dedicated_account(payload: dict) -> list[dict]:
+    account = payload or {}
+    bank = account.get("bank") or {}
+    return [
+        {
+            "bank_name": bank.get("name") or bank.get("bank_name") or "Bank",
+            "account_number": account.get("account_number") or "",
+            "account_name": account.get("account_name"),
+        }
+    ]
 
 
 def _safe_ref(prefix: str, value: str) -> str:
@@ -56,6 +76,37 @@ def get_ledger(user: User = Depends(get_current_user), db: Session = Depends(get
 
 @router.get("/bank-transfer-accounts", response_model=BankTransferAccountsResponse)
 def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if settings.bank_transfer_provider.lower() == "paystack" and settings.paystack_dedicated_enabled:
+        if not user.phone_number:
+            return {
+                "provider": "paystack",
+                "account_reference": _transfer_account_reference(user),
+                "accounts": [],
+                "requires_kyc": True,
+            }
+        try:
+            first = (user.full_name or "").strip().split(" ")[0] or "Axis"
+            last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
+            dedicated = get_or_create_dedicated_account(
+                email=user.email,
+                first_name=first,
+                last_name=last,
+                phone=user.phone_number,
+            )
+            accounts = _parse_paystack_dedicated_account(dedicated)
+            return {
+                "provider": "paystack",
+                "account_reference": _transfer_account_reference(user),
+                "accounts": accounts,
+                "requires_kyc": False if accounts else True,
+            }
+        except PaystackError:
+            return {
+                "provider": "paystack",
+                "account_reference": _transfer_account_reference(user),
+                "accounts": [],
+                "requires_kyc": True,
+            }
     account_reference = _transfer_account_reference(user)
     details = get_reserved_account_details(account_reference=account_reference)
     if details.get("__not_found__"):
@@ -77,6 +128,24 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
 @router.post("/bank-transfer-accounts", response_model=BankTransferAccountsResponse)
 @limiter.limit("5/minute")
 def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferAccountsRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if settings.bank_transfer_provider.lower() == "paystack" and settings.paystack_dedicated_enabled:
+        if not user.phone_number:
+            raise HTTPException(status_code=400, detail="Phone number is required to generate Paystack bank transfer account")
+        first = (user.full_name or "").strip().split(" ")[0] or "Axis"
+        last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
+        dedicated = get_or_create_dedicated_account(
+            email=user.email,
+            first_name=first,
+            last_name=last,
+            phone=user.phone_number,
+        )
+        accounts = _parse_paystack_dedicated_account(dedicated)
+        return {
+            "provider": "paystack",
+            "account_reference": _transfer_account_reference(user),
+            "accounts": accounts,
+            "requires_kyc": False if accounts else True,
+        }
     account_reference = _transfer_account_reference(user)
     bvn = (payload.bvn or "").strip()
     nin = (payload.nin or "").strip()
@@ -252,6 +321,31 @@ async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
             transaction.status = TransactionStatus.SUCCESS
             transaction.external_reference = data.get("id")
             db.commit()
+    elif event == "charge.success" and not transaction:
+        # Dedicated virtual account funding (no internal reference).
+        customer = data.get("customer") or {}
+        email = (customer.get("email") or "").strip().lower()
+        ext_ref = str(data.get("id") or "").strip()
+        amount_kobo = data.get("amount")
+        if email and amount_kobo:
+            user = db.query(User).filter(User.email == email).first()
+            if user:
+                if ext_ref and db.query(Transaction).filter(Transaction.external_reference == ext_ref).first():
+                    return {"status": "ok"}
+                amt = Decimal(str(amount_kobo)) / Decimal("100")
+                tx_ref = _safe_ref("TRF", ext_ref or secrets.token_hex(8))
+                tx = Transaction(
+                    user_id=user.id,
+                    reference=tx_ref,
+                    amount=amt,
+                    status=TransactionStatus.SUCCESS,
+                    tx_type=TransactionType.WALLET_FUND,
+                    external_reference=ext_ref or None,
+                )
+                db.add(tx)
+                wallet = get_or_create_wallet(db, user.id)
+                credit_wallet(db, wallet, amt, tx_ref, "Wallet funding via Paystack transfer")
+                db.commit()
 
     if event == "charge.failed" and transaction:
         if transaction.status == TransactionStatus.PENDING:

@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     # Paystack
     paystack_secret_key: str
     paystack_webhook_secret: str
+    paystack_dedicated_enabled: bool = False
+    paystack_dedicated_preferred_bank: str = "titan-paystack"
+
+    # Bank transfer provider (monnify|paystack)
+    bank_transfer_provider: str = "monnify"
 
     # Monnify
     monnify_api_key: str
