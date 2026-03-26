@@ -215,13 +215,23 @@ def me(user: User = Depends(get_current_user)):
 
 @router.patch("/me", response_model=UserOut)
 def update_me(payload: UpdateMeRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    full_name = (payload.full_name or "").strip()
-    if len(full_name) < 2:
-        raise HTTPException(status_code=400, detail="Full name is too short")
-    if len(full_name) > 255:
-        raise HTTPException(status_code=400, detail="Full name is too long")
+    if payload.full_name is None and payload.phone_number is None:
+        raise HTTPException(status_code=400, detail="Nothing to update")
 
-    user.full_name = full_name
+    if payload.full_name is not None:
+        full_name = (payload.full_name or "").strip()
+        if len(full_name) < 2:
+            raise HTTPException(status_code=400, detail="Full name is too short")
+        if len(full_name) > 255:
+            raise HTTPException(status_code=400, detail="Full name is too long")
+        user.full_name = full_name
+
+    if payload.phone_number is not None:
+        phone = (payload.phone_number or "").strip()
+        if len(phone) < 7:
+            raise HTTPException(status_code=400, detail="Phone number is too short")
+        user.phone_number = phone
+
     db.commit()
     db.refresh(user)
     return user

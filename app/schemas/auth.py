@@ -61,7 +61,8 @@ class ChangePasswordRequest(BaseModel):
 
 
 class UpdateMeRequest(BaseModel):
-    full_name: str
+    full_name: Optional[str] = None
+    phone_number: Optional[str] = None
 
 
 class Message(BaseModel):
