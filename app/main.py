@@ -53,6 +53,8 @@ allow_origins = list(
             "https://vtu-frontend-beta.vercel.app",
             "https://vtu-frontend-git-main-mmt-ech-globe.vercel.app",
             "https://axisvtu.vercel.app",
+            "https://axisvtu.com",
+            "https://www.axisvtu.com",
             *([frontend_origin] if frontend_origin else []),
         ]
     )
