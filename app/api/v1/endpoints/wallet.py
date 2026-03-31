@@ -80,6 +80,7 @@ def get_ledger(user: User = Depends(get_current_user), db: Session = Depends(get
 @router.get("/bank-transfer-accounts", response_model=BankTransferAccountsResponse)
 def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if settings.bank_transfer_provider.lower() == "paystack" and settings.paystack_dedicated_enabled:
+        phone = (user.phone_number or "").strip() or None
         try:
             first = (user.full_name or "").strip().split(" ")[0] or "Axis"
             last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
@@ -87,7 +88,7 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
                 email=user.email,
                 first_name=first,
                 last_name=last,
-                phone=user.phone_number,
+                phone=phone,
             )
             accounts = _parse_paystack_dedicated_account(dedicated)
             return {
@@ -95,13 +96,24 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
                 "account_reference": _transfer_account_reference(user),
                 "accounts": accounts,
                 "requires_kyc": False if accounts else True,
+                "requires_phone": False,
+                "message": None if accounts else "Account generation is pending. Please try again shortly.",
             }
-        except PaystackError:
+        except PaystackError as exc:
+            detail = str(exc)
+            lower_detail = detail.lower()
+            requires_phone = (not phone) and ("phone" in lower_detail or "mobile" in lower_detail)
             return {
                 "provider": "paystack",
                 "account_reference": _transfer_account_reference(user),
                 "accounts": [],
                 "requires_kyc": True,
+                "requires_phone": requires_phone,
+                "message": (
+                    "Paystack needs your phone number to generate your dedicated account."
+                    if requires_phone
+                    else f"Unable to fetch dedicated account right now: {detail}"
+                ),
             }
     account_reference = _transfer_account_reference(user)
     details = get_reserved_account_details(account_reference=account_reference)
@@ -125,6 +137,7 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
 @limiter.limit("5/minute")
 def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferAccountsRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if settings.bank_transfer_provider.lower() == "paystack" and settings.paystack_dedicated_enabled:
+        phone = (user.phone_number or "").strip() or None
         first = (user.full_name or "").strip().split(" ")[0] or "Axis"
         last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
         try:
@@ -132,16 +145,22 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
                 email=user.email,
                 first_name=first,
                 last_name=last,
-                phone=user.phone_number,
+                phone=phone,
             )
         except PaystackError as exc:
-            raise HTTPException(status_code=502, detail=f"Paystack dedicated account failed: {exc}")
+            detail = str(exc)
+            lower_detail = detail.lower()
+            if (not phone) and ("phone" in lower_detail or "mobile" in lower_detail):
+                raise HTTPException(status_code=400, detail="Phone number is required to generate Paystack bank transfer account")
+            raise HTTPException(status_code=502, detail=f"Paystack dedicated account failed: {detail}")
         accounts = _parse_paystack_dedicated_account(dedicated)
         return {
             "provider": "paystack",
             "account_reference": _transfer_account_reference(user),
             "accounts": accounts,
             "requires_kyc": False if accounts else True,
+            "requires_phone": False,
+            "message": None if accounts else "Account generation is pending. Please try again shortly.",
         }
     account_reference = _transfer_account_reference(user)
     bvn = (payload.bvn or "").strip()
@@ -164,6 +183,8 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
         "account_reference": account_reference,
         "accounts": accounts,
         "requires_kyc": False if accounts else True,
+        "requires_phone": False,
+        "message": None if accounts else "Complete BVN or NIN to generate your dedicated account.",
     }
 
 

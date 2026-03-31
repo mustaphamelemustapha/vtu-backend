@@ -42,3 +42,5 @@ class BankTransferAccountsResponse(BaseModel):
     account_reference: str
     accounts: list[BankAccountOut]
     requires_kyc: bool = False
+    requires_phone: bool = False
+    message: str | None = None
