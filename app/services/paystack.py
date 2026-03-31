@@ -40,9 +40,19 @@ def create_paystack_checkout(email: str, amount_kobo: int, reference: str, callb
 
 
 def verify_paystack_signature(body: bytes, signature: str) -> bool:
-    secret = settings.paystack_webhook_secret or settings.paystack_secret_key
-    computed = hmac.new(secret.encode(), body, hashlib.sha512).hexdigest()
-    return hmac.compare_digest(computed, signature)
+    # Paystack signs webhooks with the secret key. Some deployments also set a
+    # dedicated webhook secret env var; accept either configured value.
+    candidates = []
+    if settings.paystack_webhook_secret:
+        candidates.append(settings.paystack_webhook_secret)
+    if settings.paystack_secret_key and settings.paystack_secret_key not in candidates:
+        candidates.append(settings.paystack_secret_key)
+
+    for secret in candidates:
+        computed = hmac.new(secret.encode(), body, hashlib.sha512).hexdigest()
+        if hmac.compare_digest(computed, signature):
+            return True
+    return False
 
 
 def verify_paystack_transaction(reference: str) -> dict:

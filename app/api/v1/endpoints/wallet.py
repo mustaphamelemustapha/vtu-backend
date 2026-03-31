@@ -1,5 +1,6 @@
 import secrets
 import re
+import logging
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
@@ -14,6 +15,7 @@ from app.services.paystack import (
     verify_paystack_signature,
     verify_paystack_transaction,
     get_or_create_dedicated_account,
+    get_paystack_customer,
     PaystackError,
 )
 from app.services.monnify import init_monnify_transaction, verify_monnify_signature, reserve_monnify_account, get_reserved_account_details
@@ -22,6 +24,7 @@ from app.models import WalletLedger
 
 router = APIRouter()
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 def _transfer_account_reference(user: User) -> str:
     # Stable per-user reference so we can fetch accounts later without DB storage.
@@ -324,7 +327,26 @@ async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
     elif event == "charge.success" and not transaction:
         # Dedicated virtual account funding (no internal reference).
         customer = data.get("customer") or {}
-        email = (customer.get("email") or "").strip().lower()
+        email = (
+            customer.get("email")
+            or (data.get("metadata") or {}).get("customer_email")
+            or (data.get("metadata") or {}).get("email")
+            or ""
+        )
+        email = str(email).strip().lower()
+        if not email:
+            customer_code = (
+                customer.get("customer_code")
+                or customer.get("code")
+                or customer.get("id")
+                or ""
+            )
+            if customer_code:
+                try:
+                    customer_data = (get_paystack_customer(str(customer_code)).get("data") or {})
+                    email = str(customer_data.get("email") or "").strip().lower()
+                except Exception as exc:
+                    logger.warning("Paystack customer lookup failed for %s: %s", customer_code, exc)
         ext_ref = str(data.get("id") or "").strip()
         amount_kobo = data.get("amount")
         if email and amount_kobo:
@@ -346,6 +368,14 @@ async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
                 wallet = get_or_create_wallet(db, user.id)
                 credit_wallet(db, wallet, amt, tx_ref, "Wallet funding via Paystack transfer")
                 db.commit()
+            else:
+                logger.warning("Paystack transfer webhook email not matched to a user: %s", email)
+        else:
+            logger.warning(
+                "Paystack charge.success missing routing fields for transfer credit: email=%s amount=%s",
+                bool(email),
+                amount_kobo,
+            )
 
     if event == "charge.failed" and transaction:
         if transaction.status == TransactionStatus.PENDING:
