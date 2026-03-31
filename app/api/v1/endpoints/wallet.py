@@ -80,13 +80,6 @@ def get_ledger(user: User = Depends(get_current_user), db: Session = Depends(get
 @router.get("/bank-transfer-accounts", response_model=BankTransferAccountsResponse)
 def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if settings.bank_transfer_provider.lower() == "paystack" and settings.paystack_dedicated_enabled:
-        if not user.phone_number:
-            return {
-                "provider": "paystack",
-                "account_reference": _transfer_account_reference(user),
-                "accounts": [],
-                "requires_kyc": True,
-            }
         try:
             first = (user.full_name or "").strip().split(" ")[0] or "Axis"
             last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
@@ -132,16 +125,17 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
 @limiter.limit("5/minute")
 def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferAccountsRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if settings.bank_transfer_provider.lower() == "paystack" and settings.paystack_dedicated_enabled:
-        if not user.phone_number:
-            raise HTTPException(status_code=400, detail="Phone number is required to generate Paystack bank transfer account")
         first = (user.full_name or "").strip().split(" ")[0] or "Axis"
         last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
-        dedicated = get_or_create_dedicated_account(
-            email=user.email,
-            first_name=first,
-            last_name=last,
-            phone=user.phone_number,
-        )
+        try:
+            dedicated = get_or_create_dedicated_account(
+                email=user.email,
+                first_name=first,
+                last_name=last,
+                phone=user.phone_number,
+            )
+        except PaystackError as exc:
+            raise HTTPException(status_code=502, detail=f"Paystack dedicated account failed: {exc}")
         accounts = _parse_paystack_dedicated_account(dedicated)
         return {
             "provider": "paystack",
