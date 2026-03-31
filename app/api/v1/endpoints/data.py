@@ -300,7 +300,8 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                 price=price,
             )
         )
-    set_cached(cache_key, priced, ttl_seconds=60)
+    # Keep plans warm longer to reduce repeated DB/provider work on frequent page refreshes.
+    set_cached(cache_key, priced, ttl_seconds=600)
     return priced
 
 
