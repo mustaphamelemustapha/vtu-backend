@@ -18,7 +18,7 @@ from app.services.amigo import (
     resolve_network_id,
     split_plan_code,
 )
-from app.services.bills import VTPassBillsProvider
+from app.services.bills import get_bills_provider
 from app.services.fraud import enforce_purchase_limits
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
 from app.services.pricing import get_price_for_user
@@ -38,6 +38,7 @@ _SUCCESS_HINTS = ("successfully", "delivered", "gifted", "completed")
 _FAILURE_HINTS = ("failed", "unsuccessful", "unable", "error", "rejected", "declined", "cancelled", "canceled")
 _PENDING_HINTS = ("pending", "processing", "queued", "in progress", "submitted")
 _VTPASS_DATA_NETWORKS = {"airtel", "9mobile", "etisalat", "t2"}
+_AMIGO_DATA_NETWORKS = {"mtn", "glo"}
 
 _SIZE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(GB|MB)", re.IGNORECASE)
 _VALIDITY_RE = re.compile(r"(\d+)\s*(day|days|month|months|week|weeks)", re.IGNORECASE)
@@ -51,6 +52,11 @@ def _safe_reason(value: str, limit: int = 255) -> str:
 def _is_vtpass_network(network: str | None) -> bool:
     key = str(network or "").strip().lower()
     return key in _VTPASS_DATA_NETWORKS
+
+
+def _is_amigo_data_network(network: str | None) -> bool:
+    key = str(network or "").strip().lower()
+    return key in _AMIGO_DATA_NETWORKS
 
 
 def _extract_capacity(value: str | None) -> str:
@@ -79,12 +85,14 @@ def _extract_validity(value: str | None) -> str:
     return f"{amount}d"
 
 
-def _vtpass_variation_to_item(network: str, variation: dict) -> dict | None:
+def _provider_variation_to_item(network: str, variation: dict) -> dict | None:
     raw_code = (
         variation.get("variation_code")
         or variation.get("code")
         or variation.get("variation_id")
         or variation.get("id")
+        or variation.get("dataplanid")
+        or variation.get("DataPlan")
     )
     code = str(raw_code or "").strip()
     if not code:
@@ -101,6 +109,8 @@ def _vtpass_variation_to_item(network: str, variation: dict) -> dict | None:
         or variation.get("variation_price")
         or variation.get("amount")
         or variation.get("price")
+        or variation.get("Amount")
+        or variation.get("plan_amount")
     )
     if price_raw in (None, ""):
         return None
@@ -110,6 +120,7 @@ def _vtpass_variation_to_item(network: str, variation: dict) -> dict | None:
         return None
     size = (
         str(variation.get("data") or variation.get("data_size") or variation.get("bundle") or "").strip()
+        or str(variation.get("DataLimit") or variation.get("datacapacity") or "").strip()
         or _extract_capacity(name)
     )
     validity = (
@@ -150,6 +161,15 @@ def _provider_bool(value) -> bool | None:
     if raw in {"false", "0", "no", "failed", "fail", "error", "unsuccessful"}:
         return False
     return None
+
+
+def _bills_pending_status(meta: dict | None) -> str:
+    payload = meta or {}
+    for provider_key in ("vtpass", "clubkonnect"):
+        status = str((payload.get(provider_key) or {}).get("status") or "").strip().lower()
+        if status:
+            return status
+    return ""
 
 
 def _contains_any(text: str, hints: tuple[str, ...]) -> bool:
@@ -266,21 +286,21 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
             db.commit()
             plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
 
-    # Pull Airtel/9mobile plans from VTPass when enabled and missing.
-    if settings.vtpass_enabled and settings.vtpass_api_key and settings.vtpass_secret_key:
+    # Pull Airtel/9mobile plans from configured non-Amigo provider when missing.
+    provider = get_bills_provider()
+    if hasattr(provider, "fetch_data_variations"):
         existing_networks = {str(plan.network or "").strip().lower() for plan in plans}
         missing = [net for net in ("airtel", "9mobile") if net not in existing_networks]
         if missing:
-            provider = VTPassBillsProvider()
             touched = 0
             for network in missing:
                 try:
                     variations = provider.fetch_data_variations(network)
                 except Exception as exc:
-                    logger.warning("VTPass variations fetch failed for %s: %s", network, exc)
+                    logger.warning("Provider variations fetch failed for %s: %s", network, exc)
                     continue
                 for variation in variations:
-                    item = _vtpass_variation_to_item(network, variation)
+                    item = _provider_variation_to_item(network, variation)
                     if item:
                         touched += 1 if _upsert_plan_from_provider(db, item) else 0
             if touched:
@@ -355,28 +375,37 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
     )
 
     network_key = str(plan.network or "").strip().lower()
-    use_vtpass = (
-        _is_vtpass_network(network_key)
-        and settings.vtpass_enabled
-        and settings.vtpass_api_key
-        and settings.vtpass_secret_key
-    )
+    use_bills_provider = not _is_amigo_data_network(network_key)
 
-    if use_vtpass:
-        provider = VTPassBillsProvider()
+    if use_bills_provider:
+        provider = get_bills_provider()
+        if not hasattr(provider, "purchase_data"):
+            transaction.status = TransactionStatus.FAILED
+            transaction.failure_reason = "No non-Amigo data provider configured for this network."
+            credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for unsupported network provider")
+            transaction.status = TransactionStatus.REFUNDED
+            db.commit()
+            raise HTTPException(status_code=502, detail="No data provider configured for this network. Wallet refunded.")
+
         start = time.time()
         try:
             _, provider_code = split_plan_code(plan.plan_code)
             result = provider.purchase_data(
                 network=network_key,
                 phone_number=str(payload.phone_number),
-                plan_code=provider_code,
+                plan_code=provider_code or str(plan.plan_code),
                 amount=float(price),
+                request_id=reference,
             )
             duration_ms = round((time.time() - start) * 1000, 2)
+            provider_service = "bills"
+            if (result.meta or {}).get("clubkonnect"):
+                provider_service = "clubkonnect"
+            elif (result.meta or {}).get("vtpass"):
+                provider_service = "vtpass"
             db.add(ApiLog(
                 user_id=user.id,
-                service="vtpass",
+                service=provider_service,
                 endpoint="/data/purchase",
                 status_code=200 if result.success else 400,
                 duration_ms=duration_ms,
@@ -384,8 +413,8 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 success=1 if result.success else 0,
             ))
 
-            vtpass_status = str((result.meta or {}).get("vtpass", {}).get("status") or "").lower()
-            if vtpass_status in _PENDING_STATUS:
+            provider_status = _bills_pending_status(result.meta)
+            if provider_status in _PENDING_STATUS:
                 transaction.status = TransactionStatus.PENDING
                 transaction.failure_reason = None
             elif result.success:
@@ -393,7 +422,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 transaction.failure_reason = None
             else:
                 transaction.status = TransactionStatus.FAILED
-                transaction.failure_reason = _safe_reason(result.message or "VTpass failed")
+                transaction.failure_reason = _safe_reason(result.message or "Provider failed")
                 credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed data purchase")
                 transaction.status = TransactionStatus.REFUNDED
 
@@ -409,7 +438,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             duration_ms = round((time.time() - start) * 1000, 2)
             db.add(ApiLog(
                 user_id=user.id,
-                service="vtpass",
+                service="bills",
                 endpoint="/data/purchase",
                 status_code=502,
                 duration_ms=duration_ms,
@@ -418,10 +447,10 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             ))
             transaction.status = TransactionStatus.FAILED
             transaction.failure_reason = _safe_reason(str(exc))
-            credit_wallet(db, wallet, Decimal(price), reference, "Auto refund due to VTPass error")
+            credit_wallet(db, wallet, Decimal(price), reference, "Auto refund due to provider error")
             transaction.status = TransactionStatus.REFUNDED
             db.commit()
-            raise HTTPException(status_code=502, detail="VTPass data provider temporarily unavailable. Wallet refunded.")
+            raise HTTPException(status_code=502, detail="Data provider temporarily unavailable. Wallet refunded.")
 
     client = AmigoClient()
     start = time.time()
@@ -532,16 +561,16 @@ def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(
     updated = 0
     for item in plans:
         updated += 1 if _upsert_plan_from_provider(db, item) else 0
-    if settings.vtpass_enabled and settings.vtpass_api_key and settings.vtpass_secret_key:
-        provider = VTPassBillsProvider()
+    provider = get_bills_provider()
+    if hasattr(provider, "fetch_data_variations"):
         for network in ("airtel", "9mobile"):
             try:
                 variations = provider.fetch_data_variations(network)
             except Exception as exc:
-                logger.warning("VTPass variations fetch failed for %s: %s", network, exc)
+                logger.warning("Provider variations fetch failed for %s: %s", network, exc)
                 continue
             for variation in variations:
-                item = _vtpass_variation_to_item(network, variation)
+                item = _provider_variation_to_item(network, variation)
                 if item:
                     updated += 1 if _upsert_plan_from_provider(db, item) else 0
     db.commit()
