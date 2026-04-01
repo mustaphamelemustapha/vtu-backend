@@ -108,10 +108,24 @@ def test_clubkonnect_purchase_airtime_maps_payload(monkeypatch):
 
 def test_clubkonnect_pending_maps_to_pending_message():
     provider = ClubKonnectBillsProvider()
-    result = provider._parse_result({"status": "100", "OrderID": "CK-2"}, action="airtime")
+    result = provider._parse_result({"statuscode": "100", "status": "ORDER_RECEIVED", "OrderID": "CK-2"}, action="airtime")
     assert result.success is False
     assert "pending" in (result.message or "").lower()
     assert (result.meta or {}).get("clubkonnect", {}).get("status") == "pending"
+
+
+def test_clubkonnect_statuscode_200_is_success():
+    provider = ClubKonnectBillsProvider()
+    result = provider._parse_result({"statuscode": "200", "status": "ORDER_COMPLETED", "orderid": "CK-3"}, action="airtime")
+    assert result.success is True
+    assert result.external_reference == "CK-3"
+
+
+def test_clubkonnect_invalid_credentials_fails():
+    provider = ClubKonnectBillsProvider()
+    result = provider._parse_result({"status": "INVALID_CREDENTIALS"}, action="airtime")
+    assert result.success is False
+    assert (result.meta or {}).get("clubkonnect", {}).get("status") == "failed"
 
 
 def test_get_bills_provider_prefers_clubkonnect_in_auto(monkeypatch):

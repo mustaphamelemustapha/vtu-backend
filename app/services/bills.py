@@ -601,15 +601,23 @@ class ClubKonnectBillsProvider:
 
     @staticmethod
     def _status_code_and_text(data: dict) -> tuple[int | None, str]:
-        raw = data.get("status")
-        raw_text = str(raw or "").strip()
-        if raw_text.isdigit():
-            return int(raw_text), raw_text
-        return None, raw_text.upper()
+        raw_code = data.get("statuscode") or data.get("status_code") or data.get("StatusCode")
+        code_text = str(raw_code or "").strip()
+        code = int(code_text) if code_text.isdigit() else None
+
+        raw_status = data.get("orderstatus") or data.get("status") or data.get("Status")
+        status_text = str(raw_status or "").strip().upper()
+
+        # Some responses return only numeric status in `status`.
+        if not status_text and code is not None:
+            status_text = str(code)
+        if code is None and status_text.isdigit():
+            code = int(status_text)
+        return code, status_text
 
     @staticmethod
     def _extract_reference(data: dict) -> str | None:
-        for key in ("OrderID", "orderid", "order_id", "RequestID", "requestid", "reference"):
+        for key in ("OrderID", "orderid", "order_id", "RequestID", "requestid", "request_id", "reference"):
             val = str(data.get(key) or "").strip()
             if val:
                 return val
@@ -632,7 +640,13 @@ class ClubKonnectBillsProvider:
     def _parse_result(self, data: dict, action: str) -> ProviderResult:
         code, status_text = self._status_code_and_text(data)
         external_reference = self._extract_reference(data)
-        message = str(data.get("message") or data.get("status") or "").strip()
+        message = str(
+            data.get("remark")
+            or data.get("message")
+            or data.get("orderstatus")
+            or data.get("status")
+            or ""
+        ).strip()
 
         pending = (
             (code in _CLUBKONNECT_PENDING_CODES if code is not None else False)
@@ -666,6 +680,38 @@ class ClubKonnectBillsProvider:
             return ProviderResult(True, external_reference=external_reference, message=message or "Successful", meta=meta)
         return ProviderResult(False, external_reference=external_reference, message=message or "Provider failed", meta=meta)
 
+    def _query_transaction(self, *, order_id: str | None = None, request_id: str | None = None) -> dict | None:
+        params: dict[str, str] = {}
+        if order_id:
+            params["OrderID"] = str(order_id)
+        elif request_id:
+            params["RequestID"] = str(request_id)
+        else:
+            return None
+        try:
+            return self._request("APIQueryV1.asp", params)
+        except Exception as exc:
+            logger.warning("ClubKonnect query failed order_id=%s request_id=%s error=%s", order_id, request_id, exc)
+            return None
+
+    def _settle_pending(self, result: ProviderResult, action: str, *, request_id: str | None = None) -> ProviderResult:
+        status = str((result.meta or {}).get("clubkonnect", {}).get("status") or "").strip().lower()
+        if status != "pending":
+            return result
+        order_id = str(result.external_reference or "").strip() or None
+        for delay in (0.6, 1.2):
+            time.sleep(delay)
+            queried = self._query_transaction(order_id=order_id, request_id=request_id)
+            if not queried:
+                continue
+            follow_up = self._parse_result(queried, action=action)
+            follow_status = str((follow_up.meta or {}).get("clubkonnect", {}).get("status") or "").strip().lower()
+            if follow_status != "pending":
+                return follow_up
+            if not order_id:
+                order_id = str(follow_up.external_reference or "").strip() or None
+        return result
+
     @staticmethod
     def _network_code(network: str) -> str:
         key = str(network or "").strip().lower()
@@ -691,32 +737,35 @@ class ClubKonnectBillsProvider:
         return meter_type
 
     def purchase_airtime(self, network: str, phone_number: str, amount: float) -> ProviderResult:
+        request_id = _clubkonnect_request_id("AIRTIME")
         data = self._request(
             "APIAirtimeV1.asp",
             {
                 "MobileNetwork": self._network_code(network),
                 "Amount": int(float(amount)),
                 "MobileNumber": str(phone_number),
-                "RequestID": _clubkonnect_request_id("AIRTIME"),
+                "RequestID": request_id,
                 "CallBackURL": self._callback_url(),
             },
         )
-        return self._parse_result(data, action="airtime")
+        return self._settle_pending(self._parse_result(data, action="airtime"), "airtime", request_id=request_id)
 
     def purchase_cable(self, provider: str, smartcard_number: str, package_code: str, amount: float, phone_number: str | None = None) -> ProviderResult:
+        request_id = _clubkonnect_request_id("CABLE")
         data = self._request(
             "APICableTVV1.asp",
             {
                 "CableTV": self._cable_code(provider),
                 "MeterType": str(package_code),
                 "SmartCardNo": str(smartcard_number),
-                "RequestID": _clubkonnect_request_id("CABLE"),
+                "RequestID": request_id,
                 "CallBackURL": self._callback_url(),
             },
         )
-        return self._parse_result(data, action="cable")
+        return self._settle_pending(self._parse_result(data, action="cable"), "cable", request_id=request_id)
 
     def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str | None = None) -> ProviderResult:
+        request_id = _clubkonnect_request_id("ELEC")
         data = self._request(
             "APIElectricityV1.asp",
             {
@@ -724,11 +773,11 @@ class ClubKonnectBillsProvider:
                 "MeterNo": str(meter_number),
                 "Amount": int(float(amount)),
                 "MeterType": self._meter_code(meter_type),
-                "RequestID": _clubkonnect_request_id("ELEC"),
+                "RequestID": request_id,
                 "CallBackURL": self._callback_url(),
             },
         )
-        result = self._parse_result(data, action="electricity")
+        result = self._settle_pending(self._parse_result(data, action="electricity"), "electricity", request_id=request_id)
         token = str(data.get("token") or data.get("Token") or "").strip()
         if token:
             result.meta = {**(result.meta or {}), "token": token}
@@ -743,16 +792,17 @@ class ClubKonnectBillsProvider:
         if not endpoint:
             return ProviderResult(False, message=f"Unsupported exam type on ClubKonnect: {exam}")
 
+        request_id = _clubkonnect_request_id("EXAM")
         params = {
             "Quantity": max(1, int(quantity or 1)),
-            "RequestID": _clubkonnect_request_id("EXAM"),
+            "RequestID": request_id,
             "CallBackURL": self._callback_url(),
         }
         if phone_number:
             params["MobileNumber"] = str(phone_number).strip()
 
         data = self._request(endpoint, params)
-        result = self._parse_result(data, action=f"exam:{exam_key}")
+        result = self._settle_pending(self._parse_result(data, action=f"exam:{exam_key}"), f"exam:{exam_key}", request_id=request_id)
         pins = self._extract_exam_pins(data)
         if pins:
             result.meta = {**(result.meta or {}), "pins": pins}
@@ -774,17 +824,18 @@ class ClubKonnectBillsProvider:
         amount: float | None = None,
         request_id: str | None = None,
     ) -> ProviderResult:
+        req_id = request_id or _clubkonnect_request_id("DATA")
         data = self._request(
             "APIDatabundleV1.asp",
             {
                 "MobileNetwork": self._network_code(network),
                 "DataPlan": str(plan_code),
                 "MobileNumber": str(phone_number),
-                "RequestID": request_id or _clubkonnect_request_id("DATA"),
+                "RequestID": req_id,
                 "CallBackURL": self._callback_url(),
             },
         )
-        return self._parse_result(data, action="data")
+        return self._settle_pending(self._parse_result(data, action="data"), "data", request_id=req_id)
 
 
 def get_bills_provider():
