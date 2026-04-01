@@ -4,6 +4,7 @@ import secrets
 import time
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.config import get_settings
@@ -329,13 +330,19 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
 @limiter.limit("5/minute")
 def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     plan_code_input = str(payload.plan_code or "").strip()
-    plan = db.query(DataPlan).filter(DataPlan.plan_code == plan_code_input, DataPlan.is_active == True).first()
+    payload_network = str(payload.network or "").strip().lower()
+    plan_query = db.query(DataPlan).filter(DataPlan.plan_code == plan_code_input, DataPlan.is_active == True)
+    if payload_network:
+        plan_query = plan_query.filter(func.lower(DataPlan.network) == payload_network)
+    plan = plan_query.first()
     if not plan and ":" not in plan_code_input and plan_code_input:
-        suffix_matches = (
+        suffix_query = (
             db.query(DataPlan)
             .filter(DataPlan.plan_code.like(f"%:{plan_code_input}"), DataPlan.is_active == True)
-            .all()
         )
+        if payload_network:
+            suffix_query = suffix_query.filter(func.lower(DataPlan.network) == payload_network)
+        suffix_matches = suffix_query.all()
         if len(suffix_matches) == 1:
             plan = suffix_matches[0]
         elif len(suffix_matches) > 1:
@@ -432,6 +439,9 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 "reference": reference,
                 "status": transaction.status,
                 "message": str(result.message or "").strip(),
+                "provider": provider_service,
+                "network": plan.network,
+                "plan_code": plan.plan_code,
                 "test_mode": False,
             }
         except Exception as exc:
@@ -507,6 +517,9 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             "reference": reference,
             "status": transaction.status,
             "message": str(response.get("message") or "").strip(),
+            "provider": "amigo",
+            "network": plan.network,
+            "plan_code": plan.plan_code,
             "test_mode": settings.amigo_test_mode,
         }
     except HTTPException:

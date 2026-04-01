@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from decimal import Decimal
+from typing import Optional
 
 
 class DataPlanOut(BaseModel):
@@ -19,3 +20,4 @@ class BuyDataRequest(BaseModel):
     plan_code: str
     phone_number: str
     ported_number: bool = False
+    network: Optional[str] = None
