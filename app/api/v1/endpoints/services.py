@@ -22,10 +22,16 @@ from app.services.wallet import get_or_create_wallet, debit_wallet, credit_walle
 from app.services.pricing import get_service_charge_for_user
 
 router = APIRouter()
+_PROVIDER_PENDING_STATUS = {"pending", "processing", "queued", "in_progress", "submitted", "accepted"}
 
 
 def _ref(prefix: str) -> str:
     return f"{prefix}_{secrets.token_hex(8)}"
+
+
+def _provider_status(result) -> str:
+    return str((result.meta or {}).get("vtpass", {}).get("status") or "").strip().lower()
+
 
 def _ensure_service_table(db: Session):
     try:
@@ -108,6 +114,14 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
 
     provider = get_bills_provider()
     result = provider.purchase_airtime(tx.provider or "", tx.customer or "", float(base_amount))
+    provider_status = _provider_status(result)
+    if provider_status in _PROVIDER_PENDING_STATUS:
+        tx.status = TransactionStatus.PENDING.value
+        tx.external_reference = result.external_reference
+        if result.meta:
+            tx.meta = {**(tx.meta or {}), **result.meta}
+        db.commit()
+        return {"reference": reference, "status": tx.status}
     if result.success:
         tx.status = TransactionStatus.SUCCESS.value
         tx.external_reference = result.external_reference
@@ -176,6 +190,14 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
         float(base_amount),
         payload.phone_number.strip(),
     )
+    provider_status = _provider_status(result)
+    if provider_status in _PROVIDER_PENDING_STATUS:
+        tx.status = TransactionStatus.PENDING.value
+        tx.external_reference = result.external_reference
+        if result.meta:
+            tx.meta = {**(tx.meta or {}), **result.meta}
+        db.commit()
+        return {"reference": reference, "status": tx.status}
     if result.success:
         tx.status = TransactionStatus.SUCCESS.value
         tx.external_reference = result.external_reference
@@ -244,6 +266,14 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
         float(base_amount),
         payload.phone_number.strip(),
     )
+    provider_status = _provider_status(result)
+    if provider_status in _PROVIDER_PENDING_STATUS:
+        tx.status = TransactionStatus.PENDING.value
+        tx.external_reference = result.external_reference
+        if result.meta:
+            tx.meta = {**(tx.meta or {}), **result.meta}
+        db.commit()
+        return {"reference": reference, "status": tx.status, "token": (tx.meta or {}).get("token")}
     if result.success:
         tx.status = TransactionStatus.SUCCESS.value
         tx.external_reference = result.external_reference
@@ -309,6 +339,14 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
 
     provider = get_bills_provider()
     result = provider.purchase_exam_pin(tx.provider or "", int(payload.quantity or 1), tx.customer)
+    provider_status = _provider_status(result)
+    if provider_status in _PROVIDER_PENDING_STATUS:
+        tx.status = TransactionStatus.PENDING.value
+        tx.external_reference = result.external_reference
+        if result.meta:
+            tx.meta = {**(tx.meta or {}), **result.meta}
+        db.commit()
+        return {"reference": reference, "status": tx.status, "pins": (tx.meta or {}).get("pins", [])}
     if result.success:
         tx.status = TransactionStatus.SUCCESS.value
         tx.external_reference = result.external_reference
