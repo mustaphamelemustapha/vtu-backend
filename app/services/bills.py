@@ -45,6 +45,79 @@ _EXAM_SERVICE_CONFIG: dict[str, dict[str, list[str]]] = {
 _PIN_RE = re.compile(r"\bpin\b\s*[:=]\s*([A-Za-z0-9-]+)", re.IGNORECASE)
 _TOKEN_RE = re.compile(r"\btoken\b\s*[:=]\s*([A-Za-z0-9-]+)", re.IGNORECASE)
 
+_CLUBKONNECT_SUCCESS_CODES = {100, 199, 200, 201, 300}
+_CLUBKONNECT_PENDING_CODES = {100, 201, 300, 600, 601, 602, 603, 604, 605, 606}
+_CLUBKONNECT_FAILURE_CODES = {
+    399,
+    400,
+    401,
+    402,
+    403,
+    404,
+    405,
+    406,
+    407,
+    408,
+    409,
+    410,
+    411,
+    412,
+    413,
+    414,
+    415,
+    416,
+    417,
+    418,
+    499,
+    500,
+    501,
+    506,
+    507,
+    508,
+    509,
+    510,
+    511,
+    512,
+    599,
+    699,
+}
+
+_CLUBKONNECT_NETWORK_MAP = {
+    "mtn": "01",
+    "glo": "02",
+    "9mobile": "03",
+    "etisalat": "03",
+    "t2": "03",
+    "airtel": "04",
+}
+
+_CLUBKONNECT_CABLE_MAP = {
+    "dstv": "DStv",
+    "gotv": "GOtv",
+    "startimes": "Startimes",
+}
+
+_CLUBKONNECT_DISCO_CODE_MAP = {
+    "ekedc": "01",
+    "eko": "01",
+    "ikedc": "02",
+    "ikeja": "02",
+    "aedc": "03",
+    "abuja": "03",
+    "kedco": "04",
+    "kano": "04",
+    "phed": "05",
+    "portharcourt": "05",
+    "jos": "06",
+    "jed": "06",
+    "ibedc": "07",
+    "ibadan": "07",
+    "kaedco": "08",
+    "kaduna": "08",
+    "eedc": "09",
+    "enugu": "09",
+}
+
 
 def _vtpass_request_id() -> str:
     # VTpass requires first 12 chars to be YYYYMMDDHHMM in Africa/Lagos timezone.
@@ -62,6 +135,22 @@ def _normalize_vtpass_base_url(raw_url: str) -> str:
     if url.endswith("/api"):
         return url
     return f"{url}/api"
+
+
+def _normalize_clubkonnect_base_url(raw_url: str) -> str:
+    url = str(raw_url or "").strip()
+    if not url:
+        return "https://www.nellobytesystems.com/"
+    if not url.startswith("http://") and not url.startswith("https://"):
+        url = f"https://{url}"
+    if not url.endswith("/"):
+        url = f"{url}/"
+    return url
+
+
+def _clubkonnect_request_id(prefix: str = "AXIS") -> str:
+    now = datetime.now(ZoneInfo("Africa/Lagos")).strftime("%Y%m%d%H%M%S")
+    return f"{prefix}-{now}-{secrets.token_hex(3)}"
 
 
 def _airtime_service_id(network: str) -> str:
@@ -464,9 +553,267 @@ class VTPassBillsProvider:
         return result
 
 
+class ClubKonnectBillsProvider:
+    def __init__(self):
+        self.base_url = _normalize_clubkonnect_base_url(str(settings.clubkonnect_base_url or ""))
+        self.user_id = str(settings.clubkonnect_user_id or "").strip()
+        self.api_key = str(settings.clubkonnect_api_key or "").strip()
+        self.timeout = settings.clubkonnect_timeout_seconds
+
+    def _callback_url(self) -> str:
+        callback = str(settings.clubkonnect_callback_url or "").strip()
+        if callback:
+            return callback
+        base = str(settings.frontend_base_url or "").strip().rstrip("/")
+        if not base:
+            return "https://axisvtu.com/app/transactions"
+        return f"{base}/app/transactions"
+
+    @staticmethod
+    def _safe_json(res: httpx.Response) -> dict:
+        if not res.content:
+            return {}
+        try:
+            payload = res.json()
+        except Exception:
+            return {"message": res.text}
+        return payload if isinstance(payload, dict) else {"message": str(payload)}
+
+    def _request(self, endpoint: str, params: dict) -> dict:
+        if not self.user_id or not self.api_key:
+            raise RuntimeError("ClubKonnect credentials are missing.")
+        payload = {
+            **(params or {}),
+            "UserID": self.user_id,
+            "APIKey": self.api_key,
+        }
+        url = f"{self.base_url}{endpoint.lstrip('/')}"
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                res = client.get(url, params=payload)
+        except Exception as exc:
+            raise RuntimeError(f"ClubKonnect network error: {exc}") from exc
+        data = self._safe_json(res)
+        if res.status_code >= 400:
+            message = str(data.get("message") or data.get("status") or "ClubKonnect error")
+            raise RuntimeError(f"ClubKonnect HTTP {res.status_code}: {message}")
+        return data
+
+    @staticmethod
+    def _status_code_and_text(data: dict) -> tuple[int | None, str]:
+        raw = data.get("status")
+        raw_text = str(raw or "").strip()
+        if raw_text.isdigit():
+            return int(raw_text), raw_text
+        return None, raw_text.upper()
+
+    @staticmethod
+    def _extract_reference(data: dict) -> str | None:
+        for key in ("OrderID", "orderid", "order_id", "RequestID", "requestid", "reference"):
+            val = str(data.get(key) or "").strip()
+            if val:
+                return val
+        return None
+
+    @staticmethod
+    def _extract_exam_pins(data: dict) -> list[str]:
+        pins: list[str] = []
+        for key in ("pin", "Pin", "pins", "Pins", "Token", "token"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                pins.append(value.strip())
+            if isinstance(value, list):
+                for item in value:
+                    text = str(item or "").strip()
+                    if text:
+                        pins.append(text)
+        return list(dict.fromkeys(pins))
+
+    def _parse_result(self, data: dict, action: str) -> ProviderResult:
+        code, status_text = self._status_code_and_text(data)
+        external_reference = self._extract_reference(data)
+        message = str(data.get("message") or data.get("status") or "").strip()
+
+        pending = (
+            (code in _CLUBKONNECT_PENDING_CODES if code is not None else False)
+            or status_text in {"ORDER_RECEIVED", "ORDER_PROCESSED", "ORDER_ONHOLD", "PENDING"}
+        )
+        success = (
+            (code in _CLUBKONNECT_SUCCESS_CODES if code is not None else False)
+            or status_text in {"ORDER_COMPLETED", "SUCCESS", "TRANSACTION_SUCCESSFUL"}
+        )
+        failed = (
+            (code in _CLUBKONNECT_FAILURE_CODES if code is not None else False)
+            or "INVALID" in status_text
+            or "ERROR" in status_text
+            or "FAILED" in status_text
+            or "CANCEL" in status_text
+        )
+
+        meta = {
+            "clubkonnect": {
+                "status": "pending" if pending else ("success" if success and not failed else "failed"),
+                "raw_status": str(data.get("status") or ""),
+                "code": code,
+                "action": action,
+                "raw": data,
+            }
+        }
+
+        if pending and not failed:
+            return ProviderResult(False, external_reference=external_reference, message="Transaction pending", meta=meta)
+        if success and not failed:
+            return ProviderResult(True, external_reference=external_reference, message=message or "Successful", meta=meta)
+        return ProviderResult(False, external_reference=external_reference, message=message or "Provider failed", meta=meta)
+
+    @staticmethod
+    def _network_code(network: str) -> str:
+        key = str(network or "").strip().lower()
+        return _CLUBKONNECT_NETWORK_MAP.get(key, key)
+
+    @staticmethod
+    def _cable_code(provider: str) -> str:
+        key = str(provider or "").strip().lower()
+        return _CLUBKONNECT_CABLE_MAP.get(key, provider)
+
+    @staticmethod
+    def _disco_code(disco: str) -> str:
+        key = str(disco or "").strip().lower().replace(" ", "")
+        return _CLUBKONNECT_DISCO_CODE_MAP.get(key, disco)
+
+    @staticmethod
+    def _meter_code(meter_type: str) -> str:
+        key = str(meter_type or "").strip().lower()
+        if key == "prepaid":
+            return "01"
+        if key == "postpaid":
+            return "02"
+        return meter_type
+
+    def purchase_airtime(self, network: str, phone_number: str, amount: float) -> ProviderResult:
+        data = self._request(
+            "APIAirtimeV1.asp",
+            {
+                "MobileNetwork": self._network_code(network),
+                "Amount": int(float(amount)),
+                "MobileNumber": str(phone_number),
+                "RequestID": _clubkonnect_request_id("AIRTIME"),
+                "CallBackURL": self._callback_url(),
+            },
+        )
+        return self._parse_result(data, action="airtime")
+
+    def purchase_cable(self, provider: str, smartcard_number: str, package_code: str, amount: float, phone_number: str | None = None) -> ProviderResult:
+        data = self._request(
+            "APICableTVV1.asp",
+            {
+                "CableTV": self._cable_code(provider),
+                "MeterType": str(package_code),
+                "SmartCardNo": str(smartcard_number),
+                "RequestID": _clubkonnect_request_id("CABLE"),
+                "CallBackURL": self._callback_url(),
+            },
+        )
+        return self._parse_result(data, action="cable")
+
+    def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str | None = None) -> ProviderResult:
+        data = self._request(
+            "APIElectricityV1.asp",
+            {
+                "ElectricCompany": self._disco_code(disco),
+                "MeterNo": str(meter_number),
+                "Amount": int(float(amount)),
+                "MeterType": self._meter_code(meter_type),
+                "RequestID": _clubkonnect_request_id("ELEC"),
+                "CallBackURL": self._callback_url(),
+            },
+        )
+        result = self._parse_result(data, action="electricity")
+        token = str(data.get("token") or data.get("Token") or "").strip()
+        if token:
+            result.meta = {**(result.meta or {}), "token": token}
+        return result
+
+    def purchase_exam_pin(self, exam: str, quantity: int, phone_number: str | None = None) -> ProviderResult:
+        exam_key = _normalize_exam_key(exam)
+        endpoint = {
+            "waec": "APIWAECV1.asp",
+            "jamb": "APIJAMBV1.asp",
+        }.get(exam_key)
+        if not endpoint:
+            return ProviderResult(False, message=f"Unsupported exam type on ClubKonnect: {exam}")
+
+        params = {
+            "Quantity": max(1, int(quantity or 1)),
+            "RequestID": _clubkonnect_request_id("EXAM"),
+            "CallBackURL": self._callback_url(),
+        }
+        if phone_number:
+            params["MobileNumber"] = str(phone_number).strip()
+
+        data = self._request(endpoint, params)
+        result = self._parse_result(data, action=f"exam:{exam_key}")
+        pins = self._extract_exam_pins(data)
+        if pins:
+            result.meta = {**(result.meta or {}), "pins": pins}
+        return result
+
+    def fetch_data_variations(self, network: str) -> list[dict]:
+        data = self._request("APIDatabundlePlansV1.asp", {})
+        rows = data.get("MOBILE_NETWORK") or data.get("mobile_network") or data.get("data") or []
+        if not isinstance(rows, list):
+            return []
+        target = self._network_code(network)
+        return [row for row in rows if str(row.get("ID") or row.get("MobileNetwork") or "").strip() == str(target)]
+
+    def purchase_data(
+        self,
+        network: str,
+        phone_number: str,
+        plan_code: str,
+        amount: float | None = None,
+        request_id: str | None = None,
+    ) -> ProviderResult:
+        data = self._request(
+            "APIDatabundleV1.asp",
+            {
+                "MobileNetwork": self._network_code(network),
+                "DataPlan": str(plan_code),
+                "MobileNumber": str(phone_number),
+                "RequestID": request_id or _clubkonnect_request_id("DATA"),
+                "CallBackURL": self._callback_url(),
+            },
+        )
+        return self._parse_result(data, action="data")
+
+
 def get_bills_provider():
-    if settings.vtpass_enabled and settings.vtpass_api_key and settings.vtpass_secret_key:
+    choice = str(settings.bills_provider or "auto").strip().lower()
+
+    has_vtpass = bool(settings.vtpass_enabled and settings.vtpass_api_key and settings.vtpass_secret_key)
+    has_clubkonnect = bool(settings.clubkonnect_user_id and settings.clubkonnect_api_key)
+    clubkonnect_enabled = bool(settings.clubkonnect_enabled)
+
+    if choice == "mock":
+        return MockBillsProvider()
+    if choice == "clubkonnect":
+        if has_clubkonnect:
+            return ClubKonnectBillsProvider()
+        logger.warning("BILLS_PROVIDER=clubkonnect but CLUBKONNECT_USER_ID/API_KEY missing; falling back to mock.")
+        return MockBillsProvider()
+    if choice == "vtpass":
+        if has_vtpass:
+            return VTPassBillsProvider()
+        logger.warning("BILLS_PROVIDER=vtpass but VTPASS credentials missing; falling back to mock.")
+        return MockBillsProvider()
+
+    # auto mode
+    if clubkonnect_enabled and has_clubkonnect:
+        return ClubKonnectBillsProvider()
+    if has_vtpass:
         return VTPassBillsProvider()
+    if has_clubkonnect:
+        return ClubKonnectBillsProvider()
     return MockBillsProvider()
 
 

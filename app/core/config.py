@@ -83,6 +83,19 @@ class Settings(BaseSettings):
     vtpass_timeout_seconds: int = 20
     vtpass_enabled: bool = False
 
+    # Bills provider routing:
+    # - auto: prefer ClubKonnect when enabled, else VTPass, else mock
+    # - clubkonnect|vtpass|mock: force a specific provider
+    bills_provider: str = "auto"
+
+    # ClubKonnect / NelloByte API
+    clubkonnect_base_url: AnyHttpUrl = "https://www.nellobytesystems.com"
+    clubkonnect_user_id: Optional[str] = None
+    clubkonnect_api_key: Optional[str] = None
+    clubkonnect_timeout_seconds: int = 20
+    clubkonnect_enabled: bool = False
+    clubkonnect_callback_url: Optional[str] = None
+
     # Fraud / abuse guardrails for purchases
     fraud_guard_enabled: bool = True
     fraud_single_tx_limit_ngn: Decimal = Decimal("50000")

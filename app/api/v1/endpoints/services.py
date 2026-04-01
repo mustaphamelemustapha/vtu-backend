@@ -30,7 +30,12 @@ def _ref(prefix: str) -> str:
 
 
 def _provider_status(result) -> str:
-    return str((result.meta or {}).get("vtpass", {}).get("status") or "").strip().lower()
+    meta = result.meta or {}
+    for provider_key in ("vtpass", "clubkonnect"):
+        status = str((meta.get(provider_key) or {}).get("status") or "").strip().lower()
+        if status:
+            return status
+    return str(meta.get("status") or "").strip().lower()
 
 
 def _ensure_service_table(db: Session):

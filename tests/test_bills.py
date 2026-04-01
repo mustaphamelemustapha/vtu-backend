@@ -1,8 +1,12 @@
 from app.services.bills import (
+    ClubKonnectBillsProvider,
+    MockBillsProvider,
     VTPassBillsProvider,
     _extract_purchased_pins,
     _extract_token,
+    get_bills_provider,
     _normalize_exam_key,
+    settings as bills_settings,
 )
 
 
@@ -80,3 +84,51 @@ def test_purchase_exam_pin_requires_phone():
     result = provider.purchase_exam_pin("waec", 1, None)
     assert result.success is False
     assert "phone number" in (result.message or "").lower()
+
+
+def test_clubkonnect_purchase_airtime_maps_payload(monkeypatch):
+    provider = ClubKonnectBillsProvider()
+    captured = {}
+
+    def _fake_request(endpoint, params):
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        return {"status": "200", "OrderID": "CK-1"}
+
+    monkeypatch.setattr(provider, "_request", _fake_request)
+    result = provider.purchase_airtime("mtn", "08141114647", 200.0)
+    assert captured["endpoint"] == "APIAirtimeV1.asp"
+    assert captured["params"]["MobileNetwork"] == "01"
+    assert captured["params"]["MobileNumber"] == "08141114647"
+    assert captured["params"]["Amount"] == 200
+    assert result.success is True
+    assert result.external_reference == "CK-1"
+    assert (result.meta or {}).get("clubkonnect", {}).get("status") == "success"
+
+
+def test_clubkonnect_pending_maps_to_pending_message():
+    provider = ClubKonnectBillsProvider()
+    result = provider._parse_result({"status": "100", "OrderID": "CK-2"}, action="airtime")
+    assert result.success is False
+    assert "pending" in (result.message or "").lower()
+    assert (result.meta or {}).get("clubkonnect", {}).get("status") == "pending"
+
+
+def test_get_bills_provider_prefers_clubkonnect_in_auto(monkeypatch):
+    monkeypatch.setattr(bills_settings, "bills_provider", "auto", raising=False)
+    monkeypatch.setattr(bills_settings, "clubkonnect_enabled", True, raising=False)
+    monkeypatch.setattr(bills_settings, "clubkonnect_user_id", "uid", raising=False)
+    monkeypatch.setattr(bills_settings, "clubkonnect_api_key", "key", raising=False)
+    monkeypatch.setattr(bills_settings, "vtpass_enabled", True, raising=False)
+    monkeypatch.setattr(bills_settings, "vtpass_api_key", "vk", raising=False)
+    monkeypatch.setattr(bills_settings, "vtpass_secret_key", "vs", raising=False)
+    provider = get_bills_provider()
+    assert isinstance(provider, ClubKonnectBillsProvider)
+
+
+def test_get_bills_provider_falls_back_to_mock_when_forced_without_creds(monkeypatch):
+    monkeypatch.setattr(bills_settings, "bills_provider", "clubkonnect", raising=False)
+    monkeypatch.setattr(bills_settings, "clubkonnect_user_id", "", raising=False)
+    monkeypatch.setattr(bills_settings, "clubkonnect_api_key", "", raising=False)
+    provider = get_bills_provider()
+    assert isinstance(provider, MockBillsProvider)
