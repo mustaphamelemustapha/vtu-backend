@@ -442,6 +442,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 "provider": provider_service,
                 "network": plan.network,
                 "plan_code": plan.plan_code,
+                "failure_reason": str(transaction.failure_reason or "").strip(),
                 "test_mode": False,
             }
         except Exception as exc:
@@ -520,6 +521,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             "provider": "amigo",
             "network": plan.network,
             "plan_code": plan.plan_code,
+            "failure_reason": str(transaction.failure_reason or "").strip(),
             "test_mode": settings.amigo_test_mode,
         }
     except HTTPException:
