@@ -86,24 +86,35 @@ def _extract_validity(value: str | None) -> str:
     return f"{amount}d"
 
 
-def _provider_variation_to_item(network: str, variation: dict) -> dict | None:
-    raw_code = (
-        variation.get("variation_code")
-        or variation.get("code")
-        or variation.get("variation_id")
-        or variation.get("id")
-        or variation.get("dataplanid")
-        or variation.get("DataPlan")
-        or variation.get("dataplan")
-        or variation.get("DataPlanID")
-        or variation.get("plan_id")
-        or variation.get("planid")
-        or variation.get("PLANID")
-        or variation.get("data_plan")
-        or variation.get("DATA_PLAN")
-        or variation.get("databundle_id")
+def _extract_variation_code(variation: dict) -> str:
+    # Prefer explicit provider plan-code fields before generic `id`.
+    # ClubKonnect frequently sends both `id` and `DataPlan`; `DataPlan` is the
+    # one accepted by purchase endpoints.
+    preferred_keys = (
+        "DataPlan",
+        "dataplan",
+        "DataPlanID",
+        "dataplanid",
+        "plan_id",
+        "planid",
+        "PLANID",
+        "data_plan",
+        "DATA_PLAN",
+        "databundle_id",
+        "variation_code",
+        "code",
+        "variation_id",
+        "id",
     )
-    code = str(raw_code or "").strip()
+    for key in preferred_keys:
+        value = str(variation.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _provider_variation_to_item(network: str, variation: dict) -> dict | None:
+    code = _extract_variation_code(variation)
     if not code:
         return None
     name = str(
