@@ -747,41 +747,76 @@ class ClubKonnectBillsProvider:
 
     def _flatten_data_plan_rows(self, payload: dict) -> list[dict]:
         rows = payload.get("MOBILE_NETWORK") or payload.get("mobile_network") or payload.get("data") or payload.get("Data") or []
-        if isinstance(rows, dict):
-            rows = [rows]
-        if not isinstance(rows, list):
-            return []
-
         flattened: list[dict] = []
-        nested_keys = ("DataPlans", "dataplans", "plans", "Plans", "bundles", "Bundles")
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            nested = None
-            for key in nested_keys:
-                maybe = row.get(key)
-                if isinstance(maybe, list):
-                    nested = maybe
-                    break
-            if nested is None:
-                flattened.append(row)
-                continue
 
-            network_hint = (
-                row.get("MobileNetwork")
-                or row.get("mobile_network")
-                or row.get("ID")
-                or row.get("id")
-                or row.get("Network")
-                or row.get("network")
-            )
-            for item in nested:
-                if not isinstance(item, dict):
+        # ClubKonnect V1/V2 often returns:
+        # {
+        #   "MOBILE_NETWORK": {
+        #     "Airtel": [{"ID":"04","PRODUCT":[{"PRODUCT_ID":"499.91",...}]}],
+        #     ...
+        #   }
+        # }
+        if isinstance(rows, dict):
+            for network_name, groups in rows.items():
+                if not isinstance(groups, list):
                     continue
-                merged = dict(item)
-                if network_hint not in (None, ""):
-                    merged.setdefault("MobileNetwork", network_hint)
-                flattened.append(merged)
+                for group in groups:
+                    if not isinstance(group, dict):
+                        continue
+                    network_hint = (
+                        group.get("ID")
+                        or group.get("MobileNetwork")
+                        or group.get("mobile_network")
+                        or network_name
+                    )
+                    products = group.get("PRODUCT") or group.get("product") or []
+                    if not isinstance(products, list):
+                        continue
+                    for product in products:
+                        if not isinstance(product, dict):
+                            continue
+                        flattened.append(
+                            {
+                                "MobileNetwork": network_hint,
+                                "DataPlan": product.get("PRODUCT_ID") or product.get("DataPlan") or product.get("dataplan"),
+                                "Amount": product.get("PRODUCT_AMOUNT") or product.get("Amount"),
+                                "DataType": product.get("PRODUCT_NAME") or product.get("DataType") or product.get("name"),
+                                "PRODUCT_CODE": product.get("PRODUCT_CODE"),
+                                "PRODUCT_SNO": product.get("PRODUCT_SNO"),
+                            }
+                        )
+            return flattened
+
+        if isinstance(rows, list):
+            nested_keys = ("DataPlans", "dataplans", "plans", "Plans", "bundles", "Bundles", "PRODUCT", "product")
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                nested = None
+                for key in nested_keys:
+                    maybe = row.get(key)
+                    if isinstance(maybe, list):
+                        nested = maybe
+                        break
+                if nested is None:
+                    flattened.append(row)
+                    continue
+
+                network_hint = (
+                    row.get("MobileNetwork")
+                    or row.get("mobile_network")
+                    or row.get("ID")
+                    or row.get("id")
+                    or row.get("Network")
+                    or row.get("network")
+                )
+                for item in nested:
+                    if not isinstance(item, dict):
+                        continue
+                    merged = dict(item)
+                    if network_hint not in (None, ""):
+                        merged.setdefault("MobileNetwork", network_hint)
+                    flattened.append(merged)
         return flattened
 
     def purchase_airtime(self, network: str, phone_number: str, amount: float) -> ProviderResult:

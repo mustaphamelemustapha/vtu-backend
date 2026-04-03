@@ -170,6 +170,47 @@ def test_clubkonnect_fetch_data_variations_handles_grouped_payload(monkeypatch):
     assert all(str(row.get("MobileNetwork")) == "04" for row in rows)
 
 
+def test_clubkonnect_fetch_data_variations_handles_v2_product_shape(monkeypatch):
+    provider = ClubKonnectBillsProvider()
+
+    def _fake_request(endpoint, params):
+        assert endpoint == "APIDatabundlePlansV2.asp"
+        return {
+            "MOBILE_NETWORK": {
+                "Airtel": [
+                    {
+                        "ID": "04",
+                        "PRODUCT": [
+                            {
+                                "PRODUCT_ID": "499.91",
+                                "PRODUCT_NAME": "1GB - 1 day (Awoof Data)",
+                                "PRODUCT_AMOUNT": "499.91",
+                            }
+                        ],
+                    }
+                ],
+                "MTN": [
+                    {
+                        "ID": "01",
+                        "PRODUCT": [
+                            {
+                                "PRODUCT_ID": "1000.0",
+                                "PRODUCT_NAME": "1 GB - 7 days (SME)",
+                                "PRODUCT_AMOUNT": "567",
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+
+    monkeypatch.setattr(provider, "_request", _fake_request)
+    rows = provider.fetch_data_variations("airtel")
+    assert len(rows) == 1
+    assert str(rows[0].get("DataPlan")) == "499.91"
+    assert str(rows[0].get("Amount")) == "499.91"
+
+
 def test_get_bills_provider_prefers_clubkonnect_in_auto(monkeypatch):
     monkeypatch.setattr(bills_settings, "bills_provider", "auto", raising=False)
     monkeypatch.setattr(bills_settings, "clubkonnect_enabled", True, raising=False)
