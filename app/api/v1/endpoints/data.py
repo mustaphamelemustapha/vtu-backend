@@ -735,13 +735,11 @@ def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(
     if hasattr(provider, "fetch_data_variations"):
         for network in ("airtel", "9mobile"):
             try:
-                variations = provider.fetch_data_variations(network)
+                touched, _ = _refresh_provider_network_plans(db, provider, network)
+                updated += touched
             except Exception as exc:
                 logger.warning("Provider variations fetch failed for %s: %s", network, exc)
                 continue
-            for variation in variations:
-                item = _provider_variation_to_item(network, variation)
-                if item:
-                    updated += 1 if _upsert_plan_from_provider(db, item) else 0
     db.commit()
+    _invalidate_plans_cache()
     return {"updated": updated}
