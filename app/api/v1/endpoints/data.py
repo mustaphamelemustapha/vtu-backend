@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.config import get_settings
 from app.dependencies import get_current_user, require_admin
-from app.models import User, DataPlan, Transaction, TransactionStatus, TransactionType, ApiLog
+from app.models import User, UserRole, DataPlan, Transaction, TransactionStatus, TransactionType, ApiLog
 from app.schemas.data import DataPlanOut, BuyDataRequest
 from app.services.amigo import (
     AmigoClient,
@@ -94,15 +94,28 @@ def _provider_variation_to_item(network: str, variation: dict) -> dict | None:
         or variation.get("id")
         or variation.get("dataplanid")
         or variation.get("DataPlan")
+        or variation.get("dataplan")
+        or variation.get("DataPlanID")
+        or variation.get("plan_id")
+        or variation.get("planid")
+        or variation.get("PLANID")
+        or variation.get("data_plan")
+        or variation.get("DATA_PLAN")
+        or variation.get("databundle_id")
     )
     code = str(raw_code or "").strip()
     if not code:
         return None
     name = str(
         variation.get("name")
+        or variation.get("Name")
         or variation.get("variation_name")
         or variation.get("variation")
         or variation.get("service")
+        or variation.get("plan_name")
+        or variation.get("PLANNAME")
+        or variation.get("plan")
+        or variation.get("DataType")
         or ""
     ).strip()
     price_raw = (
@@ -112,6 +125,12 @@ def _provider_variation_to_item(network: str, variation: dict) -> dict | None:
         or variation.get("price")
         or variation.get("Amount")
         or variation.get("plan_amount")
+        or variation.get("userprice")
+        or variation.get("USER_PRICE")
+        or variation.get("cost")
+        or variation.get("Cost")
+        or variation.get("amountcharged")
+        or variation.get("AmountCharged")
     )
     if price_raw in (None, ""):
         return None
@@ -120,12 +139,31 @@ def _provider_variation_to_item(network: str, variation: dict) -> dict | None:
     except Exception:
         return None
     size = (
-        str(variation.get("data") or variation.get("data_size") or variation.get("bundle") or "").strip()
-        or str(variation.get("DataLimit") or variation.get("datacapacity") or "").strip()
+        str(
+            variation.get("data")
+            or variation.get("data_size")
+            or variation.get("bundle")
+            or variation.get("size")
+            or variation.get("plan_size")
+            or variation.get("bundle_size")
+            or variation.get("Data")
+            or variation.get("datavalue")
+            or variation.get("DataValue")
+            or ""
+        ).strip()
+        or str(variation.get("DataLimit") or variation.get("datalimit") or variation.get("datacapacity") or "").strip()
         or _extract_capacity(name)
     )
     validity = (
-        str(variation.get("validity") or variation.get("duration") or "").strip()
+        str(
+            variation.get("validity")
+            or variation.get("duration")
+            or variation.get("Validity")
+            or variation.get("validity_days")
+            or variation.get("days")
+            or variation.get("durationdays")
+            or ""
+        ).strip()
         or _extract_validity(name)
     )
     if validity and validity.isdigit():
@@ -265,6 +303,88 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
     return True
 
 
+def _invalidate_plans_cache() -> None:
+    for role in (UserRole.USER.value, UserRole.RESELLER.value, UserRole.ADMIN.value):
+        set_cached(f"plans:{role}", None, ttl_seconds=1)
+
+
+def _refresh_provider_network_plans(db: Session, provider, network: str) -> tuple[int, set[str]]:
+    if not hasattr(provider, "fetch_data_variations"):
+        return 0, set()
+    variations = provider.fetch_data_variations(network)
+    if not isinstance(variations, list):
+        return 0, set()
+
+    touched = 0
+    active_codes: set[str] = set()
+    for variation in variations:
+        item = _provider_variation_to_item(network, variation)
+        if not item:
+            continue
+        canonical_code = canonical_plan_code(network, str(item.get("plan_code") or ""))
+        if canonical_code:
+            active_codes.add(canonical_code)
+        touched += 1 if _upsert_plan_from_provider(db, item) else 0
+
+    if active_codes:
+        stale_rows = (
+            db.query(DataPlan)
+            .filter(func.lower(DataPlan.network) == network.lower(), DataPlan.is_active == True)
+            .all()
+        )
+        for row in stale_rows:
+            code = str(row.plan_code or "").strip()
+            if code not in active_codes:
+                row.is_active = False
+                touched += 1
+
+    return touched, active_codes
+
+
+def _normalize_match_token(value: str | None) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip().lower())
+
+
+def _pick_replacement_plan(
+    db: Session,
+    original: DataPlan,
+    candidate_codes: set[str] | None = None,
+) -> DataPlan | None:
+    query = db.query(DataPlan).filter(
+        func.lower(DataPlan.network) == str(original.network or "").strip().lower(),
+        DataPlan.is_active == True,
+    )
+    candidates = query.all()
+    if candidate_codes:
+        candidates = [row for row in candidates if str(row.plan_code or "").strip() in candidate_codes]
+    if not candidates:
+        return None
+
+    wanted_size = _normalize_match_token(original.data_size)
+    wanted_validity = _normalize_match_token(original.validity)
+    wanted_price = Decimal(str(original.base_price or 0))
+
+    best = None
+    best_score = None
+    for row in candidates:
+        score = 0
+        if _normalize_match_token(row.data_size) == wanted_size and wanted_size:
+            score += 6
+        if _normalize_match_token(row.validity) == wanted_validity and wanted_validity:
+            score += 3
+        price_delta = abs(Decimal(str(row.base_price or 0)) - wanted_price)
+        if price_delta <= Decimal("1"):
+            score += 2
+        elif price_delta <= Decimal("5"):
+            score += 1
+
+        candidate_key = (score, -float(price_delta), -int(row.id or 0))
+        if best is None or candidate_key > best_score:
+            best = row
+            best_score = candidate_key
+    return best
+
+
 @router.get("/plans", response_model=list[DataPlanOut])
 
 def list_data_plans(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -287,26 +407,20 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
             db.commit()
             plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
 
-    # Pull Airtel/9mobile plans from configured non-Amigo provider when missing.
+    # Pull Airtel/9mobile plans from configured non-Amigo provider and keep them in sync.
     provider = get_bills_provider()
     if hasattr(provider, "fetch_data_variations"):
-        existing_networks = {str(plan.network or "").strip().lower() for plan in plans}
-        missing = [net for net in ("airtel", "9mobile") if net not in existing_networks]
-        if missing:
-            touched = 0
-            for network in missing:
-                try:
-                    variations = provider.fetch_data_variations(network)
-                except Exception as exc:
-                    logger.warning("Provider variations fetch failed for %s: %s", network, exc)
-                    continue
-                for variation in variations:
-                    item = _provider_variation_to_item(network, variation)
-                    if item:
-                        touched += 1 if _upsert_plan_from_provider(db, item) else 0
-            if touched:
-                db.commit()
-                plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+        touched = 0
+        for network in ("airtel", "9mobile"):
+            try:
+                updated, _ = _refresh_provider_network_plans(db, provider, network)
+                touched += updated
+            except Exception as exc:
+                logger.warning("Provider variations fetch failed for %s: %s", network, exc)
+        if touched:
+            db.commit()
+            _invalidate_plans_cache()
+            plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
     priced = []
     for plan in plans:
         price = get_price_for_user(db, plan, user.role)
@@ -396,14 +510,44 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
 
         start = time.time()
         try:
-            _, provider_code = split_plan_code(plan.plan_code)
+            selected_plan = plan
+            _, provider_code = split_plan_code(selected_plan.plan_code)
             result = provider.purchase_data(
                 network=network_key,
                 phone_number=str(payload.phone_number),
-                plan_code=provider_code or str(plan.plan_code),
+                plan_code=provider_code or str(selected_plan.plan_code),
                 amount=float(price),
                 request_id=reference,
             )
+
+            message_text = str(result.message or "").strip().lower()
+            if (
+                not result.success
+                and "invalid_dataplan" in message_text
+                and hasattr(provider, "fetch_data_variations")
+            ):
+                try:
+                    updated, refreshed_codes = _refresh_provider_network_plans(db, provider, network_key)
+                except Exception as sync_exc:
+                    logger.warning("Data plan resync failed for %s: %s", network_key, sync_exc)
+                    updated, refreshed_codes = 0, set()
+
+                if updated:
+                    db.commit()
+                    _invalidate_plans_cache()
+                retry_plan = _pick_replacement_plan(db, selected_plan, refreshed_codes)
+                if retry_plan and str(retry_plan.plan_code or "").strip() != str(selected_plan.plan_code or "").strip():
+                    selected_plan = retry_plan
+                    transaction.data_plan_code = retry_plan.plan_code
+                    _, retry_provider_code = split_plan_code(retry_plan.plan_code)
+                    result = provider.purchase_data(
+                        network=network_key,
+                        phone_number=str(payload.phone_number),
+                        plan_code=retry_provider_code or str(retry_plan.plan_code),
+                        amount=float(price),
+                        request_id=f"{reference}-R1",
+                    )
+
             duration_ms = round((time.time() - start) * 1000, 2)
             provider_service = "bills"
             if (result.meta or {}).get("clubkonnect"):
@@ -441,7 +585,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 "message": str(result.message or "").strip(),
                 "provider": provider_service,
                 "network": plan.network,
-                "plan_code": plan.plan_code,
+                "plan_code": transaction.data_plan_code or plan.plan_code,
                 "failure_reason": str(transaction.failure_reason or "").strip(),
                 "test_mode": False,
             }
