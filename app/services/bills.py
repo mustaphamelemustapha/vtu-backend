@@ -736,6 +736,54 @@ class ClubKonnectBillsProvider:
             return "02"
         return meter_type
 
+    @staticmethod
+    def _normalize_network_code(value) -> str:
+        raw = str(value or "").strip().lower()
+        if not raw:
+            return ""
+        if raw.isdigit():
+            return raw.zfill(2) if len(raw) == 1 else raw
+        return _CLUBKONNECT_NETWORK_MAP.get(raw, raw)
+
+    def _flatten_data_plan_rows(self, payload: dict) -> list[dict]:
+        rows = payload.get("MOBILE_NETWORK") or payload.get("mobile_network") or payload.get("data") or payload.get("Data") or []
+        if isinstance(rows, dict):
+            rows = [rows]
+        if not isinstance(rows, list):
+            return []
+
+        flattened: list[dict] = []
+        nested_keys = ("DataPlans", "dataplans", "plans", "Plans", "bundles", "Bundles")
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            nested = None
+            for key in nested_keys:
+                maybe = row.get(key)
+                if isinstance(maybe, list):
+                    nested = maybe
+                    break
+            if nested is None:
+                flattened.append(row)
+                continue
+
+            network_hint = (
+                row.get("MobileNetwork")
+                or row.get("mobile_network")
+                or row.get("ID")
+                or row.get("id")
+                or row.get("Network")
+                or row.get("network")
+            )
+            for item in nested:
+                if not isinstance(item, dict):
+                    continue
+                merged = dict(item)
+                if network_hint not in (None, ""):
+                    merged.setdefault("MobileNetwork", network_hint)
+                flattened.append(merged)
+        return flattened
+
     def purchase_airtime(self, network: str, phone_number: str, amount: float) -> ProviderResult:
         request_id = _clubkonnect_request_id("AIRTIME")
         data = self._request(
@@ -809,12 +857,41 @@ class ClubKonnectBillsProvider:
         return result
 
     def fetch_data_variations(self, network: str) -> list[dict]:
-        data = self._request("APIDatabundlePlansV1.asp", {})
-        rows = data.get("MOBILE_NETWORK") or data.get("mobile_network") or data.get("data") or []
-        if not isinstance(rows, list):
-            return []
         target = self._network_code(network)
-        return [row for row in rows if str(row.get("ID") or row.get("MobileNetwork") or "").strip() == str(target)]
+        for endpoint in ("APIDatabundlePlansV2.asp", "APIDatabundlePlansV1.asp"):
+            try:
+                data = self._request(endpoint, {"MobileNetwork": target})
+            except Exception as exc:
+                logger.warning("ClubKonnect fetch_data_variations failed endpoint=%s network=%s error=%s", endpoint, network, exc)
+                continue
+            rows = self._flatten_data_plan_rows(data)
+            if not rows:
+                continue
+
+            matched = []
+            unknown_network_rows = []
+            for row in rows:
+                row_network = self._normalize_network_code(
+                    row.get("MobileNetwork")
+                    or row.get("mobile_network")
+                    or row.get("Network")
+                    or row.get("network")
+                    or row.get("NetworkID")
+                    or row.get("network_id")
+                    or row.get("IDNetwork")
+                    or row.get("IDNETWORK")
+                )
+                if row_network == target:
+                    matched.append(row)
+                elif not row_network:
+                    unknown_network_rows.append(row)
+            if matched:
+                return matched
+            # Some payloads omit explicit network per row; if all rows are unknown,
+            # assume endpoint-side filtering already applied.
+            if unknown_network_rows and len(unknown_network_rows) == len(rows):
+                return unknown_network_rows
+        return []
 
     def purchase_data(
         self,

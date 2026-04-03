@@ -128,6 +128,48 @@ def test_clubkonnect_invalid_credentials_fails():
     assert (result.meta or {}).get("clubkonnect", {}).get("status") == "failed"
 
 
+def test_clubkonnect_fetch_data_variations_prefers_mobile_network_field(monkeypatch):
+    provider = ClubKonnectBillsProvider()
+
+    def _fake_request(endpoint, params):
+        assert endpoint == "APIDatabundlePlansV2.asp"
+        return {
+            "MOBILE_NETWORK": [
+                {"ID": "499.91", "MobileNetwork": "04", "DataPlan": "499.91", "Amount": "499.91"},
+                {"ID": "1000.0", "MobileNetwork": "01", "DataPlan": "1000.0", "Amount": "567"},
+            ]
+        }
+
+    monkeypatch.setattr(provider, "_request", _fake_request)
+    rows = provider.fetch_data_variations("airtel")
+    assert len(rows) == 1
+    assert str(rows[0].get("DataPlan")) == "499.91"
+
+
+def test_clubkonnect_fetch_data_variations_handles_grouped_payload(monkeypatch):
+    provider = ClubKonnectBillsProvider()
+
+    def _fake_request(endpoint, params):
+        assert endpoint == "APIDatabundlePlansV2.asp"
+        return {
+            "MOBILE_NETWORK": [
+                {
+                    "ID": "04",
+                    "Network": "Airtel",
+                    "DataPlans": [
+                        {"DataPlan": "499.91", "Amount": "499.91", "DataType": "1GB - 1 day"},
+                        {"DataPlan": "599.91", "Amount": "599.91", "DataType": "1.5GB - 2 days"},
+                    ],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(provider, "_request", _fake_request)
+    rows = provider.fetch_data_variations("airtel")
+    assert len(rows) == 2
+    assert all(str(row.get("MobileNetwork")) == "04" for row in rows)
+
+
 def test_get_bills_provider_prefers_clubkonnect_in_auto(monkeypatch):
     monkeypatch.setattr(bills_settings, "bills_provider", "auto", raising=False)
     monkeypatch.setattr(bills_settings, "clubkonnect_enabled", True, raising=False)
