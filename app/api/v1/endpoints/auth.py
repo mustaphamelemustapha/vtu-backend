@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 import secrets
 from fastapi import APIRouter, Depends, HTTPException, status, Request
+from sqlalchemy import and_
 from sqlalchemy.orm import Session
 from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
 from app.core.config import get_settings
@@ -227,10 +228,21 @@ def update_me(payload: UpdateMeRequest, db: Session = Depends(get_db), user: Use
         user.full_name = full_name
 
     if payload.phone_number is not None:
-        phone = (payload.phone_number or "").strip()
-        if len(phone) < 7:
-            raise HTTPException(status_code=400, detail="Phone number is too short")
-        user.phone_number = phone
+        raw_phone = (payload.phone_number or "").strip()
+        if not raw_phone:
+            user.phone_number = None
+        else:
+            phone = _normalize_phone(raw_phone)
+            if not phone or len(phone) < 7:
+                raise HTTPException(status_code=400, detail="Phone number is too short")
+            existing = (
+                db.query(User)
+                .filter(and_(User.phone_number == phone, User.id != user.id))
+                .first()
+            )
+            if existing:
+                raise HTTPException(status_code=400, detail="Phone number already registered")
+            user.phone_number = phone
 
     db.commit()
     db.refresh(user)

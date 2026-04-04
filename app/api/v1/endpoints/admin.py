@@ -450,7 +450,13 @@ def list_users(
     query = db.query(User)
     if q:
         needle = f"%{q.strip()}%"
-        query = query.filter(or_(User.email.ilike(needle), User.full_name.ilike(needle)))
+        query = query.filter(
+            or_(
+                User.email.ilike(needle),
+                User.full_name.ilike(needle),
+                User.phone_number.ilike(needle),
+            )
+        )
 
     total = query.count()
     users = (
@@ -467,6 +473,7 @@ def list_users(
                 "id": u.id,
                 "created_at": u.created_at,
                 "email": u.email,
+                "phone_number": getattr(u, "phone_number", None),
                 "full_name": u.full_name,
                 "role": u.role,
                 "is_active": u.is_active,
@@ -555,6 +562,7 @@ def get_user_details(
             "id": user.id,
             "created_at": user.created_at,
             "email": user.email,
+            "phone_number": getattr(user, "phone_number", None),
             "full_name": user.full_name,
             "role": user.role.value if hasattr(user.role, "value") else str(user.role),
             "is_active": user.is_active,

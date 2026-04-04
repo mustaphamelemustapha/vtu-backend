@@ -61,6 +61,7 @@ class AdminUserOut(BaseModel):
     id: int
     created_at: datetime
     email: str
+    phone_number: Optional[str] = None
     full_name: str
     role: UserRole
     is_active: bool
