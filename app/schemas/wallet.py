@@ -29,6 +29,7 @@ class LedgerOut(BaseModel):
 class CreateBankTransferAccountsRequest(BaseModel):
     bvn: str | None = None
     nin: str | None = None
+    phone_number: str | None = None
 
 
 class BankAccountOut(BaseModel):

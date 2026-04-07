@@ -3,6 +3,7 @@ import re
 import logging
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import and_
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.config import get_settings
@@ -62,6 +63,14 @@ def _safe_ref(prefix: str, value: str) -> str:
     raw = f"{prefix}_{value or ''}"
     cleaned = re.sub(r"[^A-Za-z0-9_]", "_", raw)
     return cleaned[:64] if len(cleaned) <= 64 else cleaned[:64]
+
+
+def _normalize_phone(value: str | None) -> str | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    return digits or None
 
 
 @router.get("/me", response_model=WalletOut)
@@ -137,7 +146,23 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
 @limiter.limit("5/minute")
 def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferAccountsRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if settings.bank_transfer_provider.lower() == "paystack" and settings.paystack_dedicated_enabled:
-        phone = (user.phone_number or "").strip() or None
+        phone_input = _normalize_phone(payload.phone_number)
+        if payload.phone_number is not None and (not phone_input or len(phone_input) < 7):
+            raise HTTPException(status_code=400, detail="Phone number is too short")
+
+        phone = phone_input or (user.phone_number or "").strip() or None
+        if phone and phone != (user.phone_number or "").strip():
+            existing = (
+                db.query(User)
+                .filter(and_(User.phone_number == phone, User.id != user.id))
+                .first()
+            )
+            if existing:
+                raise HTTPException(status_code=400, detail="Phone number already registered")
+            user.phone_number = phone
+            db.commit()
+            db.refresh(user)
+
         first = (user.full_name or "").strip().split(" ")[0] or "Axis"
         last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
         try:
