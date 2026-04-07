@@ -73,6 +73,19 @@ def _normalize_phone(value: str | None) -> str | None:
     return digits or None
 
 
+def _to_paystack_phone(value: str | None) -> str | None:
+    digits = _normalize_phone(value)
+    if not digits:
+        return None
+    if digits.startswith("234") and len(digits) >= 13:
+        return digits[:13]
+    if digits.startswith("0") and len(digits) == 11:
+        return f"234{digits[1:]}"
+    if len(digits) == 10:
+        return f"234{digits}"
+    return digits
+
+
 @router.get("/me", response_model=WalletOut)
 def get_wallet(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     wallet = get_or_create_wallet(db, user.id)
@@ -89,7 +102,7 @@ def get_ledger(user: User = Depends(get_current_user), db: Session = Depends(get
 @router.get("/bank-transfer-accounts", response_model=BankTransferAccountsResponse)
 def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if settings.bank_transfer_provider.lower() == "paystack" and settings.paystack_dedicated_enabled:
-        phone = (user.phone_number or "").strip() or None
+        phone = _to_paystack_phone(user.phone_number)
         try:
             first = (user.full_name or "").strip().split(" ")[0] or "Axis"
             last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
@@ -150,7 +163,8 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
         if payload.phone_number is not None and (not phone_input or len(phone_input) < 7):
             raise HTTPException(status_code=400, detail="Phone number is too short")
 
-        phone = phone_input or (user.phone_number or "").strip() or None
+        phone = phone_input or _normalize_phone(user.phone_number)
+        paystack_phone = _to_paystack_phone(phone)
         if phone and phone != (user.phone_number or "").strip():
             existing = (
                 db.query(User)
@@ -170,7 +184,7 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
                 email=user.email,
                 first_name=first,
                 last_name=last,
-                phone=phone,
+                phone=paystack_phone,
             )
         except PaystackError as exc:
             detail = str(exc)

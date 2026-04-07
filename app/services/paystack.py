@@ -72,6 +72,25 @@ def create_paystack_customer(email: str, first_name: str, last_name: str, phone:
         raise
 
 
+def update_paystack_customer(
+    customer_code: str,
+    *,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    phone: str | None = None,
+) -> dict:
+    payload: dict = {}
+    if first_name:
+        payload["first_name"] = first_name
+    if last_name:
+        payload["last_name"] = last_name
+    if phone:
+        payload["phone"] = phone
+    if not payload:
+        return {}
+    return _request("PUT", f"/customer/{customer_code}", payload=payload)
+
+
 def get_paystack_customer(email_or_code: str) -> dict:
     return _request("GET", f"/customer/{email_or_code}")
 
@@ -93,6 +112,22 @@ def get_or_create_dedicated_account(email: str, first_name: str, last_name: str,
     customer_code = customer.get("customer_code") or customer.get("id")
     if not customer_code:
         raise PaystackError("Unable to resolve Paystack customer code", data=customer_resp)
+
+    # Existing customers may have been created without phone; ensure it is present.
+    if phone and not (customer.get("phone") or "").strip():
+        try:
+            updated = update_paystack_customer(
+                str(customer_code),
+                first_name=first_name,
+                last_name=last_name,
+                phone=phone,
+            )
+            maybe_customer = (updated or {}).get("data") or {}
+            if maybe_customer:
+                customer = maybe_customer
+        except PaystackError:
+            # Dedicated account creation below will surface a precise provider error if any.
+            pass
 
     try:
         existing = list_dedicated_accounts(customer_code)
