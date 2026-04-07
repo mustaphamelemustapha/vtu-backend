@@ -58,13 +58,7 @@ def enforce_purchase_limits(
             status_code=400,
         )
 
-    if amount > settings.fraud_single_tx_limit_ngn:
-        limit = f"₦{settings.fraud_single_tx_limit_ngn}"
-        raise _fraud_error(
-            f"This transaction exceeds your single-purchase limit ({limit}).",
-            "FRAUD_SINGLE_TX_LIMIT",
-            "Split the purchase into smaller amounts or contact support.",
-        )
+    # Single-transaction cap intentionally disabled: allow any valid amount in one purchase.
 
     start_of_day = _begin_day_utc()
     base_total = (
