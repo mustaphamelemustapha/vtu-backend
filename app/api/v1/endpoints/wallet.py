@@ -3,8 +3,8 @@ import re
 import logging
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import and_
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from app.core.database import get_db
 from app.core.config import get_settings
 from app.dependencies import get_current_user
@@ -71,6 +71,102 @@ def _normalize_phone(value: str | None) -> str | None:
         return None
     digits = "".join(ch for ch in raw if ch.isdigit())
     return digits or None
+
+
+def _canonical_phone(value: str | None) -> str | None:
+    digits = _normalize_phone(value)
+    if not digits:
+        return None
+    if digits.startswith("234") and len(digits) >= 13:
+        return f"0{digits[3:13]}"
+    if digits.startswith("0") and len(digits) == 11:
+        return digits
+    if len(digits) == 10:
+        return f"0{digits}"
+    return digits
+
+
+def _phone_variants(value: str | None) -> set[str]:
+    digits = _normalize_phone(value)
+    if not digits:
+        return set()
+    out = {digits}
+    if digits.startswith("234") and len(digits) >= 13:
+        out.add(f"0{digits[3:13]}")
+        out.add(digits[3:13])
+    if digits.startswith("0") and len(digits) == 11:
+        out.add(f"234{digits[1:]}")
+        out.add(digits[1:])
+    if len(digits) == 10:
+        out.add(f"0{digits}")
+        out.add(f"234{digits}")
+    return {item for item in out if item}
+
+
+def _find_user_by_phone(db: Session, phone: str | None, exclude_user_id: int | None = None) -> User | None:
+    variants = _phone_variants(phone)
+    if not variants:
+        return None
+    users = db.query(User).filter(User.phone_number.isnot(None)).all()
+    for candidate in users:
+        if exclude_user_id is not None and candidate.id == exclude_user_id:
+            continue
+        if _phone_variants(candidate.phone_number) & variants:
+            return candidate
+    return None
+
+
+def _extract_paystack_email(data: dict) -> str:
+    customer = data.get("customer") or {}
+    metadata = data.get("metadata") or {}
+    email = (
+        customer.get("email")
+        or metadata.get("customer_email")
+        or metadata.get("email")
+        or ""
+    )
+    email = str(email).strip().lower()
+    if email:
+        return email
+
+    customer_code = (
+        customer.get("customer_code")
+        or customer.get("code")
+        or customer.get("id")
+        or ""
+    )
+    if customer_code:
+        try:
+            customer_data = (get_paystack_customer(str(customer_code)).get("data") or {})
+            email = str(customer_data.get("email") or "").strip().lower()
+            if email:
+                return email
+        except Exception as exc:
+            logger.warning("Paystack customer lookup failed for %s: %s", customer_code, exc)
+    return ""
+
+
+def _resolve_paystack_transfer_user(db: Session, data: dict) -> User | None:
+    email = _extract_paystack_email(data)
+    if email:
+        user = db.query(User).filter(User.email == email).first()
+        if user:
+            return user
+
+    customer = data.get("customer") or {}
+    metadata = data.get("metadata") or {}
+    authorization = data.get("authorization") or {}
+    phone = (
+        customer.get("phone")
+        or metadata.get("phone_number")
+        or metadata.get("phone")
+        or authorization.get("sender_phone")
+        or ""
+    )
+    user = _find_user_by_phone(db, str(phone))
+    if user:
+        return user
+    return None
 
 
 def _to_paystack_phone(value: str | None) -> str | None:
@@ -160,20 +256,20 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
 def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferAccountsRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if settings.bank_transfer_provider.lower() == "paystack" and settings.paystack_dedicated_enabled:
         phone_input = _normalize_phone(payload.phone_number)
-        if payload.phone_number is not None and (not phone_input or len(phone_input) < 7):
-            raise HTTPException(status_code=400, detail="Phone number is too short")
+        if payload.phone_number is not None and (not phone_input or len(phone_input) < 10):
+            raise HTTPException(status_code=400, detail="Enter a valid phone number")
 
         phone = phone_input or _normalize_phone(user.phone_number)
         paystack_phone = _to_paystack_phone(phone)
-        if phone and phone != (user.phone_number or "").strip():
-            existing = (
-                db.query(User)
-                .filter(and_(User.phone_number == phone, User.id != user.id))
-                .first()
-            )
+        if phone and not paystack_phone:
+            raise HTTPException(status_code=400, detail="Enter a valid Nigerian phone number")
+
+        canonical_phone = _canonical_phone(phone)
+        if canonical_phone and canonical_phone != (user.phone_number or "").strip():
+            existing = _find_user_by_phone(db, canonical_phone, exclude_user_id=user.id)
             if existing:
                 raise HTTPException(status_code=400, detail="Phone number already registered")
-            user.phone_number = phone
+            user.phone_number = canonical_phone
             db.commit()
             db.refresh(user)
 
@@ -341,9 +437,13 @@ async def monnify_webhook(request: Request, db: Session = Depends(get_db)):
                         tx_type=TransactionType.WALLET_FUND,
                         external_reference=str(ext_ref) if ext_ref else None,
                     )
-                    db.add(tx)
-                    wallet = get_or_create_wallet(db, user.id)
-                    credit_wallet(db, wallet, amt, tx_ref, "Wallet funding via bank transfer (Monnify)")
+                    try:
+                        db.add(tx)
+                        wallet = get_or_create_wallet(db, user.id)
+                        credit_wallet(db, wallet, amt, tx_ref, "Wallet funding via bank transfer (Monnify)")
+                    except IntegrityError:
+                        db.rollback()
+                        return {"status": "ok"}
 
     if payment_status in {"FAILED", "CANCELLED"} or (event_type and "FAILED" in event_type):
         if transaction and transaction.status == TransactionStatus.PENDING:
@@ -380,54 +480,34 @@ async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
             db.commit()
     elif event == "charge.success" and not transaction:
         # Dedicated virtual account funding (no internal reference).
-        customer = data.get("customer") or {}
-        email = (
-            customer.get("email")
-            or (data.get("metadata") or {}).get("customer_email")
-            or (data.get("metadata") or {}).get("email")
-            or ""
-        )
-        email = str(email).strip().lower()
-        if not email:
-            customer_code = (
-                customer.get("customer_code")
-                or customer.get("code")
-                or customer.get("id")
-                or ""
-            )
-            if customer_code:
-                try:
-                    customer_data = (get_paystack_customer(str(customer_code)).get("data") or {})
-                    email = str(customer_data.get("email") or "").strip().lower()
-                except Exception as exc:
-                    logger.warning("Paystack customer lookup failed for %s: %s", customer_code, exc)
         ext_ref = str(data.get("id") or "").strip()
         amount_kobo = data.get("amount")
-        if email and amount_kobo:
-            user = db.query(User).filter(User.email == email).first()
-            if user:
-                if ext_ref and db.query(Transaction).filter(Transaction.external_reference == ext_ref).first():
-                    return {"status": "ok"}
-                amt = Decimal(str(amount_kobo)) / Decimal("100")
-                tx_ref = _safe_ref("TRF", ext_ref or secrets.token_hex(8))
-                tx = Transaction(
-                    user_id=user.id,
-                    reference=tx_ref,
-                    amount=amt,
-                    status=TransactionStatus.SUCCESS,
-                    tx_type=TransactionType.WALLET_FUND,
-                    external_reference=ext_ref or None,
-                )
+        user = _resolve_paystack_transfer_user(db, data)
+        if user and amount_kobo:
+            if ext_ref and db.query(Transaction).filter(Transaction.external_reference == ext_ref).first():
+                return {"status": "ok"}
+            amt = Decimal(str(amount_kobo)) / Decimal("100")
+            tx_ref = _safe_ref("TRF", ext_ref or secrets.token_hex(8))
+            tx = Transaction(
+                user_id=user.id,
+                reference=tx_ref,
+                amount=amt,
+                status=TransactionStatus.SUCCESS,
+                tx_type=TransactionType.WALLET_FUND,
+                external_reference=ext_ref or None,
+            )
+            try:
                 db.add(tx)
                 wallet = get_or_create_wallet(db, user.id)
                 credit_wallet(db, wallet, amt, tx_ref, "Wallet funding via Paystack transfer")
                 db.commit()
-            else:
-                logger.warning("Paystack transfer webhook email not matched to a user: %s", email)
+            except IntegrityError:
+                db.rollback()
+                return {"status": "ok"}
         else:
             logger.warning(
-                "Paystack charge.success missing routing fields for transfer credit: email=%s amount=%s",
-                bool(email),
+                "Paystack charge.success missing routing fields for transfer credit: user=%s amount=%s",
+                bool(user),
                 amount_kobo,
             )
 
