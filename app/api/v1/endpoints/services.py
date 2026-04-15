@@ -37,6 +37,22 @@ _TRANSPORT_ERROR_MARKERS = (
 )
 _PENDING_CONFIRMATION_MESSAGE = "Provider confirmation delayed. Purchase is being verified. Check history shortly."
 
+_NETWORK_PREFIXES: dict[str, set[str]] = {
+    "mtn": {
+        "0803", "0806", "0703", "0706", "0810", "0813", "0814", "0816",
+        "0903", "0906", "0913", "0916", "0704", "07025", "07026",
+    },
+    "airtel": {
+        "0802", "0808", "0708", "0812", "0701", "0902", "0907", "0901", "0912",
+    },
+    "glo": {
+        "0805", "0807", "0705", "0811", "0815", "0905", "0915",
+    },
+    "9mobile": {
+        "0809", "0817", "0818", "0908", "0909",
+    },
+}
+
 
 def _ref(prefix: str) -> str:
     return f"{prefix}_{secrets.token_hex(8)}"
@@ -62,6 +78,25 @@ def _mark_pending_confirmation(db: Session, tx: ServiceTransaction, result_meta:
     if result_meta:
         tx.meta = {**(tx.meta or {}), **result_meta}
     db.commit()
+
+
+def _normalize_phone_for_network_inference(phone_number: str) -> str:
+    digits = "".join(ch for ch in str(phone_number or "") if ch.isdigit())
+    if digits.startswith("234") and len(digits) >= 13:
+        return f"0{digits[3:]}"
+    return digits
+
+
+def _infer_nigeria_network(phone_number: str) -> str | None:
+    normalized = _normalize_phone_for_network_inference(phone_number)
+    if len(normalized) < 4:
+        return None
+    prefix5 = normalized[:5]
+    prefix4 = normalized[:4]
+    for network, prefixes in _NETWORK_PREFIXES.items():
+        if prefix5 in prefixes or prefix4 in prefixes:
+            return network
+    return None
 
 
 def _ensure_service_table(db: Session):
@@ -116,6 +151,16 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
     )
     if charge_amount <= 0:
         raise HTTPException(status_code=400, detail="Final amount must be greater than zero")
+    selected_network = str(payload.network or "").strip().lower()
+    inferred_network = _infer_nigeria_network(payload.phone_number)
+    if inferred_network and inferred_network != selected_network:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Phone number appears to be {inferred_network.upper()}. "
+                f"Selected network {selected_network.upper()} does not match."
+            ),
+        )
     enforce_purchase_limits(db, user_id=user.id, amount=charge_amount, tx_type=TransactionType.AIRTIME.value)
     if Decimal(wallet.balance) < charge_amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
