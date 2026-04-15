@@ -1,4 +1,5 @@
 import secrets
+import logging
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -22,7 +23,19 @@ from app.services.wallet import get_or_create_wallet, debit_wallet, credit_walle
 from app.services.pricing import get_service_charge_for_user
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 _PROVIDER_PENDING_STATUS = {"pending", "processing", "queued", "in_progress", "submitted", "accepted"}
+_TRANSPORT_ERROR_MARKERS = (
+    "network error",
+    "timed out",
+    "timeout",
+    "connection reset",
+    "connection aborted",
+    "connection refused",
+    "temporarily unavailable",
+    "service unavailable",
+)
+_PENDING_CONFIRMATION_MESSAGE = "Provider confirmation delayed. Purchase is being verified. Check history shortly."
 
 
 def _ref(prefix: str) -> str:
@@ -36,6 +49,19 @@ def _provider_status(result) -> str:
         if status:
             return status
     return str(meta.get("status") or "").strip().lower()
+
+
+def _is_transport_error(exc: Exception) -> bool:
+    message = str(exc or "").strip().lower()
+    return any(marker in message for marker in _TRANSPORT_ERROR_MARKERS)
+
+
+def _mark_pending_confirmation(db: Session, tx: ServiceTransaction, result_meta: dict | None = None) -> None:
+    tx.status = TransactionStatus.PENDING.value
+    tx.failure_reason = _PENDING_CONFIRMATION_MESSAGE
+    if result_meta:
+        tx.meta = {**(tx.meta or {}), **result_meta}
+    db.commit()
 
 
 def _ensure_service_table(db: Session):
@@ -118,15 +144,28 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
     debit_wallet(db, wallet, charge_amount, reference, "Airtime purchase")
 
     provider = get_bills_provider()
-    result = provider.purchase_airtime(tx.provider or "", tx.customer or "", float(base_amount))
+    try:
+        result = provider.purchase_airtime(tx.provider or "", tx.customer or "", float(base_amount))
+    except Exception as exc:
+        if _is_transport_error(exc):
+            logger.warning("Airtime provider confirmation delayed ref=%s error=%s", reference, exc)
+            _mark_pending_confirmation(db, tx, {"provider_error": str(exc)})
+            return {"reference": reference, "status": tx.status, "message": _PENDING_CONFIRMATION_MESSAGE}
+        logger.exception("Airtime purchase failed with non-transport provider error ref=%s", reference)
+        tx.failure_reason = str(exc) or "Provider failed"
+        credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed airtime purchase")
+        tx.status = TransactionStatus.REFUNDED.value
+        db.commit()
+        raise HTTPException(status_code=502, detail=tx.failure_reason)
     provider_status = _provider_status(result)
     if provider_status in _PROVIDER_PENDING_STATUS:
         tx.status = TransactionStatus.PENDING.value
         tx.external_reference = result.external_reference
         if result.meta:
             tx.meta = {**(tx.meta or {}), **result.meta}
+        tx.failure_reason = result.message or _PENDING_CONFIRMATION_MESSAGE
         db.commit()
-        return {"reference": reference, "status": tx.status}
+        return {"reference": reference, "status": tx.status, "message": tx.failure_reason}
     if result.success:
         tx.status = TransactionStatus.SUCCESS.value
         tx.external_reference = result.external_reference
@@ -188,21 +227,34 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
     debit_wallet(db, wallet, charge_amount, reference, "Cable subscription")
 
     provider = get_bills_provider()
-    result = provider.purchase_cable(
-        tx.provider or "",
-        tx.customer or "",
-        tx.product_code or "",
-        float(base_amount),
-        payload.phone_number.strip(),
-    )
+    try:
+        result = provider.purchase_cable(
+            tx.provider or "",
+            tx.customer or "",
+            tx.product_code or "",
+            float(base_amount),
+            payload.phone_number.strip(),
+        )
+    except Exception as exc:
+        if _is_transport_error(exc):
+            logger.warning("Cable provider confirmation delayed ref=%s error=%s", reference, exc)
+            _mark_pending_confirmation(db, tx, {"provider_error": str(exc)})
+            return {"reference": reference, "status": tx.status, "message": _PENDING_CONFIRMATION_MESSAGE}
+        logger.exception("Cable purchase failed with non-transport provider error ref=%s", reference)
+        tx.failure_reason = str(exc) or "Provider failed"
+        credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed cable purchase")
+        tx.status = TransactionStatus.REFUNDED.value
+        db.commit()
+        raise HTTPException(status_code=502, detail=tx.failure_reason)
     provider_status = _provider_status(result)
     if provider_status in _PROVIDER_PENDING_STATUS:
         tx.status = TransactionStatus.PENDING.value
         tx.external_reference = result.external_reference
         if result.meta:
             tx.meta = {**(tx.meta or {}), **result.meta}
+        tx.failure_reason = result.message or _PENDING_CONFIRMATION_MESSAGE
         db.commit()
-        return {"reference": reference, "status": tx.status}
+        return {"reference": reference, "status": tx.status, "message": tx.failure_reason}
     if result.success:
         tx.status = TransactionStatus.SUCCESS.value
         tx.external_reference = result.external_reference
@@ -264,21 +316,34 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
     debit_wallet(db, wallet, charge_amount, reference, "Electricity purchase")
 
     provider = get_bills_provider()
-    result = provider.purchase_electricity(
-        tx.provider or "",
-        tx.customer or "",
-        tx.product_code or "",
-        float(base_amount),
-        payload.phone_number.strip(),
-    )
+    try:
+        result = provider.purchase_electricity(
+            tx.provider or "",
+            tx.customer or "",
+            tx.product_code or "",
+            float(base_amount),
+            payload.phone_number.strip(),
+        )
+    except Exception as exc:
+        if _is_transport_error(exc):
+            logger.warning("Electricity provider confirmation delayed ref=%s error=%s", reference, exc)
+            _mark_pending_confirmation(db, tx, {"provider_error": str(exc)})
+            return {"reference": reference, "status": tx.status, "message": _PENDING_CONFIRMATION_MESSAGE, "token": (tx.meta or {}).get("token")}
+        logger.exception("Electricity purchase failed with non-transport provider error ref=%s", reference)
+        tx.failure_reason = str(exc) or "Provider failed"
+        credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed electricity purchase")
+        tx.status = TransactionStatus.REFUNDED.value
+        db.commit()
+        raise HTTPException(status_code=502, detail=tx.failure_reason)
     provider_status = _provider_status(result)
     if provider_status in _PROVIDER_PENDING_STATUS:
         tx.status = TransactionStatus.PENDING.value
         tx.external_reference = result.external_reference
         if result.meta:
             tx.meta = {**(tx.meta or {}), **result.meta}
+        tx.failure_reason = result.message or _PENDING_CONFIRMATION_MESSAGE
         db.commit()
-        return {"reference": reference, "status": tx.status, "token": (tx.meta or {}).get("token")}
+        return {"reference": reference, "status": tx.status, "token": (tx.meta or {}).get("token"), "message": tx.failure_reason}
     if result.success:
         tx.status = TransactionStatus.SUCCESS.value
         tx.external_reference = result.external_reference
@@ -343,15 +408,28 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
     debit_wallet(db, wallet, charge_amount, reference, "Exam pin purchase")
 
     provider = get_bills_provider()
-    result = provider.purchase_exam_pin(tx.provider or "", int(payload.quantity or 1), tx.customer)
+    try:
+        result = provider.purchase_exam_pin(tx.provider or "", int(payload.quantity or 1), tx.customer)
+    except Exception as exc:
+        if _is_transport_error(exc):
+            logger.warning("Exam provider confirmation delayed ref=%s error=%s", reference, exc)
+            _mark_pending_confirmation(db, tx, {"provider_error": str(exc)})
+            return {"reference": reference, "status": tx.status, "pins": (tx.meta or {}).get("pins", []), "message": _PENDING_CONFIRMATION_MESSAGE}
+        logger.exception("Exam purchase failed with non-transport provider error ref=%s", reference)
+        tx.failure_reason = str(exc) or "Provider failed"
+        credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed exam pin purchase")
+        tx.status = TransactionStatus.REFUNDED.value
+        db.commit()
+        raise HTTPException(status_code=502, detail=tx.failure_reason)
     provider_status = _provider_status(result)
     if provider_status in _PROVIDER_PENDING_STATUS:
         tx.status = TransactionStatus.PENDING.value
         tx.external_reference = result.external_reference
         if result.meta:
             tx.meta = {**(tx.meta or {}), **result.meta}
+        tx.failure_reason = result.message or _PENDING_CONFIRMATION_MESSAGE
         db.commit()
-        return {"reference": reference, "status": tx.status, "pins": (tx.meta or {}).get("pins", [])}
+        return {"reference": reference, "status": tx.status, "pins": (tx.meta or {}).get("pins", []), "message": tx.failure_reason}
     if result.success:
         tx.status = TransactionStatus.SUCCESS.value
         tx.external_reference = result.external_reference
