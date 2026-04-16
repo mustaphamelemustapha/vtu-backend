@@ -64,11 +64,17 @@ def _build_reset_email_html(reset_link: str) -> str:
 
 def _resolve_frontend_base_url() -> str:
     settings = get_settings()
-    base = (settings.frontend_base_url or "").strip().rstrip("/")
-    host = urlparse(base).netloc.lower()
-    if "vercel.app" in host:
+    raw = (settings.frontend_base_url or "").strip().rstrip("/")
+    if not raw:
         return "https://axisvtu.com"
-    return base or "https://axisvtu.com"
+
+    # Accept both full URLs and bare hosts from env/config.
+    candidate = raw if raw.startswith(("http://", "https://")) else f"https://{raw}"
+    host = urlparse(candidate).netloc.lower()
+    raw_lower = raw.lower()
+    if "vercel.app" in host or "vercel.app" in raw_lower:
+        return "https://axisvtu.com"
+    return candidate.rstrip("/")
 
 
 def send_password_reset_email(to_email: str, reset_token: str) -> None:
