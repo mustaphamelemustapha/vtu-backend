@@ -3,6 +3,7 @@ from __future__ import annotations
 import smtplib
 from email.message import EmailMessage
 from email.utils import parseaddr
+from urllib.parse import urlparse
 from typing import Optional
 
 import httpx
@@ -61,9 +62,18 @@ def _build_reset_email_html(reset_link: str) -> str:
     """.strip()
 
 
+def _resolve_frontend_base_url() -> str:
+    settings = get_settings()
+    base = (settings.frontend_base_url or "").strip().rstrip("/")
+    host = urlparse(base).netloc.lower()
+    if "vercel.app" in host:
+        return "https://axisvtu.com"
+    return base or "https://axisvtu.com"
+
+
 def send_password_reset_email(to_email: str, reset_token: str) -> None:
     settings = get_settings()
-    reset_link = f"{settings.frontend_base_url.rstrip('/')}/app/?reset=1&token={reset_token}"
+    reset_link = f"{_resolve_frontend_base_url()}/app/reset-password?token={reset_token}"
     subject = "Reset your AxisVTU password"
     html = _build_reset_email_html(reset_link)
     to_email = _sanitize_email(to_email)
