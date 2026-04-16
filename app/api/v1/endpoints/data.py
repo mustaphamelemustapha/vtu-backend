@@ -40,6 +40,24 @@ _FAILURE_HINTS = ("failed", "unsuccessful", "unable", "error", "rejected", "decl
 _PENDING_HINTS = ("pending", "processing", "queued", "in progress", "submitted")
 _VTPASS_DATA_NETWORKS = {"airtel", "9mobile", "etisalat", "t2"}
 _AMIGO_DATA_NETWORKS = {"mtn", "glo"}
+_CURATED_SIZE_TARGETS_GB = (0.2, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0, 15.0, 20.0)
+_CURATED_MAX_PER_NETWORK = 8
+_CURATED_FILTER_KEYWORDS = (
+    "night",
+    "social",
+    "weekend",
+    "daily",
+    "2day",
+    "2-day",
+    "1day",
+    "1-day",
+    "awoof",
+    "bonus",
+    "router",
+    "mifi",
+    "youtube",
+    "unlimited",
+)
 
 _SIZE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(GB|MB)", re.IGNORECASE)
 _VALIDITY_RE = re.compile(r"(\d+)\s*(day|days|month|months|week|weeks)", re.IGNORECASE)
@@ -84,6 +102,186 @@ def _extract_validity(value: str | None) -> str:
     if unit.startswith("week"):
         return f"{amount * 7}d"
     return f"{amount}d"
+
+
+def _parse_size_gb(value: str | None) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    match = _SIZE_RE.search(text)
+    if not match:
+        return None
+    amount = float(match.group(1))
+    unit = match.group(2).upper()
+    if unit == "MB":
+        return amount / 1024.0
+    return amount
+
+
+def _parse_validity_days(value: str | None) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    match = _VALIDITY_RE.search(text)
+    if not match:
+        return None
+    amount = int(match.group(1))
+    unit = match.group(2).lower()
+    if unit.startswith("month"):
+        return amount * 30
+    if unit.startswith("week"):
+        return amount * 7
+    return amount
+
+
+def _plan_price_value(plan: DataPlanOut) -> Decimal:
+    try:
+        return Decimal(str(plan.price or 0))
+    except Exception:
+        return Decimal("0")
+
+
+def _closest_target_size(size_gb: float | None) -> float | None:
+    if size_gb is None:
+        return None
+    best = None
+    best_delta = None
+    for target in _CURATED_SIZE_TARGETS_GB:
+        delta = abs(size_gb - target)
+        if best is None or delta < best_delta:
+            best = target
+            best_delta = delta
+    if best is None:
+        return None
+    # Keep only reasonably close buckets to avoid weird mismatches.
+    allowed = max(0.12, best * 0.28)
+    if float(best_delta or 0.0) > allowed:
+        return None
+    return best
+
+
+def _plan_quality_score(plan: DataPlanOut) -> int:
+    score = 0
+    combined = " ".join(
+        [
+            str(plan.plan_name or "").lower(),
+            str(plan.data_size or "").lower(),
+            str(plan.validity or "").lower(),
+        ]
+    )
+    size_gb = _parse_size_gb(plan.data_size or plan.plan_name)
+    validity_days = _parse_validity_days(plan.validity or plan.plan_name)
+    target = _closest_target_size(size_gb)
+
+    if target is not None:
+        score += 5
+    elif size_gb is not None:
+        score += 2
+
+    if validity_days is not None:
+        if 25 <= validity_days <= 35:
+            score += 4
+        elif 6 <= validity_days <= 10:
+            score += 1
+        elif validity_days < 4:
+            score -= 2
+
+    if size_gb is not None and 0.15 <= size_gb <= 25:
+        score += 1
+    if size_gb is not None and size_gb > 40:
+        score -= 2
+
+    if any(keyword in combined for keyword in _CURATED_FILTER_KEYWORDS):
+        score -= 5
+
+    return score
+
+
+def _is_noisy_plan(plan: DataPlanOut) -> bool:
+    combined = " ".join(
+        [
+            str(plan.plan_name or "").lower(),
+            str(plan.data_size or "").lower(),
+            str(plan.validity or "").lower(),
+        ]
+    )
+    if any(keyword in combined for keyword in _CURATED_FILTER_KEYWORDS):
+        return True
+    validity_days = _parse_validity_days(plan.validity or plan.plan_name)
+    if validity_days is not None and validity_days < 7:
+        return True
+    return False
+
+
+def _curate_sharp_plans(priced: list[DataPlanOut]) -> list[DataPlanOut]:
+    if not priced:
+        return []
+
+    grouped: dict[str, list[DataPlanOut]] = {}
+    for item in priced:
+        network = str(item.network or "").strip().lower() or "unknown"
+        grouped.setdefault(network, []).append(item)
+
+    curated: list[DataPlanOut] = []
+    for network, network_plans in grouped.items():
+        primary_candidates = [plan for plan in network_plans if not _is_noisy_plan(plan)]
+        if len(primary_candidates) < 4:
+            primary_candidates = network_plans
+
+        ranked = sorted(
+            primary_candidates,
+            key=lambda p: (
+                -_plan_quality_score(p),
+                _plan_price_value(p),
+                _parse_size_gb(p.data_size or p.plan_name) or 0.0,
+                str(p.plan_name or ""),
+            ),
+        )
+
+        bucket_best: dict[float, DataPlanOut] = {}
+        extras: list[DataPlanOut] = []
+        for plan in ranked:
+            size = _parse_size_gb(plan.data_size or plan.plan_name)
+            bucket = _closest_target_size(size)
+            if bucket is None:
+                extras.append(plan)
+                continue
+            current = bucket_best.get(bucket)
+            if current is None:
+                bucket_best[bucket] = plan
+                continue
+            # Pick the better score, then cheaper.
+            if (_plan_quality_score(plan), -_plan_price_value(plan)) > (
+                _plan_quality_score(current),
+                -_plan_price_value(current),
+            ):
+                bucket_best[bucket] = plan
+
+        picked = list(bucket_best.values())
+        picked.sort(key=lambda p: (_plan_price_value(p), _parse_size_gb(p.data_size or p.plan_name) or 0.0))
+
+        for plan in extras:
+            if len(picked) >= _CURATED_MAX_PER_NETWORK:
+                break
+            if plan in picked:
+                continue
+            picked.append(plan)
+
+        # Guarantee minimum variety; fallback to cheapest if scoring became too strict.
+        if len(picked) < 4:
+            fallback = sorted(network_plans, key=lambda p: (_plan_price_value(p), str(p.plan_name or "")))
+            picked = fallback[: min(_CURATED_MAX_PER_NETWORK, len(fallback))]
+
+        curated.extend(picked[:_CURATED_MAX_PER_NETWORK])
+
+    curated.sort(
+        key=lambda p: (
+            str(p.network or "").lower(),
+            _plan_price_value(p),
+            _parse_size_gb(p.data_size or p.plan_name) or 0.0,
+        )
+    )
+    return curated
 
 
 def _extract_variation_code(variation: dict) -> str:
@@ -448,9 +646,10 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                 price=price,
             )
         )
+    curated = _curate_sharp_plans(priced)
     # Keep plans warm longer to reduce repeated DB/provider work on frequent page refreshes.
-    set_cached(cache_key, priced, ttl_seconds=600)
-    return priced
+    set_cached(cache_key, curated, ttl_seconds=600)
+    return curated
 
 
 @router.post("/purchase")
