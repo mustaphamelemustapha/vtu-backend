@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.dependencies import get_current_user
 from app.middlewares.rate_limit import limiter
+from app.models import User
 from app.schemas.security import MessageResponse, PinStatusResponse
 from app.services.email import send_transaction_pin_reset_email
 from app.services.transaction_pin import (
@@ -164,9 +165,7 @@ def pin_reset_confirm(
     request: Request,
     payload: dict = Body(...),
     db=Depends(get_db),
-    user=Depends(get_current_user),
 ):
-    _refresh_lock_if_needed(user, db)
     token = (payload.get("token") or "").strip()
     new_pin = "".join(ch for ch in str(payload.get("new_pin") or "") if ch.isdigit())
     confirm_pin = "".join(ch for ch in str(payload.get("confirm_pin") or "") if ch.isdigit())
@@ -176,10 +175,17 @@ def pin_reset_confirm(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="PIN mismatch. Please try again.")
     if not token:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset token")
-    expires_at = getattr(user, "pin_reset_token_expires_at", None)
-    if not expires_at:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset token")
+    from app.services.transaction_pin import hash_pin_reset_token
 
+    token_hash = hash_pin_reset_token(token)
+    user = (
+        db.query(User)
+        .filter(User.pin_reset_token_hash == token_hash)
+        .first()
+    )
+    if not user or not getattr(user, "pin_reset_token_expires_at", None):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset token")
+    expires_at = getattr(user, "pin_reset_token_expires_at", None)
     if expires_at.tzinfo is None:
         from datetime import timezone
 
@@ -193,7 +199,6 @@ def pin_reset_confirm(
 
     if not validate_reset_token(user, token):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired reset token")
-
     set_pin(user, new_pin)
     clear_reset_token(user)
     db.commit()

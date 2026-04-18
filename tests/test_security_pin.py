@@ -189,7 +189,6 @@ def test_pin_reset_flow_sets_token_and_resets_pin():
 
             confirm = client.post(
                 "/api/v1/security/pin/reset-confirm",
-                headers=_auth_headers("1", "user"),
                 json={
                     "token": captured["token"],
                     "new_pin": "5678",
