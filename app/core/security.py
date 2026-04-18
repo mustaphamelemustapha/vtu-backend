@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from typing import Optional
+from hashlib import sha256
 import jwt
 from passlib.context import CryptContext
 from app.core.config import get_settings
@@ -17,6 +18,18 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
+
+
+def hash_pin(pin: str) -> str:
+    return pwd_context.hash(pin, rounds=settings.pin_bcrypt_rounds)
+
+
+def verify_pin(pin: str, hashed_pin: str) -> bool:
+    return pwd_context.verify(pin, hashed_pin)
+
+
+def hash_reset_token(token: str) -> str:
+    return sha256(token.encode("utf-8")).hexdigest()
 
 
 

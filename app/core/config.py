@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
     password_bcrypt_rounds: int = 12
+    pin_bcrypt_rounds: int = 12
+    pin_max_failed_attempts: int = 5
+    pin_lock_minutes: int = 15
+    pin_reset_token_minutes: int = 30
 
     # Database
     database_url: PostgresDsn

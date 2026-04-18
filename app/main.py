@@ -121,6 +121,7 @@ def ensure_tables():
     if not settings.auto_create_tables:
         _bootstrap_admins()
         _ensure_user_phone_column()
+        _ensure_user_security_pin_columns()
         return
 
     # Optional local fallback for fresh environments.
@@ -133,6 +134,7 @@ def ensure_tables():
         )
     _bootstrap_admins()
     _ensure_user_phone_column()
+    _ensure_user_security_pin_columns()
 
 @app.get("/")
 def root():
@@ -153,6 +155,42 @@ def _ensure_user_phone_column() -> None:
         logging.getLogger(__name__).info("Added users.phone_number column for phone login.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure phone_number column: %s", exc)
+
+
+def _ensure_user_security_pin_columns() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("users"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("users")}
+        dialect_name = getattr(engine.dialect, "name", "")
+        ts_type = "TIMESTAMP WITH TIME ZONE" if dialect_name == "postgresql" else "DATETIME"
+        statements: list[str] = []
+        if "pin_hash" not in cols:
+            statements.append("ALTER TABLE users ADD COLUMN pin_hash VARCHAR(255)")
+        if "pin_set_at" not in cols:
+            statements.append(f"ALTER TABLE users ADD COLUMN pin_set_at {ts_type}")
+        if "pin_failed_attempts" not in cols:
+            statements.append("ALTER TABLE users ADD COLUMN pin_failed_attempts INTEGER NOT NULL DEFAULT 0")
+        if "pin_locked_until" not in cols:
+            statements.append(f"ALTER TABLE users ADD COLUMN pin_locked_until {ts_type}")
+        if "pin_reset_token_hash" not in cols:
+            statements.append("ALTER TABLE users ADD COLUMN pin_reset_token_hash VARCHAR(255)")
+        if "pin_reset_token_expires_at" not in cols:
+            statements.append(f"ALTER TABLE users ADD COLUMN pin_reset_token_expires_at {ts_type}")
+
+        if not statements:
+            return
+
+        with engine.begin() as conn:
+            for statement in statements:
+                conn.execute(text(statement))
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_users_pin_reset_token_hash ON users (pin_reset_token_hash)")
+            )
+        logging.getLogger(__name__).info("Added users transaction PIN columns for backend security.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure transaction pin columns: %s", exc)
 
 
 @app.get("/healthz")

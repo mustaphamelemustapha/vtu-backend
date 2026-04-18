@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import auth, wallet, data, transactions, admin, services, notifications, dashboard
+from app.api.v1.endpoints import auth, wallet, data, transactions, admin, services, notifications, dashboard, security
 
 router = APIRouter()
 
@@ -11,3 +11,4 @@ router.include_router(services.router, prefix="/services", tags=["services"])
 router.include_router(admin.router, prefix="/admin", tags=["admin"])
 router.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
 router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
+router.include_router(security.router, prefix="/security", tags=["security"])

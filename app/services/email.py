@@ -62,6 +62,28 @@ def _build_reset_email_html(reset_link: str) -> str:
     """.strip()
 
 
+def _build_pin_reset_email_html(reset_link: str) -> str:
+    return f"""
+    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
+      <h2 style="margin: 0 0 8px;">Reset your AxisVTU transaction PIN</h2>
+      <p style="margin: 0 0 14px;">
+        We received a request to reset your transaction PIN. If you did not request this, you can ignore this email.
+      </p>
+      <p style="margin: 0 0 16px;">
+        <a href="{reset_link}" style="display:inline-block;background:#0f766e;color:#fff;padding:10px 14px;border-radius:12px;text-decoration:none;font-weight:700;">
+          Reset Transaction PIN
+        </a>
+      </p>
+      <p style="margin: 0 0 6px; color: #475569; font-size: 13px;">
+        Or copy and paste this link:
+      </p>
+      <p style="margin: 0; font-size: 13px;">
+        <a href="{reset_link}" style="color:#0f766e;">{reset_link}</a>
+      </p>
+    </div>
+    """.strip()
+
+
 def _resolve_frontend_base_url() -> str:
     settings = get_settings()
     raw = (settings.frontend_base_url or "").strip().rstrip("/")
@@ -87,6 +109,57 @@ def send_password_reset_email(to_email: str, reset_token: str) -> None:
     provider = (settings.email_provider or "console").lower()
     if provider == "console":
         # Safe default for dev/test; shows link in logs.
+        print(f"[email][console] to={to_email} subject={subject} link={reset_link}")
+        return
+
+    if provider == "resend":
+        _send_via_resend(
+            api_key=settings.resend_api_key,
+            email_from=_sanitize_email_from(settings.email_from),
+            to_email=to_email,
+            subject=subject,
+            html=html,
+        )
+        return
+
+    if provider == "brevo":
+        name, from_email = _parse_from(settings.email_from)
+        _send_via_brevo(
+            api_key=settings.brevo_api_key,
+            from_name=name,
+            from_email=from_email,
+            to_email=to_email,
+            subject=subject,
+            html=html,
+        )
+        return
+
+    if provider == "smtp":
+        _send_via_smtp(
+            host=settings.smtp_host,
+            port=settings.smtp_port,
+            username=settings.smtp_username,
+            password=settings.smtp_password,
+            use_tls=settings.smtp_use_tls,
+            email_from=_sanitize_email_from(settings.email_from),
+            to_email=to_email,
+            subject=subject,
+            html=html,
+        )
+        return
+
+    raise ValueError(f"Unsupported EMAIL_PROVIDER: {settings.email_provider}")
+
+
+def send_transaction_pin_reset_email(to_email: str, reset_token: str) -> None:
+    settings = get_settings()
+    reset_link = f"{_resolve_frontend_base_url()}/app/reset-pin?token={reset_token}"
+    subject = "Reset your AxisVTU transaction PIN"
+    html = _build_pin_reset_email_html(reset_link)
+    to_email = _sanitize_email(to_email)
+
+    provider = (settings.email_provider or "console").lower()
+    if provider == "console":
         print(f"[email][console] to={to_email} subject={subject} link={reset_link}")
         return
 
