@@ -153,7 +153,7 @@ def send_password_reset_email(to_email: str, reset_token: str) -> None:
 
 def send_transaction_pin_reset_email(to_email: str, reset_token: str) -> None:
     settings = get_settings()
-    reset_link = f"{_resolve_frontend_base_url()}/app/reset-pin?token={reset_token}&flow=pin"
+    reset_link = f"{_resolve_frontend_base_url()}/reset-pin?token={reset_token}&flow=pin"
     subject = "Reset your AxisVTU transaction PIN"
     html = _build_pin_reset_email_html(reset_link)
     to_email = _sanitize_email(to_email)
