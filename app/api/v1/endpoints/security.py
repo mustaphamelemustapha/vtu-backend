@@ -11,7 +11,7 @@ from app.core.database import get_db
 from app.dependencies import get_current_user
 from app.middlewares.rate_limit import limiter
 from app.models import User
-from app.schemas.security import MessageResponse, PinStatusResponse
+from app.schemas.security import MessageResponse, PinResetTokenResponse, PinStatusResponse
 from app.services.email import send_transaction_pin_reset_email
 from app.services.transaction_pin import (
     clear_reset_token,
@@ -54,6 +54,41 @@ def pin_status(
 ):
     _refresh_lock_if_needed(user, db)
     return PinStatusResponse(**pin_status_payload(user))
+
+
+@router.get("/pin/reset-token", response_model=PinResetTokenResponse)
+@limiter.limit("30/minute")
+def pin_reset_token(
+    request: Request,
+    token: str,
+    db=Depends(get_db),
+):
+    from app.services.transaction_pin import hash_pin_reset_token
+
+    token_hash = hash_pin_reset_token(token)
+    user = (
+        db.query(User)
+        .filter(User.pin_reset_token_hash == token_hash)
+        .first()
+    )
+    if not user or not getattr(user, "pin_reset_token_expires_at", None):
+        return PinResetTokenResponse(is_valid=False)
+
+    expires_at = getattr(user, "pin_reset_token_expires_at", None)
+    if expires_at.tzinfo is None:
+        from datetime import timezone
+
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    else:
+        from datetime import timezone
+
+        expires_at = expires_at.astimezone(timezone.utc)
+    if expires_at < _utcnow():
+        return PinResetTokenResponse(is_valid=False)
+
+    if not validate_reset_token(user, token):
+        return PinResetTokenResponse(is_valid=False)
+    return PinResetTokenResponse(is_valid=True)
 
 
 @router.post("/pin/setup", response_model=MessageResponse)

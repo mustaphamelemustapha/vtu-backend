@@ -52,5 +52,9 @@ class PinStatusResponse(BaseModel):
     pin_length: int = 4
 
 
+class PinResetTokenResponse(BaseModel):
+    is_valid: bool
+
+
 class MessageResponse(BaseModel):
     message: str
