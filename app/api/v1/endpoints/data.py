@@ -20,7 +20,7 @@ from app.services.amigo import (
     resolve_network_id,
     split_plan_code,
 )
-from app.services.bills import get_bills_provider
+from app.services.bills import ClubKonnectBillsProvider, get_bills_provider
 from app.services.fraud import enforce_purchase_limits
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
 from app.services.pricing import get_price_for_user
