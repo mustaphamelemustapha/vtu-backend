@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import re
 import secrets
@@ -30,6 +31,8 @@ router = APIRouter()
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+_PLAN_CACHE_VERSION = "v4"
+
 
 _SUCCESS_STATUS = {"success", "successful", "delivered", "completed", "ok", "done"}
 _PENDING_STATUS = {"pending", "processing", "queued", "in_progress", "accepted", "submitted"}
@@ -59,13 +62,43 @@ _CURATED_FILTER_KEYWORDS = (
     "unlimited",
 )
 
+_AIRTEL_BUNDLE_ORDER = {
+    "2GB": 0,
+    "3GB": 1,
+    "4GB": 2,
+    "8GB": 3,
+    "10GB": 4,
+    "13GB": 5,
+    "18GB": 6,
+    "25GB": 7,
+}
+
+_AIRTEL_VALIDITY_TARGETS = {
+    "2GB": 30,
+    "3GB": 30,
+    "4GB": 30,
+    "8GB": 30,
+    "10GB": 30,
+    "13GB": 30,
+    "18GB": 30,
+    "25GB": 30,
+}
+
 _SIZE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(GB|MB)", re.IGNORECASE)
-_VALIDITY_RE = re.compile(r"(\d+)\s*(day|days|month|months|week|weeks)", re.IGNORECASE)
+_VALIDITY_RE = re.compile(r"(\d+)\s*(d|day|days|month|months|week|weeks)", re.IGNORECASE)
 
 
 def _safe_reason(value: str, limit: int = 255) -> str:
     text = str(value or "").strip()
     return text[:limit] if text else "Unknown provider error"
+
+
+def _client_request_reference(prefix: str, user_id: int, request_id: str | None) -> str | None:
+    raw = str(request_id or "").strip()
+    if not raw:
+        return None
+    digest = hashlib.sha256(f"{prefix}:{user_id}:{raw}".encode()).hexdigest()[:24].upper()
+    return f"{prefix}_{digest}"
 
 
 def _is_vtpass_network(network: str | None) -> bool:
@@ -76,6 +109,19 @@ def _is_vtpass_network(network: str | None) -> bool:
 def _is_amigo_data_network(network: str | None) -> bool:
     key = str(network or "").strip().lower()
     return key in _AMIGO_DATA_NETWORKS
+
+
+def _clubkonnect_available() -> bool:
+    return bool(settings.clubkonnect_user_id and settings.clubkonnect_api_key)
+
+
+def _provider_for_data_network(network: str | None):
+    key = str(network or "").strip().lower()
+    if key == "airtel":
+        if _clubkonnect_available():
+            return ClubKonnectBillsProvider()
+        logger.warning("Airtel plans requested but ClubKonnect credentials are missing; falling back to configured bills provider.")
+    return get_bills_provider()
 
 
 def _extract_capacity(value: str | None) -> str:
@@ -102,6 +148,19 @@ def _extract_validity(value: str | None) -> str:
     if unit.startswith("week"):
         return f"{amount * 7}d"
     return f"{amount}d"
+
+
+def _clean_plan_label(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    cleaned = re.sub(r"\(\s*direct\s+data\s*\)", "", text, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bdirect\s+data\b", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s*-\s*$", "", cleaned)
+    cleaned = re.sub(r"^\s*-\s*", "", cleaned)
+    cleaned = cleaned.strip(" -")
+    return cleaned or text
 
 
 def _parse_size_gb(value: str | None) -> float | None:
@@ -197,6 +256,16 @@ def _plan_quality_score(plan: DataPlanOut) -> int:
     return score
 
 
+def _is_airtel_30_day_bundle(plan: DataPlanOut) -> bool:
+    if str(plan.network or "").strip().lower() != "airtel":
+        return True
+    capacity = _extract_capacity(f"{plan.data_size or ''} {plan.plan_name or ''}")
+    if capacity not in _AIRTEL_BUNDLE_ORDER:
+        return False
+    validity_days = _parse_validity_days(str(plan.validity or "") or str(plan.plan_name or ""))
+    return validity_days == 30
+
+
 def _is_noisy_plan(plan: DataPlanOut) -> bool:
     combined = " ".join(
         [
@@ -206,9 +275,6 @@ def _is_noisy_plan(plan: DataPlanOut) -> bool:
         ]
     )
     if any(keyword in combined for keyword in _CURATED_FILTER_KEYWORDS):
-        return True
-    validity_days = _parse_validity_days(plan.validity or plan.plan_name)
-    if validity_days is not None and validity_days < 7:
         return True
     return False
 
@@ -225,7 +291,24 @@ def _curate_sharp_plans(priced: list[DataPlanOut]) -> list[DataPlanOut]:
     curated: list[DataPlanOut] = []
     for network, network_plans in grouped.items():
         primary_candidates = [plan for plan in network_plans if not _is_noisy_plan(plan)]
-        if len(primary_candidates) < 4:
+        if network == "airtel":
+            primary_candidates = [plan for plan in primary_candidates if _is_airtel_30_day_bundle(plan)]
+            if not primary_candidates:
+                continue
+            ranked = sorted(
+                primary_candidates,
+                key=lambda p: (
+                    _AIRTEL_BUNDLE_ORDER.get(
+                        _extract_capacity(f"{p.data_size or ''} {p.plan_name or ''}"),
+                        999,
+                    ),
+                    _plan_price_value(p),
+                    str(p.plan_name or ""),
+                ),
+            )
+            curated.extend(ranked[:_CURATED_MAX_PER_NETWORK])
+            continue
+        elif len(primary_candidates) < 4:
             primary_candidates = network_plans
 
         ranked = sorted(
@@ -258,7 +341,7 @@ def _curate_sharp_plans(priced: list[DataPlanOut]) -> list[DataPlanOut]:
                 bucket_best[bucket] = plan
 
         picked = list(bucket_best.values())
-        picked.sort(key=lambda p: (_plan_price_value(p), _parse_size_gb(p.data_size or p.plan_name) or 0.0))
+        picked.sort(key=_plan_display_sort_key)
 
         for plan in extras:
             if len(picked) >= _CURATED_MAX_PER_NETWORK:
@@ -274,13 +357,7 @@ def _curate_sharp_plans(priced: list[DataPlanOut]) -> list[DataPlanOut]:
 
         curated.extend(picked[:_CURATED_MAX_PER_NETWORK])
 
-    curated.sort(
-        key=lambda p: (
-            str(p.network or "").lower(),
-            _plan_price_value(p),
-            _parse_size_gb(p.data_size or p.plan_name) or 0.0,
-        )
-    )
+    curated.sort(key=lambda p: (str(p.network or "").lower(), *_plan_display_sort_key(p)))
     return curated
 
 
@@ -381,7 +458,7 @@ def _provider_variation_to_item(network: str, variation: dict) -> dict | None:
         validity = f"{validity}d"
     if not validity:
         validity = "30d"
-    plan_name = name or f"{network.upper()} {size or code}"
+    plan_name = _clean_plan_label(name or f"{network.upper()} {size or code}")
     return {
         "network": network,
         "plan_code": code,
@@ -389,7 +466,47 @@ def _provider_variation_to_item(network: str, variation: dict) -> dict | None:
         "data_size": size or plan_name,
         "validity": validity,
         "price": price,
+        "_source_name": name,
     }
+
+
+def _retain_airtel_bundle(item: dict) -> bool:
+    capacity = _extract_capacity(f"{item.get('data_size') or ''} {item.get('plan_name') or ''}")
+    if capacity not in _AIRTEL_BUNDLE_ORDER:
+        return False
+    validity_days = _parse_validity_days(str(item.get("validity") or "") or str(item.get("_source_name") or ""))
+    return validity_days == 30
+
+
+def _airtel_bundle_preference(item: dict) -> tuple[int, int, int, Decimal, str]:
+    capacity = _extract_capacity(f"{item.get('data_size') or ''} {item.get('plan_name') or ''}")
+    order = _AIRTEL_BUNDLE_ORDER.get(capacity, 999)
+    target_days = _AIRTEL_VALIDITY_TARGETS.get(capacity, 30)
+    validity_days = _parse_validity_days(
+        str(item.get("validity") or "") or str(item.get("_source_name") or "")
+    )
+    if validity_days is None:
+        validity_days = 999
+    validity_delta = abs(validity_days - target_days)
+    price = Decimal(str(item.get("price", 0)))
+    code = str(item.get("plan_code") or "")
+    source_text = " ".join(
+        [
+            str(item.get("_source_name") or ""),
+            str(item.get("plan_name") or ""),
+            str(item.get("data_size") or ""),
+        ]
+    ).lower()
+    direct_rank = 0 if "direct data" in source_text else 1
+    return order, validity_delta, direct_rank, price, code
+
+def _plan_display_sort_key(plan: DataPlanOut) -> tuple[int, Decimal, float, str]:
+    network = str(plan.network or "").strip().lower()
+    if network == "airtel":
+        capacity = _extract_capacity(f"{plan.data_size or ''} {plan.plan_name or ''}")
+        order = _AIRTEL_BUNDLE_ORDER.get(capacity, 999)
+        return order, _plan_price_value(plan), _parse_size_gb(plan.data_size or plan.plan_name) or 0.0, str(plan.plan_name or "")
+    return 999, _plan_price_value(plan), _parse_size_gb(plan.data_size or plan.plan_name) or 0.0, str(plan.plan_name or "")
 
 
 def _normalize_provider_text(value) -> str:
@@ -496,9 +613,9 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
         plan = DataPlan(
             network=network,
             plan_code=canonical_code,
-            plan_name=str(item.get("plan_name") or "").strip() or f"{network.upper()} {provider_code}",
+            plan_name=_clean_plan_label(str(item.get("plan_name") or "").strip()) or f"{network.upper()} {provider_code}",
             data_size=str(item.get("data_size") or "").strip() or "—",
-            validity=str(item.get("validity") or "").strip() or "30d",
+            validity=str(item.get("validity") or "").strip(),
             base_price=Decimal(str(item.get("price", 0))),
             is_active=True,
         )
@@ -506,7 +623,7 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
         return True
 
     plan.network = network
-    plan.plan_name = str(item.get("plan_name") or plan.plan_name).strip() or plan.plan_name
+    plan.plan_name = _clean_plan_label(str(item.get("plan_name") or plan.plan_name).strip()) or plan.plan_name
     plan.data_size = str(item.get("data_size") or plan.data_size).strip() or plan.data_size
     plan.validity = str(item.get("validity") or plan.validity).strip() or plan.validity
     plan.base_price = Decimal(str(item.get("price", plan.base_price)))
@@ -516,7 +633,7 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
 
 def _invalidate_plans_cache() -> None:
     for role in (UserRole.USER.value, UserRole.RESELLER.value, UserRole.ADMIN.value):
-        set_cached(f"plans:{role}", None, ttl_seconds=1)
+        set_cached(f"plans:{_PLAN_CACHE_VERSION}:{role}", None, ttl_seconds=1)
 
 
 def _refresh_provider_network_plans(db: Session, provider, network: str) -> tuple[int, set[str]]:
@@ -528,16 +645,34 @@ def _refresh_provider_network_plans(db: Session, provider, network: str) -> tupl
 
     touched = 0
     active_codes: set[str] = set()
+    items: list[dict] = []
     for variation in variations:
         item = _provider_variation_to_item(network, variation)
         if not item:
             continue
+        if str(network or "").strip().lower() == "airtel":
+            if not _retain_airtel_bundle(item):
+                continue
+        items.append(item)
+
+    if str(network or "").strip().lower() == "airtel":
+        deduped: dict[str, dict] = {}
+        for item in items:
+            capacity = _extract_capacity(f"{item.get('data_size') or ''} {item.get('plan_name') or ''}")
+            if not capacity:
+                continue
+            current = deduped.get(capacity)
+            if current is None or _airtel_bundle_preference(item) < _airtel_bundle_preference(current):
+                deduped[capacity] = item
+        items = [deduped[key] for key in sorted(deduped, key=lambda k: _AIRTEL_BUNDLE_ORDER.get(k, 999))]
+
+    for item in items:
         canonical_code = canonical_plan_code(network, str(item.get("plan_code") or ""))
         if canonical_code:
             active_codes.add(canonical_code)
         touched += 1 if _upsert_plan_from_provider(db, item) else 0
 
-    if active_codes:
+    if variations:
         stale_rows = (
             db.query(DataPlan)
             .filter(func.lower(DataPlan.network) == network.lower(), DataPlan.is_active == True)
@@ -599,7 +734,7 @@ def _pick_replacement_plan(
 @router.get("/plans", response_model=list[DataPlanOut])
 
 def list_data_plans(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    cache_key = f"plans:{user.role.value}"
+    cache_key = f"plans:{_PLAN_CACHE_VERSION}:{user.role.value}"
     cached = get_cached(cache_key)
     if cached:
         return cached
@@ -619,19 +754,23 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
             plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
 
     # Pull Airtel/9mobile plans from configured non-Amigo provider and keep them in sync.
-    provider = get_bills_provider()
-    if hasattr(provider, "fetch_data_variations"):
-        touched = 0
-        for network in ("airtel", "9mobile"):
-            try:
-                updated, _ = _refresh_provider_network_plans(db, provider, network)
-                touched += updated
-            except Exception as exc:
-                logger.warning("Provider variations fetch failed for %s: %s", network, exc)
-        if touched:
-            db.commit()
-            _invalidate_plans_cache()
-            plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+    touched = 0
+    network_providers = {
+        "airtel": _provider_for_data_network("airtel"),
+        "9mobile": get_bills_provider(),
+    }
+    for network, provider in network_providers.items():
+        if not hasattr(provider, "fetch_data_variations"):
+            continue
+        try:
+            updated, _ = _refresh_provider_network_plans(db, provider, network)
+            touched += updated
+        except Exception as exc:
+            logger.warning("Provider variations fetch failed for %s: %s", network, exc)
+    if touched:
+        db.commit()
+        _invalidate_plans_cache()
+        plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
     priced = []
     for plan in plans:
         price = get_price_for_user(db, plan, user.role)
@@ -640,7 +779,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                 id=plan.id,
                 network=plan.network,
                 plan_code=plan.plan_code,
-                plan_name=plan.plan_name,
+                plan_name=_clean_plan_label(plan.plan_name),
                 data_size=plan.data_size,
                 validity=plan.validity,
                 price=price,
@@ -685,7 +824,19 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
     if Decimal(wallet.balance) < Decimal(price):
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
-    reference = f"DATA_{secrets.token_hex(8)}"
+    reference = _client_request_reference("DATA", user.id, getattr(payload, "client_request_id", None)) or f"DATA_{secrets.token_hex(8)}"
+    existing = db.query(Transaction).filter(Transaction.user_id == user.id, Transaction.reference == reference).first()
+    if existing:
+        return {
+            "reference": existing.reference,
+            "status": existing.status,
+            "message": existing.failure_reason or "",
+            "provider": "axisvtu",
+            "network": existing.network,
+            "plan_code": existing.data_plan_code,
+            "failure_reason": existing.failure_reason or "",
+            "test_mode": False,
+        }
     transaction = Transaction(
         user_id=user.id,
         reference=reference,
@@ -932,7 +1083,7 @@ def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(
     updated = 0
     for item in plans:
         updated += 1 if _upsert_plan_from_provider(db, item) else 0
-    provider = get_bills_provider()
+    provider = _provider_for_data_network(network_key)
     if hasattr(provider, "fetch_data_variations"):
         for network in ("airtel", "9mobile"):
             try:
