@@ -89,7 +89,7 @@ def test_pin_setup_hashes_and_clears_security_state():
     assert user.pin_reset_token_expires_at is None
 
 
-def test_pin_verify_locks_after_failed_attempts():
+def test_pin_verify_keeps_retrying_without_locking():
     user = SimpleNamespace(
         id=1,
         email="user@example.com",
@@ -98,15 +98,15 @@ def test_pin_verify_locks_after_failed_attempts():
         is_active=True,
         pin_hash=hash_pin("1234"),
         pin_set_at=datetime.now(timezone.utc),
-        pin_failed_attempts=0,
-        pin_locked_until=None,
+        pin_failed_attempts=4,
+        pin_locked_until=datetime.now(timezone.utc) + timedelta(minutes=15),
         pin_reset_token_hash=None,
         pin_reset_token_expires_at=None,
     )
 
     with _client_with_user(user) as client:
         last = None
-        for _ in range(5):
+        for _ in range(3):
             last = client.post(
                 "/api/v1/security/pin/verify",
                 headers=_auth_headers("1", "user"),
@@ -114,9 +114,10 @@ def test_pin_verify_locks_after_failed_attempts():
             )
 
     assert last is not None
-    assert last.status_code == 423
+    assert last.status_code == 400
+    assert last.json()["detail"] == "Incorrect PIN, try again."
     assert user.pin_locked_until is not None
-    assert user.pin_failed_attempts == 0
+    assert user.pin_failed_attempts == 4
 
 
 def test_pin_change_updates_hash_and_clears_attempts():

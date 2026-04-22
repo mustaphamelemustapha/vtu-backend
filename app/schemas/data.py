@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from decimal import Decimal
 from typing import Optional
 
@@ -17,6 +17,7 @@ class DataPlanOut(BaseModel):
 
 
 class BuyDataRequest(BaseModel):
+    client_request_id: Optional[str] = Field(default=None, max_length=128)
     plan_code: str
     phone_number: str
     ported_number: bool = False

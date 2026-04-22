@@ -1,3 +1,4 @@
+import hashlib
 import secrets
 import logging
 from decimal import Decimal
@@ -56,6 +57,14 @@ _NETWORK_PREFIXES: dict[str, set[str]] = {
 
 def _ref(prefix: str) -> str:
     return f"{prefix}_{secrets.token_hex(8)}"
+
+
+def _client_request_reference(prefix: str, user_id: int, request_id: str | None) -> str | None:
+    raw = str(request_id or "").strip()
+    if not raw:
+        return None
+    digest = hashlib.sha256(f"{prefix}:{user_id}:{raw}".encode()).hexdigest()[:24].upper()
+    return f"{prefix}_{digest}"
 
 
 def _provider_status(result) -> str:
@@ -165,7 +174,10 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
     if Decimal(wallet.balance) < charge_amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
-    reference = _ref("AIRTIME")
+    reference = _client_request_reference("AIRTIME", user.id, getattr(payload, "client_request_id", None)) or _ref("AIRTIME")
+    existing = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == user.id, ServiceTransaction.reference == reference).first()
+    if existing:
+        return {"reference": existing.reference, "status": existing.status, "message": existing.failure_reason or ""}
     tx = ServiceTransaction(
         user_id=user.id,
         reference=reference,
@@ -245,7 +257,10 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
     if Decimal(wallet.balance) < charge_amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
-    reference = _ref("CABLE")
+    reference = _client_request_reference("CABLE", user.id, getattr(payload, "client_request_id", None)) or _ref("CABLE")
+    existing = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == user.id, ServiceTransaction.reference == reference).first()
+    if existing:
+        return {"reference": existing.reference, "status": existing.status, "message": existing.failure_reason or ""}
     tx = ServiceTransaction(
         user_id=user.id,
         reference=reference,
@@ -334,7 +349,10 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
     if Decimal(wallet.balance) < charge_amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
-    reference = _ref("ELECTRICITY")
+    reference = _client_request_reference("ELECTRICITY", user.id, getattr(payload, "client_request_id", None)) or _ref("ELECTRICITY")
+    existing = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == user.id, ServiceTransaction.reference == reference).first()
+    if existing:
+        return {"reference": existing.reference, "status": existing.status, "message": existing.failure_reason or "", "token": (existing.meta or {}).get("token")}
     tx = ServiceTransaction(
         user_id=user.id,
         reference=reference,
@@ -426,7 +444,10 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
     if Decimal(wallet.balance) < charge_amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
-    reference = _ref("EXAM")
+    reference = _client_request_reference("EXAM", user.id, getattr(payload, "client_request_id", None)) or _ref("EXAM")
+    existing = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == user.id, ServiceTransaction.reference == reference).first()
+    if existing:
+        return {"reference": existing.reference, "status": existing.status, "message": existing.failure_reason or "", "pins": (existing.meta or {}).get("pins", [])}
     tx = ServiceTransaction(
         user_id=user.id,
         reference=reference,

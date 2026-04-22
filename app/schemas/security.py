@@ -1,5 +1,3 @@
-from datetime import datetime
-
 from pydantic import BaseModel, validator
 
 
@@ -45,10 +43,6 @@ class PinResetConfirmRequest(BaseModel):
 
 class PinStatusResponse(BaseModel):
     is_set: bool
-    is_locked: bool = False
-    locked_until: datetime | None = None
-    failed_attempts: int = 0
-    max_attempts: int = 5
     pin_length: int = 4
 
 
