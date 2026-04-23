@@ -14,4 +14,4 @@ ENV PYTHONPATH=/app
 
 EXPOSE 8000
 
-CMD ["bash", "scripts/docker_start.sh"]
+CMD ["sh", "scripts/docker_start.sh"]

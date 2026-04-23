@@ -1,7 +1,7 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
-if [[ -n "${DATABASE_URL_MIGRATION:-}" ]]; then
+if [ -n "${DATABASE_URL_MIGRATION:-}" ]; then
   export DATABASE_URL="${DATABASE_URL_MIGRATION}"
 fi
 
