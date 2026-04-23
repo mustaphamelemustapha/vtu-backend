@@ -1,13 +1,13 @@
 """add first deposit referral reward fields
 
-Revision ID: 0005_referral_first_deposit_reward
+Revision ID: 0005_referral_first_deposit
 Revises: 0004_referrals
 Create Date: 2026-04-23
 """
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0005_referral_first_deposit_reward"
+revision = "0005_referral_first_deposit"
 down_revision = "0004_referrals"
 branch_labels = None
 depends_on = None
