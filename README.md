@@ -120,6 +120,7 @@ Purchase data (response):
 - Use managed PostgreSQL
 - Apply migrations on deploy
 - Start command: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
+- On Render free tier, use `bash scripts/render_start.sh` so migrations run before the API starts.
 
 ## Notes
 - Email sending is stubbed: integrate with a transactional email provider (e.g., Postmark, SendGrid) for reset/verification.
