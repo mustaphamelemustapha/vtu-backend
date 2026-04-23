@@ -6,6 +6,7 @@ Create Date: 2026-04-23
 """
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 revision = "0004_referrals"
 down_revision = "0003_clear_stale_pin_locks"
@@ -43,7 +44,13 @@ def upgrade():
     op.create_index("ix_users_referred_by_id", "users", ["referred_by_id"], unique=False)
     op.create_foreign_key("fk_users_referred_by_id_users", "users", "users", ["referred_by_id"], ["id"])
 
-    referral_status = sa.Enum("pending", "qualified", "rewarded", name="referral_status")
+    referral_status = postgresql.ENUM(
+        "pending",
+        "qualified",
+        "rewarded",
+        name="referral_status",
+        create_type=False,
+    )
     referral_status.create(bind, checkfirst=True)
 
     op.create_table(
@@ -93,7 +100,7 @@ def downgrade():
     op.drop_index("ix_referrals_referrer_status", table_name="referrals")
     op.drop_table("referrals")
     bind = op.get_bind()
-    referral_status = sa.Enum(name="referral_status")
+    referral_status = postgresql.ENUM(name="referral_status", create_type=False)
     referral_status.drop(bind, checkfirst=True)
     op.drop_constraint("fk_users_referred_by_id_users", "users", type_="foreignkey")
     op.drop_index("ix_users_referred_by_id", table_name="users")
