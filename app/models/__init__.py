@@ -1,4 +1,5 @@
 from app.models.user import User, UserRole
+from app.models.referral import Referral, ReferralContribution, ReferralStatus
 from app.models.wallet import Wallet
 from app.models.wallet_ledger import WalletLedger, LedgerType
 from app.models.transaction import Transaction, TransactionStatus, TransactionType
@@ -12,6 +13,9 @@ from app.models.api_log import ApiLog
 __all__ = [
     "User",
     "UserRole",
+    "Referral",
+    "ReferralContribution",
+    "ReferralStatus",
     "Wallet",
     "WalletLedger",
     "LedgerType",

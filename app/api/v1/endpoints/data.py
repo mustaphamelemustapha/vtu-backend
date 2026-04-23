@@ -24,6 +24,7 @@ from app.services.bills import ClubKonnectBillsProvider, get_bills_provider
 from app.services.fraud import enforce_purchase_limits
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
 from app.services.pricing import get_price_for_user
+from app.services.referrals import record_referral_data_activity
 from app.middlewares.rate_limit import limiter
 from app.utils.cache import get_cached, set_cached
 
@@ -942,6 +943,16 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
 
             transaction.external_reference = result.external_reference
             db.commit()
+            try:
+                record_referral_data_activity(
+                    db,
+                    user=user,
+                    transaction_reference=reference,
+                    plan_size=plan.data_size or plan.plan_name,
+                    transaction_status=transaction.status.value if hasattr(transaction.status, "value") else str(transaction.status),
+                )
+            except Exception as exc:
+                logger.warning("Referral progress update failed for %s: %s", reference, exc)
             return {
                 "reference": reference,
                 "status": transaction.status,
@@ -1021,6 +1032,16 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             transaction.failure_reason = None
 
         db.commit()
+        try:
+            record_referral_data_activity(
+                db,
+                user=user,
+                transaction_reference=reference,
+                plan_size=plan.data_size or plan.plan_name,
+                transaction_status=transaction.status.value if hasattr(transaction.status, "value") else str(transaction.status),
+            )
+        except Exception as exc:
+            logger.warning("Referral progress update failed for %s: %s", reference, exc)
         return {
             "reference": reference,
             "status": transaction.status,
@@ -1049,6 +1070,16 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
         credit_wallet(db, wallet, Decimal(price), reference, "Auto refund due to Amigo error")
         transaction.status = TransactionStatus.REFUNDED
         db.commit()
+        try:
+            record_referral_data_activity(
+                db,
+                user=user,
+                transaction_reference=reference,
+                plan_size=plan.data_size or plan.plan_name,
+                transaction_status=transaction.status.value if hasattr(transaction.status, "value") else str(transaction.status),
+            )
+        except Exception as exc:
+            logger.warning("Referral progress update failed for %s: %s", reference, exc)
         raise HTTPException(
             status_code=502,
             detail=(

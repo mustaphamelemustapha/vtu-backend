@@ -19,17 +19,28 @@ def _find_matching_ledger(db: Session, *, wallet: Wallet, amount: Decimal, refer
     )
 
 
-def get_or_create_wallet(db: Session, user_id: int) -> Wallet:
+def get_or_create_wallet(db: Session, user_id: int, *, commit: bool = True) -> Wallet:
     wallet = db.query(Wallet).filter(Wallet.user_id == user_id).first()
     if not wallet:
         wallet = Wallet(user_id=user_id, balance=0)
         db.add(wallet)
-        db.commit()
-        db.refresh(wallet)
+        if commit:
+            db.commit()
+            db.refresh(wallet)
+        else:
+            db.flush()
     return wallet
 
 
-def credit_wallet(db: Session, wallet: Wallet, amount: Decimal, reference: str, description: str) -> WalletLedger:
+def credit_wallet(
+    db: Session,
+    wallet: Wallet,
+    amount: Decimal,
+    reference: str,
+    description: str,
+    *,
+    commit: bool = True,
+) -> WalletLedger:
     if wallet.is_locked:
         raise HTTPException(status_code=423, detail="Wallet is locked")
     existing = _find_matching_ledger(
@@ -51,8 +62,11 @@ def credit_wallet(db: Session, wallet: Wallet, amount: Decimal, reference: str, 
         description=description,
     )
     db.add(entry)
-    db.commit()
-    db.refresh(entry)
+    if commit:
+        db.commit()
+        db.refresh(entry)
+    else:
+        db.flush()
     return entry
 
 

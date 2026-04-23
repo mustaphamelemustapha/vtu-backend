@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, Integer, String, Boolean, Enum, Index, DateTime
+from sqlalchemy import Column, Integer, String, Boolean, Enum, Index, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 from app.models.base import TimestampMixin
@@ -22,6 +22,8 @@ class User(Base, TimestampMixin):
     role = Column(Enum(UserRole), nullable=False, default=UserRole.USER)
     is_active = Column(Boolean, default=True, nullable=False)
     is_verified = Column(Boolean, default=False, nullable=False)
+    referral_code = Column(String(16), unique=True, nullable=False, index=True)
+    referred_by_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     pin_hash = Column(String(255), nullable=True)
     pin_set_at = Column(DateTime(timezone=True), nullable=True)
     pin_failed_attempts = Column(Integer, default=0, nullable=False)
@@ -33,6 +35,23 @@ class User(Base, TimestampMixin):
     verification_token = Column(String(128), nullable=True, index=True)
     verification_token_expires_at = Column(DateTime(timezone=True), nullable=True)
 
+    referred_by = relationship(
+        "User",
+        remote_side=[id],
+        foreign_keys=[referred_by_id],
+        backref="referred_users",
+    )
+    referrals_sent = relationship(
+        "Referral",
+        foreign_keys="Referral.referrer_id",
+        back_populates="referrer",
+    )
+    referral_received = relationship(
+        "Referral",
+        foreign_keys="Referral.referred_user_id",
+        back_populates="referred_user",
+        uselist=False,
+    )
     wallet = relationship("Wallet", back_populates="user", uselist=False)
     transactions = relationship("Transaction", back_populates="user")
     service_transactions = relationship("ServiceTransaction", back_populates="user")

@@ -72,6 +72,7 @@ def _extract_recipient_phone(description: str | None) -> str | None:
 def list_transactions(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     base = db.query(Transaction).filter(Transaction.user_id == user.id).all()
     recipient_phone_by_ref: dict[str, str] = {}
+    ledger_description_by_ref: dict[str, str] = {}
     if base:
         refs = [str(tx.reference) for tx in base if tx.reference]
         if refs:
@@ -85,7 +86,9 @@ def list_transactions(user: User = Depends(get_current_user), db: Session = Depe
             for reference, description in rows:
                 ref = str(reference or "").strip()
                 if not ref or ref in recipient_phone_by_ref:
+                    ledger_description_by_ref.setdefault(ref, str(description or "").strip())
                     continue
+                ledger_description_by_ref[ref] = str(description or "").strip()
                 recipient_phone = _extract_recipient_phone(description)
                 if recipient_phone:
                     recipient_phone_by_ref[ref] = recipient_phone
@@ -116,6 +119,10 @@ def list_transactions(user: User = Depends(get_current_user), db: Session = Depe
             recipient_phone = recipient_phone_by_ref.get(str(tx.reference))
             if recipient_phone:
                 meta = {"recipient_phone": recipient_phone}
+        if _normalize_tx_type(tx.tx_type) == "wallet_fund":
+            ledger_description = ledger_description_by_ref.get(str(tx.reference))
+            if ledger_description:
+                meta = {"ledger_description": ledger_description}
         items.append(
             {
                 "id": tx.id,

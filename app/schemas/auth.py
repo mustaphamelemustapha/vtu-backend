@@ -18,6 +18,7 @@ class RegisterRequest(BaseModel):
     full_name: str
     phone_number: Optional[str] = None
     password: str
+    referral_code: Optional[str] = None
 
     _password_len = validator("password", allow_reuse=True)(_validate_password_length)
 

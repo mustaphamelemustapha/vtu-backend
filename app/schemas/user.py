@@ -11,6 +11,7 @@ class UserOut(BaseModel):
     role: UserRole
     is_active: bool
     is_verified: bool
+    referral_code: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

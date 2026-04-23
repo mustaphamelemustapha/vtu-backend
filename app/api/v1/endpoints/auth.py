@@ -14,6 +14,7 @@ from app.schemas.user import UserOut
 from app.dependencies import get_current_user
 from app.services.wallet import get_or_create_wallet
 from app.services.email import send_password_reset_email
+from app.services.referrals import ensure_user_referral_code, attach_signup_referral
 
 settings = get_settings()
 router = APIRouter()
@@ -75,6 +76,9 @@ def register(request: Request, payload: RegisterRequest, db: Session = Depends(g
     user.verification_token_expires_at = _utcnow() + timedelta(days=2)
 
     db.add(user)
+    ensure_user_referral_code(db, user)
+    db.flush()
+    attach_signup_referral(db, new_user=user, referral_code=payload.referral_code)
     db.commit()
     db.refresh(user)
 
