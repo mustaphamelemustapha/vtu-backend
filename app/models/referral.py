@@ -22,7 +22,15 @@ class Referral(Base, TimestampMixin):
     accumulated_mb = Column(Integer, default=0, nullable=False)
     target_mb = Column(Integer, default=51200, nullable=False)
     reward_amount = Column(Numeric(12, 2), default=2000, nullable=False)
-    status = Column(Enum(ReferralStatus, name="referral_status"), nullable=False, default=ReferralStatus.PENDING)
+    status = Column(
+        Enum(
+            ReferralStatus,
+            name="referral_status",
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        default=ReferralStatus.PENDING,
+    )
     qualifying_transaction_reference = Column(String(64), nullable=True, index=True)
     reward_transaction_reference = Column(String(64), nullable=True, index=True)
     qualified_at = Column(DateTime(timezone=True), nullable=True)
