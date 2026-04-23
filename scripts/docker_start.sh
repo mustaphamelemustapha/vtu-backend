@@ -6,7 +6,7 @@ if [ -n "${DATABASE_URL_MIGRATION:-}" ]; then
 fi
 
 echo "Running database migrations..."
-alembic upgrade head
+python3 scripts/bootstrap_migrations.py
 
 echo "Starting API..."
 exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"
