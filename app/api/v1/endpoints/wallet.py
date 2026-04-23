@@ -11,6 +11,7 @@ from app.dependencies import get_current_user
 from app.models import User, Transaction, TransactionType, TransactionStatus
 from app.schemas.wallet import WalletOut, FundWalletRequest, LedgerOut, BankTransferAccountsResponse, CreateBankTransferAccountsRequest, BankAccountOut
 from app.services.wallet import get_or_create_wallet, credit_wallet
+from app.services.referrals import record_referral_first_deposit_reward
 from app.services.paystack import (
     create_paystack_checkout,
     verify_paystack_signature,
@@ -63,6 +64,19 @@ def _safe_ref(prefix: str, value: str) -> str:
     raw = f"{prefix}_{value or ''}"
     cleaned = re.sub(r"[^A-Za-z0-9_]", "_", raw)
     return cleaned[:64] if len(cleaned) <= 64 else cleaned[:64]
+
+
+def _maybe_reward_first_deposit(db: Session, *, user: User, reference: str, amount: Decimal, status: TransactionStatus) -> None:
+    try:
+        record_referral_first_deposit_reward(
+            db,
+            user=user,
+            transaction_reference=reference,
+            deposit_amount=amount,
+            transaction_status=status.value if hasattr(status, "value") else str(status),
+        )
+    except Exception as exc:
+        logger.warning("Referral first deposit reward failed for %s: %s", reference, exc)
 
 
 def _normalize_phone(value: str | None) -> str | None:
@@ -415,6 +429,13 @@ async def monnify_webhook(request: Request, db: Session = Depends(get_db)):
                 transaction.status = TransactionStatus.SUCCESS
                 transaction.external_reference = data.get("transactionReference") or data.get("paymentReference")
                 db.commit()
+            _maybe_reward_first_deposit(
+                db,
+                user=db.query(User).filter(User.id == transaction.user_id).first() or transaction.user,
+                reference=reference,
+                amount=Decimal(transaction.amount),
+                status=TransactionStatus.SUCCESS,
+            )
         else:
             # Reserved account / bank transfer funding: Monnify may not use our internal reference.
             customer = data.get("customer") or {}
@@ -425,7 +446,14 @@ async def monnify_webhook(request: Request, db: Session = Depends(get_db)):
                 user = db.query(User).filter(User.email == email).first()
                 if user:
                     # Idempotency: don't double-credit the same Monnify transactionReference.
-                    if ext_ref and db.query(Transaction).filter(Transaction.external_reference == ext_ref).first():
+                    if ext_ref and (existing := db.query(Transaction).filter(Transaction.external_reference == ext_ref).first()):
+                        _maybe_reward_first_deposit(
+                            db,
+                            user=existing.user,
+                            reference=existing.reference,
+                            amount=Decimal(existing.amount),
+                            status=existing.status,
+                        )
                         return {"status": "ok"}
                     amt = Decimal(str(amount_paid))
                     tx_ref = _safe_ref("TRF", str(ext_ref or secrets.token_hex(8)))
@@ -441,6 +469,14 @@ async def monnify_webhook(request: Request, db: Session = Depends(get_db)):
                         db.add(tx)
                         wallet = get_or_create_wallet(db, user.id)
                         credit_wallet(db, wallet, amt, tx_ref, "Wallet funding via bank transfer (Monnify)")
+                        db.commit()
+                        _maybe_reward_first_deposit(
+                            db,
+                            user=user,
+                            reference=tx_ref,
+                            amount=amt,
+                            status=TransactionStatus.SUCCESS,
+                        )
                     except IntegrityError:
                         db.rollback()
                         return {"status": "ok"}
@@ -478,13 +514,27 @@ async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
             transaction.status = TransactionStatus.SUCCESS
             transaction.external_reference = data.get("id")
             db.commit()
+        _maybe_reward_first_deposit(
+            db,
+            user=db.query(User).filter(User.id == transaction.user_id).first() or transaction.user,
+            reference=reference,
+            amount=Decimal(transaction.amount),
+            status=TransactionStatus.SUCCESS,
+        )
     elif event == "charge.success" and not transaction:
         # Dedicated virtual account funding (no internal reference).
         ext_ref = str(data.get("id") or "").strip()
         amount_kobo = data.get("amount")
         user = _resolve_paystack_transfer_user(db, data)
         if user and amount_kobo:
-            if ext_ref and db.query(Transaction).filter(Transaction.external_reference == ext_ref).first():
+            if ext_ref and (existing := db.query(Transaction).filter(Transaction.external_reference == ext_ref).first()):
+                _maybe_reward_first_deposit(
+                    db,
+                    user=existing.user,
+                    reference=existing.reference,
+                    amount=Decimal(existing.amount),
+                    status=existing.status,
+                )
                 return {"status": "ok"}
             amt = Decimal(str(amount_kobo)) / Decimal("100")
             tx_ref = _safe_ref("TRF", ext_ref or secrets.token_hex(8))
@@ -501,6 +551,13 @@ async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
                 wallet = get_or_create_wallet(db, user.id)
                 credit_wallet(db, wallet, amt, tx_ref, "Wallet funding via Paystack transfer")
                 db.commit()
+                _maybe_reward_first_deposit(
+                    db,
+                    user=user,
+                    reference=tx_ref,
+                    amount=amt,
+                    status=TransactionStatus.SUCCESS,
+                )
             except IntegrityError:
                 db.rollback()
                 return {"status": "ok"}
@@ -526,6 +583,13 @@ def paystack_verify(reference: str, user: User = Depends(get_current_user), db: 
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
     if transaction.status == TransactionStatus.SUCCESS:
+        _maybe_reward_first_deposit(
+            db,
+            user=user,
+            reference=reference,
+            amount=Decimal(transaction.amount),
+            status=TransactionStatus.SUCCESS,
+        )
         return {"status": "success"}
 
     try:
@@ -537,6 +601,13 @@ def paystack_verify(reference: str, user: User = Depends(get_current_user), db: 
             transaction.status = TransactionStatus.SUCCESS
             transaction.external_reference = data.get("id")
             db.commit()
+            _maybe_reward_first_deposit(
+                db,
+                user=user,
+                reference=reference,
+                amount=Decimal(transaction.amount),
+                status=TransactionStatus.SUCCESS,
+            )
             return {"status": "success"}
     except Exception:
         pass

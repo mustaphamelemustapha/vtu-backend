@@ -8,12 +8,11 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models import Referral, ReferralContribution, ReferralStatus, Transaction, TransactionStatus, TransactionType, User
+from app.models import Referral, ReferralStatus, Transaction, TransactionStatus, TransactionType, User
 from app.services.wallet import credit_wallet, get_or_create_wallet
 
 settings = get_settings()
 
-DEFAULT_TARGET_MB = 51200
 DEFAULT_REWARD_AMOUNT = Decimal("2000.00")
 
 
@@ -73,19 +72,12 @@ def _safe_reward_amount(value) -> Decimal:
         return DEFAULT_REWARD_AMOUNT
 
 
-def _parse_size_mb(value: str | None) -> int:
-    text = str(value or "").strip().upper()
-    if not text:
-        return 0
-    import re
-
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(GB|MB)", text, re.IGNORECASE)
-    if not match:
-        return 0
-    amount = float(match.group(1))
-    unit = match.group(2).upper()
-    mb = amount * 1024 if unit == "GB" else amount
-    return max(0, int(round(mb)))
+def _safe_decimal_amount(value) -> Decimal:
+    try:
+        amount = Decimal(str(value))
+    except Exception:
+        amount = Decimal("0")
+    return amount if amount > 0 else Decimal("0")
 
 
 def attach_signup_referral(db: Session, *, new_user: User, referral_code: str | None) -> Referral | None:
@@ -113,8 +105,6 @@ def attach_signup_referral(db: Session, *, new_user: User, referral_code: str | 
         referrer_id=referrer.id,
         referred_user_id=new_user.id,
         referral_code_used=code,
-        accumulated_mb=0,
-        target_mb=DEFAULT_TARGET_MB,
         reward_amount=DEFAULT_REWARD_AMOUNT,
         status=ReferralStatus.PENDING,
     )
@@ -136,8 +126,6 @@ def _get_or_create_referral_row(db: Session, *, referred_user: User) -> Referral
         referrer_id=referrer.id,
         referred_user_id=referred_user.id,
         referral_code_used=normalize_referral_code(referrer.referral_code),
-        accumulated_mb=0,
-        target_mb=DEFAULT_TARGET_MB,
         reward_amount=DEFAULT_REWARD_AMOUNT,
         status=ReferralStatus.PENDING,
     )
@@ -146,21 +134,26 @@ def _get_or_create_referral_row(db: Session, *, referred_user: User) -> Referral
     return referral
 
 
-def _grant_reward(db: Session, *, referral: Referral, referrer: User, purchaser_name: str | None, source_reference: str) -> str:
-    reward_reference = referral.reward_transaction_reference or f"REFERRAL_REWARD_{referral.id}"
+def _grant_reward(
+    db: Session,
+    *,
+    referral: Referral,
+    referrer: User,
+    first_deposit_amount: Decimal,
+    reward_amount: Decimal,
+    source_reference: str,
+) -> str:
+    reward_reference = referral.reward_transaction_reference or f"REFERRAL_DEPOSIT_REWARD_{referral.id}"
     wallet = get_or_create_wallet(db, referrer.id, commit=False)
-    reward_amount = _safe_reward_amount(referral.reward_amount)
-    description = (
-        f"Referral reward from {purchaser_name.strip()}"
-        if purchaser_name and purchaser_name.strip()
-        else "Referral reward"
-    )
+    description = f"Referral reward from first deposit of ₦{first_deposit_amount:.2f}"
 
     existing_tx = db.query(Transaction).filter(Transaction.reference == reward_reference).first()
     if existing_tx:
         referral.reward_transaction_reference = reward_reference
         referral.rewarded_at = referral.rewarded_at or _utcnow()
         referral.status = ReferralStatus.REWARDED
+        referral.first_deposit_amount = first_deposit_amount
+        referral.reward_amount = reward_amount
         if not referral.qualifying_transaction_reference:
             referral.qualifying_transaction_reference = source_reference
         db.flush()
@@ -180,18 +173,20 @@ def _grant_reward(db: Session, *, referral: Referral, referrer: User, purchaser_
     referral.reward_transaction_reference = reward_reference
     referral.rewarded_at = _utcnow()
     referral.status = ReferralStatus.REWARDED
+    referral.first_deposit_amount = first_deposit_amount
+    referral.reward_amount = reward_amount
     if not referral.qualifying_transaction_reference:
         referral.qualifying_transaction_reference = source_reference
     db.flush()
     return reward_reference
 
 
-def record_referral_data_activity(
+def record_referral_first_deposit_reward(
     db: Session,
     *,
     user: User,
     transaction_reference: str,
-    plan_size: str | None,
+    deposit_amount: Decimal | int | float | str,
     transaction_status: str,
 ) -> Referral | None:
     referral = _get_or_create_referral_row(db, referred_user=user)
@@ -203,52 +198,62 @@ def record_referral_data_activity(
         return referral
 
     status = str(transaction_status or "").strip().lower()
-    mb = _parse_size_mb(plan_size)
-    if mb <= 0:
+    if status != TransactionStatus.SUCCESS.value:
         return referral
 
-    contribution = db.query(ReferralContribution).filter(ReferralContribution.transaction_reference == reference).first()
-
-    if status == TransactionStatus.REFUNDED.value:
-        if contribution and contribution.reversed_at is None:
-            referral.accumulated_mb = max(0, int(referral.accumulated_mb or 0) - int(contribution.mb or 0))
-            contribution.reversed_at = _utcnow()
-            if referral.status != ReferralStatus.REWARDED:
-                referral.status = (
-                    ReferralStatus.QUALIFIED
-                    if int(referral.accumulated_mb or 0) >= int(referral.target_mb or DEFAULT_TARGET_MB)
-                    else ReferralStatus.PENDING
-                )
-            db.commit()
-        return referral
-
-    if status not in {TransactionStatus.SUCCESS.value, TransactionStatus.REFUNDED.value}:
-        return referral
-
-    if contribution:
-        return referral
-
-    contribution = ReferralContribution(
-        referral_id=referral.id,
-        transaction_reference=reference,
-        mb=mb,
+    referral = (
+        db.query(Referral)
+        .filter(Referral.id == referral.id)
+        .with_for_update()
+        .first()
+        or referral
     )
-    db.add(contribution)
-    referral.accumulated_mb = int(referral.accumulated_mb or 0) + mb
-    if referral.qualified_at is None and int(referral.accumulated_mb or 0) >= int(referral.target_mb or DEFAULT_TARGET_MB):
-        referral.qualified_at = _utcnow()
-        referral.status = ReferralStatus.QUALIFIED
-        referrer = db.query(User).filter(User.id == referral.referrer_id).first()
-        if referrer:
-            _grant_reward(
-                db,
-                referral=referral,
-                referrer=referrer,
-                purchaser_name=(user.full_name or user.email or "").strip(),
-                source_reference=reference,
-            )
+
+    if referral.reward_transaction_reference or referral.rewarded_at:
+        return referral
+
+    first_success = (
+        db.query(Transaction)
+        .filter(
+            Transaction.user_id == user.id,
+            Transaction.tx_type == TransactionType.WALLET_FUND,
+            Transaction.status == TransactionStatus.SUCCESS,
+        )
+        .order_by(Transaction.created_at.asc(), Transaction.id.asc())
+        .first()
+    )
+    if not first_success or first_success.reference != reference:
+        return referral
+
+    amount = _safe_decimal_amount(deposit_amount)
+    if amount <= 0:
+        return referral
+
+    reward_amount = (amount * Decimal("0.02")).quantize(Decimal("0.01"))
+    if reward_amount <= 0:
+        return referral
+
+    referral.first_deposit_amount = amount
+    referral.reward_amount = reward_amount
+    referral.qualifying_transaction_reference = reference
+    referral.qualified_at = referral.qualified_at or _utcnow()
+    referral.status = ReferralStatus.QUALIFIED
+    referrer = db.query(User).filter(User.id == referral.referrer_id).first()
+    if referrer:
+        _grant_reward(
+            db,
+            referral=referral,
+            referrer=referrer,
+            first_deposit_amount=amount,
+            reward_amount=reward_amount,
+            source_reference=reference,
+        )
     db.commit()
     return referral
+
+
+def record_referral_data_activity(*args, **kwargs) -> Referral | None:  # Legacy shim
+    return None
 
 
 def get_referral_dashboard(db: Session, *, user: User) -> dict:
@@ -263,9 +268,7 @@ def get_referral_dashboard(db: Session, *, user: User) -> dict:
     )
     rewarded = [item for item in referrals if item.status == ReferralStatus.REWARDED]
     total_earned = sum((Decimal(str(item.reward_amount or 0)) for item in rewarded), Decimal("0"))
-    total_accumulated_mb = sum(int(item.accumulated_mb or 0) for item in referrals)
-    target_mb = int(referrals[0].target_mb if referrals else DEFAULT_TARGET_MB)
-    reward_amount = _safe_reward_amount(referrals[0].reward_amount if referrals else DEFAULT_REWARD_AMOUNT)
+    reward_amount = _safe_reward_amount(referrals[0].reward_amount if referrals else Decimal("0"))
     referral_link = None
     if settings.frontend_base_url:
         base = str(settings.frontend_base_url).rstrip("/")
@@ -273,11 +276,6 @@ def get_referral_dashboard(db: Session, *, user: User) -> dict:
 
     items = []
     for item in referrals:
-        accumulated_mb = int(item.accumulated_mb or 0)
-        item_target_mb = int(item.target_mb or DEFAULT_TARGET_MB)
-        progress = 0
-        if item_target_mb > 0:
-            progress = min(100, int(round((accumulated_mb / item_target_mb) * 100)))
         referred_user = item.referred_user
         referred_user_name = (
             referred_user.full_name
@@ -290,9 +288,7 @@ def get_referral_dashboard(db: Session, *, user: User) -> dict:
                 "referred_user_name": referred_user_name,
                 "referral_code_used": item.referral_code_used,
                 "status": item.status.value if hasattr(item.status, "value") else str(item.status),
-                "accumulated_mb": accumulated_mb,
-                "target_mb": item_target_mb,
-                "progress_percent": progress,
+                "first_deposit_amount": Decimal(str(item.first_deposit_amount or 0)),
                 "reward_amount": Decimal(str(item.reward_amount or reward_amount)),
                 "qualified_at": item.qualified_at,
                 "rewarded_at": item.rewarded_at,
@@ -301,21 +297,12 @@ def get_referral_dashboard(db: Session, *, user: User) -> dict:
             }
         )
 
-    overall_progress = 0
-    if items:
-        overall_target = sum(int(item["target_mb"]) for item in items)
-        if overall_target > 0:
-            overall_progress = min(100, int(round((total_accumulated_mb / overall_target) * 100)))
-
     return {
         "referral_code": code,
         "referral_link": referral_link,
         "total_referrals": len(referrals),
         "rewarded_referrals": len(rewarded),
         "total_earned": total_earned,
-        "total_accumulated_mb": total_accumulated_mb,
-        "target_mb": target_mb,
         "reward_amount": reward_amount,
-        "progress_percent": overall_progress,
         "referrals": items,
     }

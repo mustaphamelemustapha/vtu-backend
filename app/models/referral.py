@@ -18,6 +18,7 @@ class Referral(Base, TimestampMixin):
     referrer_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     referred_user_id = Column(Integer, ForeignKey("users.id"), unique=True, nullable=False, index=True)
     referral_code_used = Column(String(32), nullable=False, index=True)
+    first_deposit_amount = Column(Numeric(12, 2), nullable=True)
     accumulated_mb = Column(Integer, default=0, nullable=False)
     target_mb = Column(Integer, default=51200, nullable=False)
     reward_amount = Column(Numeric(12, 2), default=2000, nullable=False)

@@ -9,9 +9,7 @@ class ReferralItemOut(BaseModel):
     referred_user_name: str
     referral_code_used: str
     status: str
-    accumulated_mb: int
-    target_mb: int
-    progress_percent: int
+    first_deposit_amount: Decimal
     reward_amount: Decimal
     qualified_at: Optional[datetime] = None
     rewarded_at: Optional[datetime] = None
@@ -28,10 +26,7 @@ class ReferralDashboardOut(BaseModel):
     total_referrals: int
     rewarded_referrals: int
     total_earned: Decimal
-    total_accumulated_mb: int
-    target_mb: int
     reward_amount: Decimal
-    progress_percent: int
     referrals: list[ReferralItemOut]
 
 

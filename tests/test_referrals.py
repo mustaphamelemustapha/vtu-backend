@@ -11,7 +11,7 @@ from app.services.referrals import (
     ensure_user_referral_code,
     generate_referral_code,
     get_referral_dashboard,
-    record_referral_data_activity,
+    record_referral_first_deposit_reward,
 )
 
 
@@ -38,6 +38,25 @@ def _seed_user(db, *, email: str, full_name: str, referral_code: str | None = No
     db.commit()
     db.refresh(user)
     return user
+
+
+def _fund_success(db, *, user: User, reference: str, amount: Decimal):
+    tx = Transaction(
+        user_id=user.id,
+        reference=reference,
+        amount=amount,
+        status=TransactionStatus.SUCCESS,
+        tx_type=TransactionType.WALLET_FUND,
+    )
+    db.add(tx)
+    wallet = db.query(Wallet).filter(Wallet.user_id == user.id).first()
+    if wallet is None:
+        wallet = Wallet(user_id=user.id, balance=0)
+        db.add(wallet)
+    wallet.balance = Decimal(wallet.balance) + amount
+    db.commit()
+    db.refresh(tx)
+    return tx
 
 
 def test_attach_signup_referral_links_referred_user():
@@ -78,7 +97,7 @@ def test_new_user_gets_referral_code_before_flush():
         db.close()
 
 
-def test_referral_progress_qualifies_once_at_50gb_and_rewards_once():
+def test_first_successful_deposit_rewards_once():
     db = SessionLocal()
     try:
         referrer = _seed_user(db, email="referrer2@example.com", full_name="Referrer 2", referral_code="AX10")
@@ -92,42 +111,25 @@ def test_referral_progress_qualifies_once_at_50gb_and_rewards_once():
         attach_signup_referral(db, new_user=referred, referral_code=referrer.referral_code)
         db.commit()
 
-        first = record_referral_data_activity(
+        tx = _fund_success(db, user=referred, reference="DEP-1", amount=Decimal("10000.00"))
+        referral = record_referral_first_deposit_reward(
             db,
             user=referred,
-            transaction_reference="TX-1",
-            plan_size="25GB",
-            transaction_status=TransactionStatus.SUCCESS.value,
-        )
-        second = record_referral_data_activity(
-            db,
-            user=referred,
-            transaction_reference="TX-2",
-            plan_size="25GB",
-            transaction_status=TransactionStatus.SUCCESS.value,
-        )
-        repeat = record_referral_data_activity(
-            db,
-            user=referred,
-            transaction_reference="TX-2",
-            plan_size="25GB",
+            transaction_reference=tx.reference,
+            deposit_amount=tx.amount,
             transaction_status=TransactionStatus.SUCCESS.value,
         )
         db.commit()
 
-        assert first is not None
-        assert second is not None
-        assert repeat is not None
-
-        referral = db.query(Referral).filter_by(id=second.id).first()
         assert referral is not None
-        assert referral.accumulated_mb == 51200
+        assert referral.first_deposit_amount == Decimal("10000.00")
+        assert referral.reward_amount == Decimal("200.00")
         assert referral.status.value == "rewarded"
-        assert referral.reward_transaction_reference == f"REFERRAL_REWARD_{referral.id}"
+        assert referral.reward_transaction_reference == f"REFERRAL_DEPOSIT_REWARD_{referral.id}"
 
         wallet = db.query(Wallet).filter(Wallet.user_id == referrer.id).first()
         assert wallet is not None
-        assert Decimal(wallet.balance) == Decimal("2000.00")
+        assert Decimal(wallet.balance) == Decimal("200.00")
 
         reward_txs = db.query(Transaction).filter(
             Transaction.user_id == referrer.id,
@@ -139,7 +141,7 @@ def test_referral_progress_qualifies_once_at_50gb_and_rewards_once():
         db.close()
 
 
-def test_refund_subtracts_progress_without_counting_twice():
+def test_second_deposit_does_not_duplicate_reward():
     db = SessionLocal()
     try:
         referrer = _seed_user(db, email="referrer3@example.com", full_name="Referrer 3", referral_code="AX20")
@@ -153,33 +155,92 @@ def test_refund_subtracts_progress_without_counting_twice():
         attach_signup_referral(db, new_user=referred, referral_code=referrer.referral_code)
         db.commit()
 
-        referral = record_referral_data_activity(
+        first_tx = _fund_success(db, user=referred, reference="DEP-2", amount=Decimal("5000.00"))
+        record_referral_first_deposit_reward(
             db,
             user=referred,
-            transaction_reference="TX-REFUND",
-            plan_size="10GB",
+            transaction_reference=first_tx.reference,
+            deposit_amount=first_tx.amount,
             transaction_status=TransactionStatus.SUCCESS.value,
-        )
-        assert referral is not None
-        assert referral.accumulated_mb == 10240
-
-        refunded = record_referral_data_activity(
-            db,
-            user=referred,
-            transaction_reference="TX-REFUND",
-            plan_size="10GB",
-            transaction_status=TransactionStatus.REFUNDED.value,
         )
         db.commit()
 
-        assert refunded is not None
-        assert refunded.accumulated_mb == 0
-        assert refunded.status.value == "pending"
+        second_tx = _fund_success(db, user=referred, reference="DEP-3", amount=Decimal("12000.00"))
+        second = record_referral_first_deposit_reward(
+            db,
+            user=referred,
+            transaction_reference=second_tx.reference,
+            deposit_amount=second_tx.amount,
+            transaction_status=TransactionStatus.SUCCESS.value,
+        )
+        db.commit()
+
+        assert second is not None
+        referral = db.query(Referral).filter_by(id=second.id).first()
+        assert referral is not None
+        assert referral.first_deposit_amount == Decimal("5000.00")
+        assert referral.reward_amount == Decimal("100.00")
+        wallet = db.query(Wallet).filter(Wallet.user_id == referrer.id).first()
+        assert wallet is not None
+        assert Decimal(wallet.balance) == Decimal("100.00")
+        reward_txs = db.query(Transaction).filter(
+            Transaction.user_id == referrer.id,
+            Transaction.tx_type == TransactionType.WALLET_FUND,
+        ).all()
+        assert len(reward_txs) == 1
     finally:
         db.close()
 
 
-def test_referral_dashboard_exposes_progress():
+def test_duplicate_webhook_for_first_deposit_rewards_once():
+    db = SessionLocal()
+    try:
+        referrer = _seed_user(db, email="referrer5@example.com", full_name="Referrer 5", referral_code="AX40")
+        referred = _seed_user(
+            db,
+            email="dup@example.com",
+            full_name="Duplicate",
+            referral_code="AX41",
+            referred_by_id=referrer.id,
+        )
+        attach_signup_referral(db, new_user=referred, referral_code=referrer.referral_code)
+        db.commit()
+
+        tx = _fund_success(db, user=referred, reference="DEP-DUP", amount=Decimal("15000.00"))
+        first = record_referral_first_deposit_reward(
+            db,
+            user=referred,
+            transaction_reference=tx.reference,
+            deposit_amount=tx.amount,
+            transaction_status=TransactionStatus.SUCCESS.value,
+        )
+        second = record_referral_first_deposit_reward(
+            db,
+            user=referred,
+            transaction_reference=tx.reference,
+            deposit_amount=tx.amount,
+            transaction_status=TransactionStatus.SUCCESS.value,
+        )
+        db.commit()
+
+        assert first is not None
+        assert second is not None
+        referral = db.query(Referral).filter_by(id=first.id).first()
+        assert referral is not None
+        assert referral.reward_amount == Decimal("300.00")
+        wallet = db.query(Wallet).filter(Wallet.user_id == referrer.id).first()
+        assert wallet is not None
+        assert Decimal(wallet.balance) == Decimal("300.00")
+        reward_txs = db.query(Transaction).filter(
+            Transaction.user_id == referrer.id,
+            Transaction.tx_type == TransactionType.WALLET_FUND,
+        ).all()
+        assert len(reward_txs) == 1
+    finally:
+        db.close()
+
+
+def test_referral_dashboard_exposes_first_deposit_and_total_earned():
     db = SessionLocal()
     try:
         referrer = _seed_user(db, email="referrer4@example.com", full_name="Referrer 4", referral_code="AX30")
@@ -192,19 +253,22 @@ def test_referral_dashboard_exposes_progress():
         )
         attach_signup_referral(db, new_user=referred, referral_code=referrer.referral_code)
         db.commit()
-        record_referral_data_activity(
+        tx = _fund_success(db, user=referred, reference="DEP-4", amount=Decimal("25000.00"))
+        record_referral_first_deposit_reward(
             db,
             user=referred,
-            transaction_reference="TX-DASH",
-            plan_size="1GB",
+            transaction_reference=tx.reference,
+            deposit_amount=tx.amount,
             transaction_status=TransactionStatus.SUCCESS.value,
         )
+        db.commit()
 
         dashboard = get_referral_dashboard(db, user=referrer)
         assert dashboard["referral_code"] == referrer.referral_code
         assert dashboard["total_referrals"] == 1
-        assert dashboard["rewarded_referrals"] == 0
-        assert dashboard["progress_percent"] == 2
-        assert dashboard["referrals"][0]["progress_percent"] == 2
+        assert dashboard["rewarded_referrals"] == 1
+        assert dashboard["total_earned"] == Decimal("500.00")
+        assert dashboard["referrals"][0]["first_deposit_amount"] == Decimal("25000.00")
+        assert dashboard["referrals"][0]["reward_amount"] == Decimal("500.00")
     finally:
         db.close()
