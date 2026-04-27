@@ -21,7 +21,7 @@ class Referral(Base, TimestampMixin):
     first_deposit_amount = Column(Numeric(12, 2), nullable=True)
     accumulated_mb = Column(Integer, default=0, nullable=False)
     target_mb = Column(Integer, default=51200, nullable=False)
-    reward_amount = Column(Numeric(12, 2), default=2000, nullable=False)
+    reward_amount = Column(Numeric(12, 2), default=0, nullable=False)
     status = Column(
         Enum(
             ReferralStatus,

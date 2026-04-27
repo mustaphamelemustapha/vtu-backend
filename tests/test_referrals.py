@@ -73,6 +73,7 @@ def test_attach_signup_referral_links_referred_user():
         assert row.referred_user_id == referred.id
         assert row.referral_code_used == referrer.referral_code
         assert row.status.value == "pending"
+        assert Decimal(str(row.reward_amount)) == Decimal("0.00")
     finally:
         db.close()
 
@@ -268,6 +269,7 @@ def test_referral_dashboard_exposes_first_deposit_and_total_earned():
         assert dashboard["total_referrals"] == 1
         assert dashboard["rewarded_referrals"] == 1
         assert dashboard["total_earned"] == Decimal("500.00")
+        assert dashboard["reward_amount"] == Decimal("0.00")
         assert dashboard["referrals"][0]["first_deposit_amount"] == Decimal("25000.00")
         assert dashboard["referrals"][0]["reward_amount"] == Decimal("500.00")
     finally:

@@ -13,7 +13,8 @@ from app.services.wallet import credit_wallet, get_or_create_wallet
 
 settings = get_settings()
 
-DEFAULT_REWARD_AMOUNT = Decimal("2000.00")
+DEFAULT_REWARD_AMOUNT = Decimal("0.00")
+REFERRAL_REWARD_RATE = Decimal("0.02")
 
 
 def _utcnow() -> datetime:
@@ -67,9 +68,9 @@ def ensure_user_referral_code(db: Session, user: User) -> str:
 
 def _safe_reward_amount(value) -> Decimal:
     try:
-        return Decimal(str(value or DEFAULT_REWARD_AMOUNT))
+        return Decimal(str(value or Decimal("0.00")))
     except Exception:
-        return DEFAULT_REWARD_AMOUNT
+        return Decimal("0.00")
 
 
 def _safe_decimal_amount(value) -> Decimal:
@@ -229,7 +230,7 @@ def record_referral_first_deposit_reward(
     if amount <= 0:
         return referral
 
-    reward_amount = (amount * Decimal("0.02")).quantize(Decimal("0.01"))
+    reward_amount = (amount * REFERRAL_REWARD_RATE).quantize(Decimal("0.01"))
     if reward_amount <= 0:
         return referral
 
@@ -268,7 +269,9 @@ def get_referral_dashboard(db: Session, *, user: User) -> dict:
     )
     rewarded = [item for item in referrals if item.status == ReferralStatus.REWARDED]
     total_earned = sum((Decimal(str(item.reward_amount or 0)) for item in rewarded), Decimal("0"))
-    reward_amount = _safe_reward_amount(referrals[0].reward_amount if referrals else Decimal("0"))
+    # Reward is dynamic (2% of each referred user's first successful deposit),
+    # so there is no fixed "reward per referral" amount to expose globally.
+    reward_amount = Decimal("0.00")
     referral_link = None
     if settings.frontend_base_url:
         base = str(settings.frontend_base_url).rstrip("/")
@@ -289,7 +292,7 @@ def get_referral_dashboard(db: Session, *, user: User) -> dict:
                 "referral_code_used": item.referral_code_used,
                 "status": item.status.value if hasattr(item.status, "value") else str(item.status),
                 "first_deposit_amount": Decimal(str(item.first_deposit_amount or 0)),
-                "reward_amount": Decimal(str(item.reward_amount or reward_amount)),
+                "reward_amount": Decimal(str(item.reward_amount or Decimal("0.00"))),
                 "qualified_at": item.qualified_at,
                 "rewarded_at": item.rewarded_at,
                 "created_at": item.created_at,
