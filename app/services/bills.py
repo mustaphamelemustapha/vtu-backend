@@ -619,8 +619,8 @@ class VTPassBillsProvider:
 class ClubKonnectBillsProvider:
     def __init__(self):
         self.base_url = _normalize_clubkonnect_base_url(str(settings.clubkonnect_base_url or ""))
-        self.user_id = str(settings.clubkonnect_user_id or "").strip()
-        self.api_key = str(settings.clubkonnect_api_key or "").strip()
+        self.user_id = str(settings.nello_user_id or settings.clubkonnect_user_id or "").strip()
+        self.api_key = str(settings.nello_api_key or settings.clubkonnect_api_key or "").strip()
         self.timeout = settings.clubkonnect_timeout_seconds
 
     def _callback_url(self) -> str:
@@ -1220,7 +1220,7 @@ def get_bills_provider():
     choice = str(settings.bills_provider or "auto").strip().lower()
 
     has_vtpass = bool(settings.vtpass_enabled and settings.vtpass_api_key and settings.vtpass_secret_key)
-    has_clubkonnect = bool(settings.clubkonnect_user_id and settings.clubkonnect_api_key)
+    has_clubkonnect = bool((settings.nello_user_id or settings.clubkonnect_user_id) and (settings.nello_api_key or settings.clubkonnect_api_key))
     clubkonnect_enabled = bool(settings.clubkonnect_enabled)
 
     if choice == "mock":

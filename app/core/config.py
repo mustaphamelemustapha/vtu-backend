@@ -96,6 +96,8 @@ class Settings(BaseSettings):
     clubkonnect_base_url: AnyHttpUrl = "https://www.nellobytesystems.com"
     clubkonnect_user_id: Optional[str] = None
     clubkonnect_api_key: Optional[str] = None
+    nello_user_id: Optional[str] = None
+    nello_api_key: Optional[str] = None
     clubkonnect_timeout_seconds: int = 20
     clubkonnect_enabled: bool = False
     clubkonnect_callback_url: Optional[str] = None

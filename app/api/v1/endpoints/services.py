@@ -551,6 +551,7 @@ def electricity_discos(user: User = Depends(get_current_user)):
 
 
 @router.post("/electricity/verify")
+@router.post("/electricity/verify-meter")
 @limiter.limit("15/minute")
 def electricity_verify(request: Request, payload: ElectricityVerifyRequest, user: User = Depends(get_current_user)):
     disco = str(payload.disco or "").strip().lower()
