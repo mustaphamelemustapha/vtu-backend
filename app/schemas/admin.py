@@ -19,6 +19,7 @@ class PricingRuleUpdate(BaseModel):
     provider: Optional[str] = None
     role: str = "user"
     margin: Decimal
+    margin_type: Optional[str] = "fixed"  # 'fixed' or 'percentage'
 
 
 class PricingRuleOut(BaseModel):
@@ -28,6 +29,7 @@ class PricingRuleOut(BaseModel):
     provider: Optional[str] = None
     role: str
     margin: Decimal
+    margin_type: str = "fixed"
     kind: str
 
 
@@ -121,7 +123,24 @@ class ServiceToggleOut(BaseModel):
 
 
 class DataPlanUpdate(BaseModel):
+    is_active: Optional[bool] = None
+    # Admin can set an explicit display price; set to null to clear (fall back to margin).
+    display_price: Optional[Decimal] = None
+    clear_display_price: bool = False
+
+
+class AdminDataPlanOut(BaseModel):
+    id: int
+    network: str
+    plan_code: str
+    plan_name: str
+    data_size: str
+    validity: str
+    base_price: Decimal
+    display_price: Optional[Decimal] = None
     is_active: bool
+    created_at: datetime
+    updated_at: datetime
 
 
 class AdminAuditLogOut(BaseModel):

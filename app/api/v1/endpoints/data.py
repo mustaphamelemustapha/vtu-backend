@@ -615,7 +615,10 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
     plan.validity = str(item.get("validity") or plan.validity).strip() or plan.validity
     plan.base_price = Decimal(str(item.get("price", plan.base_price)))
     plan.is_active = True
+    # NOTE: display_price is intentionally NOT overwritten here.
+    # Admin-set price overrides are preserved across provider syncs.
     return True
+
 
 
 def _invalidate_plans_cache() -> None:

@@ -13,6 +13,8 @@ class DataPlan(Base, TimestampMixin):
     data_size = Column(String(32), nullable=False)
     validity = Column(String(32), nullable=False)
     base_price = Column(Numeric(12, 2), nullable=False)
+    # Admin-set override: when set, this price is used instead of base_price + margin.
+    display_price = Column(Numeric(12, 2), nullable=True, default=None)
     is_active = Column(Boolean, default=True, nullable=False)
 
 

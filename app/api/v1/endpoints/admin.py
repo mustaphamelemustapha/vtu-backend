@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, select, union_all, String, cast, inspect
 from app.core.database import get_db
 from app.dependencies import require_admin
-from app.models import User, Wallet, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, ApiLog, DataPlan, TransactionDispute, DisputeStatus, AdminAuditLog, ServiceToggle, Referral
+from app.models import User, Wallet, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, MarginType, ApiLog, DataPlan, TransactionDispute, DisputeStatus, AdminAuditLog, ServiceToggle, Referral
 from app.schemas.admin import (
     FundUserWalletRequest,
     PricingRuleUpdate,
@@ -20,6 +20,7 @@ from app.schemas.admin import (
     ServiceToggleUpdate,
     ServiceToggleOut,
     DataPlanUpdate,
+    AdminDataPlanOut,
     AdminAuditLogsResponse,
     AdminReferralsResponse,
 )
@@ -716,7 +717,13 @@ def fund_user_wallet(payload: FundUserWalletRequest, admin=Depends(require_admin
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     wallet = get_or_create_wallet(db, user.id)
-    credit_wallet(db, wallet, payload.amount, f"ADMIN_{user.id}", payload.description)
+    
+    if payload.amount < 0 and wallet.balance + payload.amount < 0:
+        raise HTTPException(status_code=400, detail="Adjustment would result in negative balance")
+        
+    import uuid
+    ref = f"ADMIN_{user.id}_{uuid.uuid4().hex[:8]}"
+    credit_wallet(db, wallet, payload.amount, ref, payload.description)
     return {"status": "ok"}
 
 
@@ -744,11 +751,22 @@ def update_pricing(payload: PricingRuleUpdate, admin=Depends(require_admin), db:
             raise HTTPException(status_code=400, detail="Network is required")
 
     rule = db.query(PricingRule).filter(PricingRule.network == network, PricingRule.role == role).first()
+    margin_type_raw = str(getattr(payload, "margin_type", None) or "fixed").strip().lower()
+    if margin_type_raw not in ("fixed", "percentage"):
+        margin_type_raw = "fixed"
     if not rule:
-        rule = PricingRule(network=network, role=role, margin=payload.margin)
+        rule = PricingRule(network=network, role=role, margin=payload.margin, margin_type=margin_type_raw)
         db.add(rule)
     else:
         rule.margin = payload.margin
+        rule.margin_type = margin_type_raw
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action="pricing_rule_update",
+        target=network,
+        details={"role": role.value, "margin": float(payload.margin), "margin_type": margin_type_raw},
+    )
+    db.add(audit_log)
     db.commit()
     return {"status": "ok", "network": network}
 
@@ -767,6 +785,7 @@ def list_pricing(admin=Depends(require_admin), db: Session = Depends(get_db)):
                 "provider": parsed.get("provider"),
                 "role": row.role.value if hasattr(row.role, "value") else str(row.role),
                 "margin": row.margin,
+                "margin_type": str(getattr(row, "margin_type", None) or "fixed"),
                 "kind": parsed["kind"],
             }
         )
@@ -857,28 +876,71 @@ def update_service_toggle(
 
 @router.get("/data-plans")
 def get_all_data_plans(admin=Depends(require_admin), db: Session = Depends(get_db)):
-    plans = db.query(DataPlan).all()
-    return plans
+    plans = db.query(DataPlan).order_by(DataPlan.network.asc(), DataPlan.plan_name.asc()).all()
+    result = []
+    for p in plans:
+        result.append({
+            "id": p.id,
+            "network": p.network,
+            "plan_code": p.plan_code,
+            "plan_name": p.plan_name,
+            "data_size": p.data_size,
+            "validity": p.validity,
+            "base_price": float(p.base_price),
+            "display_price": float(p.display_price) if p.display_price is not None else None,
+            "is_active": p.is_active,
+            "created_at": p.created_at,
+            "updated_at": p.updated_at,
+        })
+    return result
 
 
 @router.patch("/data-plans/{plan_id}")
 def update_data_plan(
-    plan_id: int, payload: DataPlanUpdate, admin=Depends(require_admin), db: Session = Depends(get_db)
+    plan_id: int, payload: DataPlanUpdate, admin: User = Depends(require_admin), db: Session = Depends(get_db)
 ):
     plan = db.query(DataPlan).filter(DataPlan.id == plan_id).first()
     if not plan:
         raise HTTPException(status_code=404, detail="Data plan not found")
-    plan.is_active = payload.is_active
-    
+
+    changes: dict = {}
+
+    if payload.is_active is not None and payload.is_active != plan.is_active:
+        plan.is_active = payload.is_active
+        changes["is_active"] = payload.is_active
+
+    if payload.clear_display_price:
+        if plan.display_price is not None:
+            plan.display_price = None
+            changes["display_price"] = None
+    elif payload.display_price is not None:
+        if payload.display_price < 0:
+            raise HTTPException(status_code=400, detail="display_price must be >= 0")
+        plan.display_price = payload.display_price
+        changes["display_price"] = float(payload.display_price)
+
+    if not changes:
+        return {
+            "status": "no_change",
+            "id": plan.id,
+            "is_active": plan.is_active,
+            "display_price": float(plan.display_price) if plan.display_price is not None else None,
+        }
+
     audit_log = AdminAuditLog(
         admin_email=admin.email,
         action="data_plan_update",
         target=str(plan_id),
-        details={"is_active": payload.is_active}
+        details={"plan_code": plan.plan_code, "network": plan.network, **changes},
     )
     db.add(audit_log)
     db.commit()
-    return {"status": "ok", "is_active": plan.is_active}
+    return {
+        "status": "ok",
+        "id": plan.id,
+        "is_active": plan.is_active,
+        "display_price": float(plan.display_price) if plan.display_price is not None else None,
+    }
 
 
 @router.get("/referrals", response_model=AdminReferralsResponse)
