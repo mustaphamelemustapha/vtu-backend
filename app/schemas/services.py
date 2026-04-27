@@ -19,6 +19,11 @@ class CablePurchaseRequest(BaseModel):
     amount: Decimal = Field(..., gt=0)
 
 
+class CableVerifyRequest(BaseModel):
+    provider: str = Field(..., min_length=2, max_length=64)
+    smartcard_number: str = Field(..., min_length=5, max_length=32)
+
+
 class ElectricityPurchaseRequest(BaseModel):
     client_request_id: Optional[str] = Field(default=None, max_length=128)
     disco: str = Field(..., min_length=2, max_length=64)

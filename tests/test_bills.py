@@ -128,6 +128,43 @@ def test_clubkonnect_invalid_credentials_fails():
     assert (result.meta or {}).get("clubkonnect", {}).get("status") == "failed"
 
 
+def test_clubkonnect_purchase_cable_maps_payload(monkeypatch):
+    provider = ClubKonnectBillsProvider()
+    captured = {}
+
+    def _fake_request(endpoint, params):
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        return {"status": "200", "OrderID": "CK-CABLE-1"}
+
+    monkeypatch.setattr(provider, "_request", _fake_request)
+    result = provider.purchase_cable("dstv", "1234567890", "dstv-padi", 4400.0, "08141114647")
+    assert captured["endpoint"] == "APICableTVV1.asp"
+    assert captured["params"]["CableTV"] == "DStv"
+    assert captured["params"]["Package"] == "dstv-padi"
+    assert captured["params"]["SmartCardNo"] == "1234567890"
+    assert captured["params"]["PhoneNo"] == "08141114647"
+    assert result.success is True
+
+
+def test_clubkonnect_verify_cable_customer_maps_payload(monkeypatch):
+    provider = ClubKonnectBillsProvider()
+    captured = {}
+
+    def _fake_request(endpoint, params):
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        return {"customer_name": "BALOGUN SUNDAY"}
+
+    monkeypatch.setattr(provider, "_request", _fake_request)
+    result = provider.verify_cable_customer("gotv", "4455667788")
+    assert captured["endpoint"] == "APIVerifyCableTVV1.0.asp"
+    assert captured["params"]["CableTV"] == "GOtv"
+    assert captured["params"]["SmartCardNo"] == "4455667788"
+    assert result["ok"] is True
+    assert result["customer_name"] == "BALOGUN SUNDAY"
+
+
 def test_clubkonnect_fetch_data_variations_prefers_mobile_network_field(monkeypatch):
     provider = ClubKonnectBillsProvider()
 

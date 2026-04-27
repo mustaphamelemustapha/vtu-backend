@@ -14,6 +14,7 @@ from app.models import User, TransactionStatus, TransactionType, ServiceTransact
 from app.schemas.services import (
     AirtimePurchaseRequest,
     CablePurchaseRequest,
+    CableVerifyRequest,
     ElectricityPurchaseRequest,
     ExamPurchaseRequest,
     ServicesCatalogOut,
@@ -328,6 +329,72 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
     tx.status = TransactionStatus.REFUNDED.value
     db.commit()
     raise HTTPException(status_code=502, detail=tx.failure_reason)
+
+
+@router.get("/cable/packages")
+def cable_packages(provider: str, user: User = Depends(get_current_user)):
+    provider_key = str(provider or "").strip().lower()
+    if not provider_key:
+        raise HTTPException(status_code=400, detail="Provider is required.")
+    service = get_bills_provider()
+    fetcher = getattr(service, "fetch_cable_packages", None)
+    if not callable(fetcher):
+        return {"provider": provider_key, "packages": []}
+    try:
+        rows = fetcher(provider_key) or []
+    except Exception as exc:
+        logger.warning("Cable packages fetch failed provider=%s error=%s", provider_key, exc)
+        return {"provider": provider_key, "packages": []}
+    normalized = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("code") or "").strip()
+        if not code:
+            continue
+        name = str(row.get("name") or code).strip()
+        amount_raw = row.get("amount")
+        try:
+            amount = float(amount_raw) if amount_raw not in (None, "") else None
+        except Exception:
+            amount = None
+        normalized.append(
+            {
+                "code": code,
+                "name": name or code,
+                "amount": amount,
+                "provider": str(row.get("provider") or provider_key).strip().lower(),
+            }
+        )
+    return {"provider": provider_key, "packages": normalized}
+
+
+@router.post("/cable/verify")
+@limiter.limit("15/minute")
+def cable_verify(
+    request: Request,
+    payload: CableVerifyRequest,
+    user: User = Depends(get_current_user),
+):
+    provider_key = str(payload.provider or "").strip().lower()
+    smartcard = str(payload.smartcard_number or "").strip()
+    if not provider_key or not smartcard:
+        raise HTTPException(status_code=400, detail="Provider and smartcard number are required.")
+    service = get_bills_provider()
+    verifier = getattr(service, "verify_cable_customer", None)
+    if not callable(verifier):
+        return {"ok": False, "message": "Smartcard verification is unavailable right now."}
+    try:
+        result = verifier(provider_key, smartcard) or {}
+    except Exception as exc:
+        logger.warning("Cable verify failed provider=%s smartcard=%s error=%s", provider_key, smartcard[-4:], exc)
+        return {"ok": False, "message": "Unable to verify smartcard right now."}
+    ok = bool(result.get("ok"))
+    return {
+        "ok": ok,
+        "customer_name": str(result.get("customer_name") or "").strip() if ok else "",
+        "message": "" if ok else str(result.get("message") or "Unable to verify smartcard number.").strip(),
+    }
 
 
 @router.post("/electricity/purchase")

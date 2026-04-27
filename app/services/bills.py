@@ -95,6 +95,7 @@ _CLUBKONNECT_CABLE_MAP = {
     "dstv": "DStv",
     "gotv": "GOtv",
     "startimes": "Startimes",
+    "showmax": "Showmax",
 }
 
 _CLUBKONNECT_DISCO_CODE_MAP = {
@@ -521,6 +522,47 @@ class VTPassBillsProvider:
                 result.meta["pins"] = pins
         return result
 
+    def fetch_cable_packages(self, provider: str) -> list[dict]:
+        service_id = _cable_service_id(provider)
+        data = self._get("/service-variations", params={"serviceID": service_id})
+        rows = self._extract_variations(data)
+        packages: list[dict] = []
+        for row in rows:
+            code = str(row.get("variation_code") or row.get("code") or "").strip()
+            name = str(row.get("name") or code).strip()
+            amount_raw = row.get("variation_amount") or row.get("amount")
+            try:
+                amount = float(str(amount_raw).replace(",", "").strip()) if amount_raw not in (None, "") else None
+            except Exception:
+                amount = None
+            if not code:
+                continue
+            packages.append({"code": code, "name": name, "amount": amount, "provider": str(provider or "").strip().lower()})
+        return packages
+
+    def verify_cable_customer(self, provider: str, smartcard_number: str) -> dict:
+        try:
+            data = self._post(
+                "/merchant-verify",
+                {"billersCode": str(smartcard_number).strip(), "serviceID": _cable_service_id(provider)},
+            )
+        except Exception as exc:
+            return {"ok": False, "message": str(exc)}
+
+        content = data.get("content") or {}
+        customer_name = (
+            content.get("Customer_Name")
+            or content.get("customer_name")
+            or content.get("name")
+            or data.get("customer_name")
+            or data.get("message")
+            or ""
+        )
+        customer_name = str(customer_name or "").strip()
+        if customer_name:
+            return {"ok": True, "customer_name": customer_name}
+        return {"ok": False, "message": "Unable to verify smartcard right now."}
+
     def fetch_data_variations(self, network: str) -> list[dict]:
         service_id = _data_service_id(network)
         data = self._get("/service-variations", params={"serviceID": service_id})
@@ -723,6 +765,41 @@ class ClubKonnectBillsProvider:
         return _CLUBKONNECT_CABLE_MAP.get(key, provider)
 
     @staticmethod
+    def _cable_provider_key(value: str) -> str:
+        key = str(value or "").strip().lower()
+        if not key:
+            return ""
+        if key in {"dstv", "d_stv", "d-stv"}:
+            return "dstv"
+        if key in {"gotv", "go_tv", "go-tv"}:
+            return "gotv"
+        if key in {"startimes", "star_times", "star-times"}:
+            return "startimes"
+        if key in {"showmax"}:
+            return "showmax"
+        return key
+
+    @staticmethod
+    def _flatten_cable_package_rows(payload: dict) -> list[dict]:
+        rows: list[dict] = []
+        possible_rows = payload.get("TV_ID") or payload.get("tv_id") or payload.get("data") or payload.get("Data") or payload
+        if isinstance(possible_rows, list):
+            rows.extend([x for x in possible_rows if isinstance(x, dict)])
+        elif isinstance(possible_rows, dict):
+            for key, value in possible_rows.items():
+                if isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, dict):
+                            enriched = dict(item)
+                            enriched.setdefault("provider_hint", key)
+                            rows.append(enriched)
+                elif isinstance(value, dict):
+                    enriched = dict(value)
+                    enriched.setdefault("provider_hint", key)
+                    rows.append(enriched)
+        return rows
+
+    @staticmethod
     def _disco_code(disco: str) -> str:
         key = str(disco or "").strip().lower().replace(" ", "")
         return _CLUBKONNECT_DISCO_CODE_MAP.get(key, disco)
@@ -839,13 +916,78 @@ class ClubKonnectBillsProvider:
             "APICableTVV1.asp",
             {
                 "CableTV": self._cable_code(provider),
-                "MeterType": str(package_code),
+                "Package": str(package_code),
                 "SmartCardNo": str(smartcard_number),
+                "PhoneNo": str(phone_number or "").strip(),
                 "RequestID": request_id,
                 "CallBackURL": self._callback_url(),
             },
         )
         return self._settle_pending(self._parse_result(data, action="cable"), "cable", request_id=request_id)
+
+    def fetch_cable_packages(self, provider: str) -> list[dict]:
+        key = self._cable_provider_key(provider)
+        data = self._request("APICableTVPackagesV2.asp", {})
+        rows = self._flatten_cable_package_rows(data)
+        packages: list[dict] = []
+        for row in rows:
+            provider_hint = self._cable_provider_key(
+                row.get("CableTV")
+                or row.get("cabletv")
+                or row.get("TV_ID")
+                or row.get("tv_id")
+                or row.get("provider")
+                or row.get("provider_hint")
+            )
+            if key and provider_hint and provider_hint != key:
+                continue
+            code = str(
+                row.get("Package")
+                or row.get("package")
+                or row.get("PACKAGE_CODE")
+                or row.get("PRODUCT_ID")
+                or row.get("ID")
+                or row.get("code")
+                or ""
+            ).strip()
+            name = str(
+                row.get("PackageName")
+                or row.get("package_name")
+                or row.get("DESCRIPTION")
+                or row.get("PRODUCT_NAME")
+                or row.get("DataType")
+                or row.get("name")
+                or code
+            ).strip()
+            amount_raw = row.get("Amount") or row.get("amount") or row.get("PRODUCT_AMOUNT") or row.get("Price")
+            try:
+                amount = float(str(amount_raw).replace(",", "").strip()) if amount_raw not in (None, "") else None
+            except Exception:
+                amount = None
+            if not code:
+                continue
+            packages.append(
+                {
+                    "code": code,
+                    "name": name or code,
+                    "amount": amount,
+                    "provider": provider_hint or key or str(provider or "").strip().lower(),
+                }
+            )
+        dedup: dict[str, dict] = {}
+        for item in packages:
+            dedup[item["code"]] = item
+        return list(dedup.values())
+
+    def verify_cable_customer(self, provider: str, smartcard_number: str) -> dict:
+        data = self._request(
+            "APIVerifyCableTVV1.0.asp",
+            {"CableTV": self._cable_code(provider), "SmartCardNo": str(smartcard_number).strip()},
+        )
+        customer_name = str(data.get("customer_name") or data.get("CustomerName") or "").strip()
+        if customer_name and customer_name.upper() not in {"INVALID_SMARTCARDNO", "INVALID"}:
+            return {"ok": True, "customer_name": customer_name}
+        return {"ok": False, "message": customer_name or "Unable to verify smartcard number."}
 
     def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str | None = None) -> ProviderResult:
         request_id = _clubkonnect_request_id("ELEC")
@@ -1017,3 +1159,11 @@ class MockBillsProvider:
         for _ in range(int(quantity or 1)):
             pins.append(f"{secrets.randbelow(10**12):012d}")
         return ProviderResult(True, external_reference=self._ref("EXAM"), meta={"exam": exam, "pins": pins, "phone_number": phone_number})
+
+    def fetch_cable_packages(self, provider: str) -> list[dict]:
+        return []
+
+    def verify_cable_customer(self, provider: str, smartcard_number: str) -> dict:
+        if str(smartcard_number).strip().startswith("0000"):
+            return {"ok": False, "message": "Invalid smartcard number."}
+        return {"ok": True, "customer_name": "Verified Customer"}
