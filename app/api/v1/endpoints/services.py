@@ -16,6 +16,7 @@ from app.schemas.services import (
     CablePurchaseRequest,
     CableVerifyRequest,
     ElectricityPurchaseRequest,
+    ElectricityVerifyRequest,
     ExamPurchaseRequest,
     ServicesCatalogOut,
 )
@@ -488,6 +489,82 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
     tx.status = TransactionStatus.REFUNDED.value
     db.commit()
     raise HTTPException(status_code=502, detail=tx.failure_reason)
+
+
+@router.get("/electricity/discos")
+def electricity_discos(user: User = Depends(get_current_user)):
+    service = get_bills_provider()
+    fetcher = getattr(service, "fetch_electricity_discos", None)
+    if not callable(fetcher):
+        return {
+            "discos": [
+                {"code": "01", "id": "ekedc", "name": "EKEDC"},
+                {"code": "02", "id": "ikedc", "name": "IKEDC"},
+                {"code": "03", "id": "aedc", "name": "AEDC"},
+                {"code": "04", "id": "kedco", "name": "KEDCO"},
+                {"code": "05", "id": "phed", "name": "PHED"},
+                {"code": "06", "id": "jos", "name": "JED"},
+                {"code": "07", "id": "ibedc", "name": "IBEDC"},
+                {"code": "08", "id": "kaedco", "name": "KAEDCO"},
+                {"code": "09", "id": "eedc", "name": "EEDC"},
+            ]
+        }
+    try:
+        rows = fetcher() or []
+    except Exception as exc:
+        logger.warning("Electricity discos fetch failed error=%s", exc)
+        rows = []
+    normalized = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("code") or row.get("id") or "").strip()
+        disco_id = str(row.get("id") or "").strip().lower()
+        name = str(row.get("name") or disco_id or code).strip()
+        if not disco_id and name:
+            disco_id = name.lower().replace(" ", "")
+        if not disco_id:
+            continue
+        normalized.append({"code": code, "id": disco_id, "name": name or disco_id.upper()})
+    if not normalized:
+        normalized = [
+            {"code": "01", "id": "ekedc", "name": "EKEDC"},
+            {"code": "02", "id": "ikedc", "name": "IKEDC"},
+            {"code": "03", "id": "aedc", "name": "AEDC"},
+            {"code": "04", "id": "kedco", "name": "KEDCO"},
+            {"code": "05", "id": "phed", "name": "PHED"},
+            {"code": "06", "id": "jos", "name": "JED"},
+            {"code": "07", "id": "ibedc", "name": "IBEDC"},
+            {"code": "08", "id": "kaedco", "name": "KAEDCO"},
+            {"code": "09", "id": "eedc", "name": "EEDC"},
+        ]
+    return {"discos": normalized}
+
+
+@router.post("/electricity/verify")
+@limiter.limit("15/minute")
+def electricity_verify(request: Request, payload: ElectricityVerifyRequest, user: User = Depends(get_current_user)):
+    disco = str(payload.disco or "").strip().lower()
+    meter_number = str(payload.meter_number or "").strip()
+    meter_type = str(payload.meter_type or "").strip().lower()
+    if not disco or not meter_number or not meter_type:
+        raise HTTPException(status_code=400, detail="Disco, meter type, and meter number are required.")
+
+    service = get_bills_provider()
+    verifier = getattr(service, "verify_electricity_customer", None)
+    if not callable(verifier):
+        return {"ok": False, "message": "Meter verification is unavailable right now."}
+    try:
+        result = verifier(disco, meter_number, meter_type) or {}
+    except Exception as exc:
+        logger.warning("Electricity verify failed disco=%s meter=%s error=%s", disco, meter_number[-4:], exc)
+        return {"ok": False, "message": "Unable to verify meter number right now."}
+    ok = bool(result.get("ok"))
+    return {
+        "ok": ok,
+        "customer_name": str(result.get("customer_name") or "").strip() if ok else "",
+        "message": "" if ok else str(result.get("message") or "Unable to verify meter number.").strip(),
+    }
 
 
 @router.post("/exam/purchase")

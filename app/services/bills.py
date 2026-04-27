@@ -119,6 +119,18 @@ _CLUBKONNECT_DISCO_CODE_MAP = {
     "enugu": "09",
 }
 
+_CLUBKONNECT_DISCO_NAME_BY_CODE = {
+    "01": "ekedc",
+    "02": "ikedc",
+    "03": "aedc",
+    "04": "kedco",
+    "05": "phed",
+    "06": "jos",
+    "07": "ibedc",
+    "08": "kaedco",
+    "09": "eedc",
+}
+
 
 def _vtpass_request_id() -> str:
     # VTpass requires first 12 chars to be YYYYMMDDHHMM in Africa/Lagos timezone.
@@ -1031,6 +1043,78 @@ class ClubKonnectBillsProvider:
             result.meta = {**(result.meta or {}), "token": token}
         return result
 
+    def fetch_electricity_discos(self) -> list[dict]:
+        data = self._request("APIElectricityDiscosV2.asp", {})
+        rows = data.get("ElectricityDiscos") or data.get("electricity_discos") or data.get("data") or data.get("Data") or data
+        flattened: list[dict] = []
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict):
+                    flattened.append(row)
+        elif isinstance(rows, dict):
+            for value in rows.values():
+                if isinstance(value, list):
+                    for item in value:
+                        if isinstance(item, dict):
+                            flattened.append(item)
+                elif isinstance(value, dict):
+                    flattened.append(value)
+
+        discos: list[dict] = []
+        for row in flattened:
+            code = str(row.get("ID") or row.get("id") or row.get("code") or row.get("Code") or "").strip()
+            name = str(
+                row.get("NAME")
+                or row.get("name")
+                or row.get("Disco")
+                or row.get("disco")
+                or row.get("ElectricCompany")
+                or row.get("electric_company")
+                or ""
+            ).strip()
+            key = ""
+            if code and code in _CLUBKONNECT_DISCO_NAME_BY_CODE:
+                key = _CLUBKONNECT_DISCO_NAME_BY_CODE[code]
+            if not key and name:
+                key = str(name).strip().lower().replace(" ", "")
+            if not key and code:
+                key = code
+            if key:
+                discos.append(
+                    {
+                        "code": code or self._disco_code(key),
+                        "id": key,
+                        "name": name or key.upper(),
+                    }
+                )
+
+        if not discos:
+            for key, code in _CLUBKONNECT_DISCO_CODE_MAP.items():
+                if len(code) != 2:
+                    continue
+                if key not in {"ekedc", "ikedc", "aedc", "kedco", "phed", "jos", "ibedc", "kaedco", "eedc"}:
+                    continue
+                discos.append({"code": code, "id": key, "name": key.upper()})
+
+        dedup: dict[str, dict] = {}
+        for item in discos:
+            dedup[item["id"]] = item
+        return list(dedup.values())
+
+    def verify_electricity_customer(self, disco: str, meter_number: str, meter_type: str) -> dict:
+        data = self._request(
+            "APIVerifyElectricityV1.asp",
+            {
+                "ElectricCompany": self._disco_code(disco),
+                "MeterNo": str(meter_number).strip(),
+                "MeterType": self._meter_code(meter_type),
+            },
+        )
+        customer_name = str(data.get("customer_name") or data.get("CustomerName") or "").strip()
+        if customer_name and customer_name.upper() not in {"INVALID_METERNO", "INVALID"}:
+            return {"ok": True, "customer_name": customer_name}
+        return {"ok": False, "message": customer_name or "Unable to verify meter number."}
+
     def purchase_exam_pin(self, exam: str, quantity: int, phone_number: str | None = None) -> ProviderResult:
         exam_key = _normalize_exam_key(exam)
         endpoint = {
@@ -1190,3 +1274,21 @@ class MockBillsProvider:
         if str(smartcard_number).strip().startswith("0000"):
             return {"ok": False, "message": "Invalid smartcard number."}
         return {"ok": True, "customer_name": "Verified Customer"}
+
+    def fetch_electricity_discos(self) -> list[dict]:
+        return [
+            {"code": "01", "id": "ekedc", "name": "EKEDC"},
+            {"code": "02", "id": "ikedc", "name": "IKEDC"},
+            {"code": "03", "id": "aedc", "name": "AEDC"},
+            {"code": "04", "id": "kedco", "name": "KEDCO"},
+            {"code": "05", "id": "phed", "name": "PHED"},
+            {"code": "06", "id": "jos", "name": "JED"},
+            {"code": "07", "id": "ibedc", "name": "IBEDC"},
+            {"code": "08", "id": "kaedco", "name": "KAEDCO"},
+            {"code": "09", "id": "eedc", "name": "EEDC"},
+        ]
+
+    def verify_electricity_customer(self, disco: str, meter_number: str, meter_type: str) -> dict:
+        if str(meter_number).strip().startswith("0000"):
+            return {"ok": False, "message": "Invalid meter number."}
+        return {"ok": True, "customer_name": "Verified Meter Customer"}

@@ -33,6 +33,12 @@ class ElectricityPurchaseRequest(BaseModel):
     amount: Decimal = Field(..., gt=0)
 
 
+class ElectricityVerifyRequest(BaseModel):
+    disco: str = Field(..., min_length=2, max_length=64)
+    meter_number: str = Field(..., min_length=5, max_length=32)
+    meter_type: str = Field(..., min_length=3, max_length=16)  # prepaid|postpaid
+
+
 class ExamPurchaseRequest(BaseModel):
     client_request_id: Optional[str] = Field(default=None, max_length=128)
     exam: str = Field(..., min_length=2, max_length=64)
