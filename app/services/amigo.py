@@ -16,6 +16,7 @@ PLAN_CATALOG = [
     {"network": "mtn", "network_id": 1, "plan_code": "6666", "plan_name": "MTN 2GB", "data_size": "2GB", "validity": "30d", "price": 849.00},
     {"network": "mtn", "network_id": 1, "plan_code": "3333", "plan_name": "MTN 3GB", "data_size": "3GB", "validity": "30d", "price": 1329.00},
     {"network": "mtn", "network_id": 1, "plan_code": "9999", "plan_name": "MTN 5GB", "data_size": "5GB", "validity": "30d", "price": 1799.00},
+    {"network": "mtn", "network_id": 1, "plan_code": "7777", "plan_name": "MTN 7GB", "data_size": "7GB", "validity": "30d", "price": 2499.00},
     {"network": "mtn", "network_id": 1, "plan_code": "1110", "plan_name": "MTN 10GB", "data_size": "10GB", "validity": "30d", "price": 3899.00},
     {"network": "mtn", "network_id": 1, "plan_code": "1515", "plan_name": "MTN 15GB", "data_size": "15GB", "validity": "30d", "price": 5690.00},
     {"network": "mtn", "network_id": 1, "plan_code": "424", "plan_name": "MTN 20GB", "data_size": "20GB", "validity": "30d", "price": 7899.00},
@@ -29,6 +30,15 @@ PLAN_CATALOG = [
     {"network": "glo", "network_id": 2, "plan_code": "196", "plan_name": "Glo 3GB", "data_size": "3GB", "validity": "30d", "price": 1199.00},
     {"network": "glo", "network_id": 2, "plan_code": "222", "plan_name": "Glo 5GB", "data_size": "5GB", "validity": "30d", "price": 1999.00},
     {"network": "glo", "network_id": 2, "plan_code": "512", "plan_name": "Glo 10GB", "data_size": "10GB", "validity": "30d", "price": 3990.00},
+    # Airtel (network_id = 4)
+    {"network": "airtel", "network_id": 4, "plan_code": "163", "plan_name": "Airtel 500MB", "data_size": "500MB", "validity": "7d", "price": 549.00},
+    {"network": "airtel", "network_id": 4, "plan_code": "145", "plan_name": "Airtel 1GB", "data_size": "1GB", "validity": "30d", "price": 764.00},
+    {"network": "airtel", "network_id": 4, "plan_code": "146", "plan_name": "Airtel 2GB", "data_size": "2GB", "validity": "30d", "price": 1430.00},
+    {"network": "airtel", "network_id": 4, "plan_code": "532", "plan_name": "Airtel 3GB", "data_size": "3GB", "validity": "30d", "price": 1950.00},
+    {"network": "airtel", "network_id": 4, "plan_code": "148", "plan_name": "Airtel 4GB", "data_size": "4GB", "validity": "30d", "price": 2619.00},
+    {"network": "airtel", "network_id": 4, "plan_code": "150", "plan_name": "Airtel 10GB", "data_size": "10GB", "validity": "30d", "price": 3899.00},
+    {"network": "airtel", "network_id": 4, "plan_code": "405", "plan_name": "Airtel 18GB", "data_size": "18GB", "validity": "30d", "price": 6450.00},
+    {"network": "airtel", "network_id": 4, "plan_code": "404", "plan_name": "Airtel 25GB", "data_size": "25GB", "validity": "30d", "price": 8499.00},
 ]
 
 NETWORK_ID_MAP = {

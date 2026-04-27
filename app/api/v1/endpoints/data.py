@@ -20,7 +20,7 @@ from app.services.amigo import (
     resolve_network_id,
     split_plan_code,
 )
-from app.services.bills import ClubKonnectBillsProvider, get_bills_provider
+from app.services.bills import get_bills_provider
 from app.services.fraud import enforce_purchase_limits
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
 from app.services.pricing import get_price_for_user
@@ -41,8 +41,8 @@ _FAILURE_STATUS = {"failed", "fail", "error", "rejected", "declined", "cancelled
 _SUCCESS_HINTS = ("successfully", "delivered", "gifted", "completed")
 _FAILURE_HINTS = ("failed", "unsuccessful", "unable", "error", "rejected", "declined", "cancelled", "canceled")
 _PENDING_HINTS = ("pending", "processing", "queued", "in progress", "submitted")
-_VTPASS_DATA_NETWORKS = {"airtel", "9mobile", "etisalat", "t2"}
-_AMIGO_DATA_NETWORKS = {"mtn", "glo"}
+_VTPASS_DATA_NETWORKS = {"9mobile", "etisalat", "t2"}
+_AMIGO_DATA_NETWORKS = {"mtn", "glo", "airtel"}
 _CURATED_SIZE_TARGETS_GB = (0.2, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0, 15.0, 20.0)
 _CURATED_MAX_PER_NETWORK = 8
 _CURATED_FILTER_KEYWORDS = (
@@ -63,23 +63,23 @@ _CURATED_FILTER_KEYWORDS = (
 )
 
 _AIRTEL_BUNDLE_ORDER = {
-    "2GB": 0,
-    "3GB": 1,
-    "4GB": 2,
-    "8GB": 3,
-    "10GB": 4,
-    "13GB": 5,
+    "500MB": 0,
+    "1GB": 1,
+    "2GB": 2,
+    "3GB": 3,
+    "4GB": 4,
+    "10GB": 5,
     "18GB": 6,
     "25GB": 7,
 }
 
 _AIRTEL_VALIDITY_TARGETS = {
+    "500MB": 7,
+    "1GB": 30,
     "2GB": 30,
     "3GB": 30,
     "4GB": 30,
-    "8GB": 30,
     "10GB": 30,
-    "13GB": 30,
     "18GB": 30,
     "25GB": 30,
 }
@@ -109,19 +109,6 @@ def _is_vtpass_network(network: str | None) -> bool:
 def _is_amigo_data_network(network: str | None) -> bool:
     key = str(network or "").strip().lower()
     return key in _AMIGO_DATA_NETWORKS
-
-
-def _clubkonnect_available() -> bool:
-    return bool(settings.clubkonnect_user_id and settings.clubkonnect_api_key)
-
-
-def _provider_for_data_network(network: str | None):
-    key = str(network or "").strip().lower()
-    if key == "airtel":
-        if _clubkonnect_available():
-            return ClubKonnectBillsProvider()
-        logger.warning("Airtel plans requested but ClubKonnect credentials are missing; falling back to configured bills provider.")
-    return get_bills_provider()
 
 
 def _extract_capacity(value: str | None) -> str:
@@ -263,7 +250,7 @@ def _is_airtel_30_day_bundle(plan: DataPlanOut) -> bool:
     if capacity not in _AIRTEL_BUNDLE_ORDER:
         return False
     validity_days = _parse_validity_days(str(plan.validity or "") or str(plan.plan_name or ""))
-    return validity_days == 30
+    return validity_days == _AIRTEL_VALIDITY_TARGETS.get(capacity)
 
 
 def _is_noisy_plan(plan: DataPlanOut) -> bool:
@@ -475,7 +462,7 @@ def _retain_airtel_bundle(item: dict) -> bool:
     if capacity not in _AIRTEL_BUNDLE_ORDER:
         return False
     validity_days = _parse_validity_days(str(item.get("validity") or "") or str(item.get("_source_name") or ""))
-    return validity_days == 30
+    return validity_days == _AIRTEL_VALIDITY_TARGETS.get(capacity)
 
 
 def _airtel_bundle_preference(item: dict) -> tuple[int, int, int, Decimal, str]:
@@ -753,10 +740,9 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
             db.commit()
             plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
 
-    # Pull Airtel/9mobile plans from configured non-Amigo provider and keep them in sync.
+    # Pull 9mobile plans from configured non-Amigo provider and keep them in sync.
     touched = 0
     network_providers = {
-        "airtel": _provider_for_data_network("airtel"),
         "9mobile": get_bills_provider(),
     }
     for network, provider in network_providers.items():
@@ -1083,9 +1069,9 @@ def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(
     updated = 0
     for item in plans:
         updated += 1 if _upsert_plan_from_provider(db, item) else 0
-    provider = _provider_for_data_network(network_key)
+    provider = get_bills_provider()
     if hasattr(provider, "fetch_data_variations"):
-        for network in ("airtel", "9mobile"):
+        for network in ("9mobile",):
             try:
                 touched, _ = _refresh_provider_network_plans(db, provider, network)
                 updated += touched
