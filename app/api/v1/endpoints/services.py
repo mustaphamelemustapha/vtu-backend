@@ -131,6 +131,7 @@ def services_catalog(user: User = Depends(get_current_user)):
             {"id": "dstv", "name": "DStv"},
             {"id": "gotv", "name": "GOtv"},
             {"id": "startimes", "name": "StarTimes"},
+            {"id": "showmax", "name": "Showmax"},
         ],
         "electricity_discos": [
             "ikeja",
