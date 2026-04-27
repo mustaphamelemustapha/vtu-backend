@@ -117,6 +117,12 @@ _CLUBKONNECT_DISCO_CODE_MAP = {
     "kaduna": "08",
     "eedc": "09",
     "enugu": "09",
+    "bedc": "10",
+    "benin": "10",
+    "yedc": "11",
+    "yola": "11",
+    "aple": "12",
+    "aba": "12",
 }
 
 _CLUBKONNECT_DISCO_NAME_BY_CODE = {
@@ -129,6 +135,9 @@ _CLUBKONNECT_DISCO_NAME_BY_CODE = {
     "07": "ibedc",
     "08": "kaedco",
     "09": "eedc",
+    "10": "bedc",
+    "11": "yedc",
+    "12": "aple",
 }
 
 
@@ -1045,7 +1054,15 @@ class ClubKonnectBillsProvider:
 
     def fetch_electricity_discos(self) -> list[dict]:
         data = self._request("APIElectricityDiscosV2.asp", {})
-        rows = data.get("ElectricityDiscos") or data.get("electricity_discos") or data.get("data") or data.get("Data") or data
+        rows = (
+            data.get("ELECTRIC_COMPANY")
+            or data.get("electric_company")
+            or data.get("ElectricityDiscos")
+            or data.get("electricity_discos")
+            or data.get("data")
+            or data.get("Data")
+            or data
+        )
         flattened: list[dict] = []
         if isinstance(rows, list):
             for row in rows:
@@ -1092,7 +1109,7 @@ class ClubKonnectBillsProvider:
             for key, code in _CLUBKONNECT_DISCO_CODE_MAP.items():
                 if len(code) != 2:
                     continue
-                if key not in {"ekedc", "ikedc", "aedc", "kedco", "phed", "jos", "ibedc", "kaedco", "eedc"}:
+                if key not in {"ekedc", "ikedc", "aedc", "kedco", "phed", "jos", "ibedc", "kaedco", "eedc", "bedc", "yedc", "aple"}:
                     continue
                 discos.append({"code": code, "id": key, "name": key.upper()})
 
@@ -1286,6 +1303,9 @@ class MockBillsProvider:
             {"code": "07", "id": "ibedc", "name": "IBEDC"},
             {"code": "08", "id": "kaedco", "name": "KAEDCO"},
             {"code": "09", "id": "eedc", "name": "EEDC"},
+            {"code": "10", "id": "bedc", "name": "BEDC"},
+            {"code": "11", "id": "yedc", "name": "YEDC"},
+            {"code": "12", "id": "aple", "name": "APLE"},
         ]
 
     def verify_electricity_customer(self, disco: str, meter_number: str, meter_type: str) -> dict:

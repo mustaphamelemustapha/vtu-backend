@@ -143,6 +143,9 @@ def services_catalog(user: User = Depends(get_current_user)):
             "enugu",
             "portharcourt",
             "kaduna",
+            "benin",
+            "yola",
+            "aba",
         ],
         "exam_types": ["waec", "neco", "jamb"],
     }
@@ -507,6 +510,9 @@ def electricity_discos(user: User = Depends(get_current_user)):
                 {"code": "07", "id": "ibedc", "name": "IBEDC"},
                 {"code": "08", "id": "kaedco", "name": "KAEDCO"},
                 {"code": "09", "id": "eedc", "name": "EEDC"},
+                {"code": "10", "id": "bedc", "name": "BEDC"},
+                {"code": "11", "id": "yedc", "name": "YEDC"},
+                {"code": "12", "id": "aple", "name": "APLE"},
             ]
         }
     try:
@@ -537,6 +543,9 @@ def electricity_discos(user: User = Depends(get_current_user)):
             {"code": "07", "id": "ibedc", "name": "IBEDC"},
             {"code": "08", "id": "kaedco", "name": "KAEDCO"},
             {"code": "09", "id": "eedc", "name": "EEDC"},
+            {"code": "10", "id": "bedc", "name": "BEDC"},
+            {"code": "11", "id": "yedc", "name": "YEDC"},
+            {"code": "12", "id": "aple", "name": "APLE"},
         ]
     return {"discos": normalized}
 
