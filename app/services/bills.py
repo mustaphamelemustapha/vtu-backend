@@ -784,15 +784,36 @@ class ClubKonnectBillsProvider:
         rows: list[dict] = []
         possible_rows = payload.get("TV_ID") or payload.get("tv_id") or payload.get("data") or payload.get("Data") or payload
         if isinstance(possible_rows, list):
-            rows.extend([x for x in possible_rows if isinstance(x, dict)])
+            for item in possible_rows:
+                if not isinstance(item, dict):
+                    continue
+                products = item.get("PRODUCT") or item.get("product")
+                if isinstance(products, list):
+                    for product in products:
+                        if not isinstance(product, dict):
+                            continue
+                        merged = dict(product)
+                        merged.setdefault("provider_hint", item.get("ID") or item.get("provider") or item.get("provider_hint"))
+                        rows.append(merged)
+                else:
+                    rows.append(item)
         elif isinstance(possible_rows, dict):
             for key, value in possible_rows.items():
                 if isinstance(value, list):
                     for item in value:
                         if isinstance(item, dict):
-                            enriched = dict(item)
-                            enriched.setdefault("provider_hint", key)
-                            rows.append(enriched)
+                            products = item.get("PRODUCT") or item.get("product")
+                            if isinstance(products, list):
+                                for product in products:
+                                    if not isinstance(product, dict):
+                                        continue
+                                    merged = dict(product)
+                                    merged.setdefault("provider_hint", item.get("ID") or key)
+                                    rows.append(merged)
+                            else:
+                                enriched = dict(item)
+                                enriched.setdefault("provider_hint", key)
+                                rows.append(enriched)
                 elif isinstance(value, dict):
                     enriched = dict(value)
                     enriched.setdefault("provider_hint", key)
@@ -944,6 +965,7 @@ class ClubKonnectBillsProvider:
             code = str(
                 row.get("Package")
                 or row.get("package")
+                or row.get("PACKAGE_ID")
                 or row.get("PACKAGE_CODE")
                 or row.get("PRODUCT_ID")
                 or row.get("ID")
@@ -953,13 +975,14 @@ class ClubKonnectBillsProvider:
             name = str(
                 row.get("PackageName")
                 or row.get("package_name")
+                or row.get("PACKAGE_NAME")
                 or row.get("DESCRIPTION")
                 or row.get("PRODUCT_NAME")
                 or row.get("DataType")
                 or row.get("name")
                 or code
             ).strip()
-            amount_raw = row.get("Amount") or row.get("amount") or row.get("PRODUCT_AMOUNT") or row.get("Price")
+            amount_raw = row.get("Amount") or row.get("amount") or row.get("PACKAGE_AMOUNT") or row.get("PRODUCT_AMOUNT") or row.get("Price")
             try:
                 amount = float(str(amount_raw).replace(",", "").strip()) if amount_raw not in (None, "") else None
             except Exception:

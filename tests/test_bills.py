@@ -248,6 +248,41 @@ def test_clubkonnect_fetch_data_variations_handles_v2_product_shape(monkeypatch)
     assert str(rows[0].get("Amount")) == "499.91"
 
 
+def test_clubkonnect_fetch_cable_packages_handles_v2_grouped_products(monkeypatch):
+    provider = ClubKonnectBillsProvider()
+
+    def _fake_request(endpoint, params):
+        assert endpoint == "APICableTVPackagesV2.asp"
+        return {
+            "TV_ID": {
+                "DStv": [
+                    {
+                        "ID": "dstv",
+                        "PRODUCT": [
+                            {"PACKAGE_ID": "dstv-padi", "PACKAGE_NAME": "DStv Padi N4,400", "PACKAGE_AMOUNT": "4400.00"},
+                            {"PACKAGE_ID": "dstv-yanga", "PACKAGE_NAME": "DStv Yanga N6,000", "PACKAGE_AMOUNT": "6000.00"},
+                        ],
+                    }
+                ],
+                "GOtv": [
+                    {
+                        "ID": "gotv",
+                        "PRODUCT": [
+                            {"PACKAGE_ID": "gotv-smallie", "PACKAGE_NAME": "GOtv Smallie", "PACKAGE_AMOUNT": "3900.00"},
+                        ],
+                    }
+                ],
+            }
+        }
+
+    monkeypatch.setattr(provider, "_request", _fake_request)
+    rows = provider.fetch_cable_packages("dstv")
+    assert len(rows) == 2
+    assert rows[0]["code"] == "dstv-padi"
+    assert rows[0]["name"] == "DStv Padi N4,400"
+    assert rows[0]["amount"] == 4400.0
+
+
 def test_get_bills_provider_prefers_clubkonnect_in_auto(monkeypatch):
     monkeypatch.setattr(bills_settings, "bills_provider", "auto", raising=False)
     monkeypatch.setattr(bills_settings, "clubkonnect_enabled", True, raising=False)
