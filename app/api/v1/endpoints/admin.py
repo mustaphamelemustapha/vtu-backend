@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, select, union_all, String, cast, inspect
 from app.core.database import get_db
 from app.dependencies import require_admin
-from app.models import User, Wallet, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, ApiLog, DataPlan, TransactionDispute, DisputeStatus
+from app.models import User, Wallet, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, ApiLog, DataPlan, TransactionDispute, DisputeStatus, AdminAuditLog, ServiceToggle, Referral
 from app.schemas.admin import (
     FundUserWalletRequest,
     PricingRuleUpdate,
@@ -16,8 +16,14 @@ from app.schemas.admin import (
     AdminReportOut,
     AdminReportsResponse,
     AdminReportActionRequest,
+    AdjustWalletRequest,
+    ServiceToggleUpdate,
+    ServiceToggleOut,
+    DataPlanUpdate,
+    AdminAuditLogsResponse,
+    AdminReferralsResponse,
 )
-from app.services.wallet import get_or_create_wallet, credit_wallet
+from app.services.wallet import get_or_create_wallet, credit_wallet, debit_wallet
 from app.services.pricing import build_service_pricing_key, parse_pricing_key
 
 router = APIRouter()
@@ -567,6 +573,8 @@ def get_user_details(
             "role": user.role.value if hasattr(user.role, "value") else str(user.role),
             "is_active": user.is_active,
             "is_verified": user.is_verified,
+            "referral_code": getattr(user, "referral_code", None),
+            "referred_by_id": getattr(user, "referred_by_id", None),
         },
         "wallet": {
             "balance": wallet.balance if wallet else 0,
@@ -785,3 +793,119 @@ def activate_user(user_id: int, admin=Depends(require_admin), db: Session = Depe
     user.is_active = True
     db.commit()
     return {"status": "active"}
+
+
+@router.post("/wallets/adjust")
+def adjust_user_wallet(
+    payload: AdjustWalletRequest, admin=Depends(require_admin), db: Session = Depends(get_db)
+):
+    if payload.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive")
+    
+    wallet = get_or_create_wallet(db, payload.user_id)
+    if not wallet:
+        raise HTTPException(status_code=404, detail="User wallet not found")
+    
+    if payload.action == "credit":
+        credit_wallet(db, wallet.id, payload.amount, f"Admin credit: {payload.reason}")
+    elif payload.action == "debit":
+        if wallet.balance < payload.amount:
+            raise HTTPException(status_code=400, detail="Insufficient balance for debit")
+        debit_wallet(db, wallet.id, payload.amount, f"Admin debit: {payload.reason}")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid action")
+    
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action=f"wallet_adjust_{payload.action}",
+        target=str(payload.user_id),
+        details={"amount": float(payload.amount), "reason": payload.reason}
+    )
+    db.add(audit_log)
+    db.commit()
+    return {"status": "ok", "new_balance": wallet.balance}
+
+
+@router.get("/services/toggles", response_model=list[ServiceToggleOut])
+def get_service_toggles(admin=Depends(require_admin), db: Session = Depends(get_db)):
+    toggles = db.query(ServiceToggle).all()
+    return toggles
+
+
+@router.patch("/services/toggles/{service_name}", response_model=ServiceToggleOut)
+def update_service_toggle(
+    service_name: str, payload: ServiceToggleUpdate, admin=Depends(require_admin), db: Session = Depends(get_db)
+):
+    toggle = db.query(ServiceToggle).filter(ServiceToggle.service_name == service_name).first()
+    if not toggle:
+        toggle = ServiceToggle(service_name=service_name, is_active=payload.is_active)
+        db.add(toggle)
+    else:
+        toggle.is_active = payload.is_active
+        
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action="service_toggle_update",
+        target=service_name,
+        details={"is_active": payload.is_active}
+    )
+    db.add(audit_log)
+    db.commit()
+    db.refresh(toggle)
+    return toggle
+
+
+@router.get("/data-plans")
+def get_all_data_plans(admin=Depends(require_admin), db: Session = Depends(get_db)):
+    plans = db.query(DataPlan).all()
+    return plans
+
+
+@router.patch("/data-plans/{plan_id}")
+def update_data_plan(
+    plan_id: int, payload: DataPlanUpdate, admin=Depends(require_admin), db: Session = Depends(get_db)
+):
+    plan = db.query(DataPlan).filter(DataPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Data plan not found")
+    plan.is_active = payload.is_active
+    
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action="data_plan_update",
+        target=str(plan_id),
+        details={"is_active": payload.is_active}
+    )
+    db.add(audit_log)
+    db.commit()
+    return {"status": "ok", "is_active": plan.is_active}
+
+
+@router.get("/referrals", response_model=AdminReferralsResponse)
+def get_all_referrals(
+    page: int = 1, page_size: int = 50, admin=Depends(require_admin), db: Session = Depends(get_db)
+):
+    query = db.query(Referral)
+    total = query.count()
+    items = query.order_by(Referral.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size
+    }
+
+
+@router.get("/audit-logs", response_model=AdminAuditLogsResponse)
+def get_audit_logs(
+    page: int = 1, page_size: int = 50, admin=Depends(require_admin), db: Session = Depends(get_db)
+):
+    query = db.query(AdminAuditLog)
+    total = query.count()
+    items = query.order_by(AdminAuditLog.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size
+    }

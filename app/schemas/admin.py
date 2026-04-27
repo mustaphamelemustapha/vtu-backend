@@ -99,3 +99,61 @@ class AdminReportsResponse(BaseModel):
 class AdminReportActionRequest(BaseModel):
     status: Optional[str] = None
     admin_note: Optional[str] = None
+
+
+class AdjustWalletRequest(BaseModel):
+    user_id: int
+    amount: Decimal
+    action: str  # "credit" or "debit"
+    reason: str
+
+
+class ServiceToggleUpdate(BaseModel):
+    is_active: bool
+
+
+class ServiceToggleOut(BaseModel):
+    id: int
+    service_name: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class DataPlanUpdate(BaseModel):
+    is_active: bool
+
+
+class AdminAuditLogOut(BaseModel):
+    id: int
+    admin_email: str
+    action: str
+    target: Optional[str] = None
+    details: Optional[dict] = None
+    created_at: datetime
+
+
+class AdminAuditLogsResponse(BaseModel):
+    items: list[AdminAuditLogOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class AdminReferralOut(BaseModel):
+    id: int
+    referrer_id: int
+    referrer_email: str
+    referred_id: int
+    referred_email: str
+    status: str
+    reward_amount: Decimal
+    first_deposit_amount: Optional[Decimal] = None
+    created_at: datetime
+
+
+class AdminReferralsResponse(BaseModel):
+    items: list[AdminReferralOut]
+    total: int
+    page: int
+    page_size: int

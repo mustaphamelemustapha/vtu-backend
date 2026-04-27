@@ -9,6 +9,8 @@ from app.models.broadcast_announcement import BroadcastAnnouncement, Announcemen
 from app.models.data_plan import DataPlan
 from app.models.pricing_rule import PricingRule, PricingRole
 from app.models.api_log import ApiLog
+from app.models.service_toggle import ServiceToggle
+from app.models.admin_audit_log import AdminAuditLog
 
 __all__ = [
     "User",
@@ -31,4 +33,6 @@ __all__ = [
     "PricingRule",
     "PricingRole",
     "ApiLog",
+    "ServiceToggle",
+    "AdminAuditLog",
 ]
