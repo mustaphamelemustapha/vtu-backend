@@ -772,6 +772,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                 data_size=plan.data_size,
                 validity=plan.validity,
                 price=price,
+                base_price=plan.base_price,
             )
         )
     curated = _curate_sharp_plans(priced)

@@ -11,6 +11,7 @@ class DataPlanOut(BaseModel):
     data_size: str
     validity: str
     price: Decimal
+    base_price: Optional[Decimal] = None
 
     class Config:
         orm_mode = True
