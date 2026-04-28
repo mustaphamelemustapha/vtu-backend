@@ -101,7 +101,7 @@ def _resolve_frontend_base_url() -> str:
 
 def send_password_reset_email(to_email: str, reset_token: str) -> None:
     settings = get_settings()
-    reset_link = f"{_resolve_frontend_base_url()}/app/reset-password?token={reset_token}&flow=password"
+    reset_link = f"{_resolve_frontend_base_url()}/reset-password?token={reset_token}&flow=password"
     subject = "Reset your AxisVTU password"
     html = _build_reset_email_html(reset_link)
     to_email = _sanitize_email(to_email)
