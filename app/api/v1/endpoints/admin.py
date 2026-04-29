@@ -26,6 +26,7 @@ from app.schemas.admin import (
 )
 from app.services.wallet import get_or_create_wallet, credit_wallet, debit_wallet
 from app.services.pricing import build_service_pricing_key, parse_pricing_key
+from app.api.v1.endpoints.data import _invalidate_plans_cache
 
 router = APIRouter()
 
@@ -935,6 +936,7 @@ def update_data_plan(
     )
     db.add(audit_log)
     db.commit()
+    _invalidate_plans_cache()
     return {
         "status": "ok",
         "id": plan.id,

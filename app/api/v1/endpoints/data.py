@@ -777,7 +777,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
         )
     curated = _curate_sharp_plans(priced)
     # Keep plans warm longer to reduce repeated DB/provider work on frequent page refreshes.
-    set_cached(cache_key, curated, ttl_seconds=600)
+    set_cached(cache_key, curated, ttl_seconds=120)
     return curated
 
 
