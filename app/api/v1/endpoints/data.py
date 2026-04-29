@@ -267,85 +267,24 @@ def _is_noisy_plan(plan: DataPlanOut) -> bool:
 
 
 def _curate_sharp_plans(priced: list[DataPlanOut]) -> list[DataPlanOut]:
+    """
+    Returns all active plans, sorted by network and then by price/size.
+    No longer drops 'noisy' plans or limits results, as the Admin's 
+    is_active flag is now the absolute source of truth.
+    """
     if not priced:
         return []
 
-    grouped: dict[str, list[DataPlanOut]] = {}
-    for item in priced:
-        network = str(item.network or "").strip().lower() or "unknown"
-        grouped.setdefault(network, []).append(item)
-
-    curated: list[DataPlanOut] = []
-    for network, network_plans in grouped.items():
-        primary_candidates = [plan for plan in network_plans if not _is_noisy_plan(plan)]
-        if network == "airtel":
-            primary_candidates = [plan for plan in primary_candidates if _is_airtel_30_day_bundle(plan)]
-            if not primary_candidates:
-                continue
-            ranked = sorted(
-                primary_candidates,
-                key=lambda p: (
-                    _AIRTEL_BUNDLE_ORDER.get(
-                        _extract_capacity(f"{p.data_size or ''} {p.plan_name or ''}"),
-                        999,
-                    ),
-                    _plan_price_value(p),
-                    str(p.plan_name or ""),
-                ),
-            )
-            curated.extend(ranked[:_CURATED_MAX_PER_NETWORK])
-            continue
-        elif len(primary_candidates) < 4:
-            primary_candidates = network_plans
-
-        ranked = sorted(
-            primary_candidates,
-            key=lambda p: (
-                -_plan_quality_score(p),
-                _plan_price_value(p),
-                _parse_size_gb(p.data_size or p.plan_name) or 0.0,
-                str(p.plan_name or ""),
-            ),
+    # Sort primarily by network, then price, then extracted size
+    return sorted(
+        priced,
+        key=lambda p: (
+            str(p.network or "").lower(),
+            _plan_price_value(p),
+            _parse_size_gb(p.data_size or p.plan_name) or 0.0,
+            str(p.plan_name or "")
         )
-
-        bucket_best: dict[float, DataPlanOut] = {}
-        extras: list[DataPlanOut] = []
-        for plan in ranked:
-            size = _parse_size_gb(plan.data_size or plan.plan_name)
-            bucket = _closest_target_size(size)
-            if bucket is None:
-                extras.append(plan)
-                continue
-            current = bucket_best.get(bucket)
-            if current is None:
-                bucket_best[bucket] = plan
-                continue
-            # Pick the better score, then cheaper.
-            if (_plan_quality_score(plan), -_plan_price_value(plan)) > (
-                _plan_quality_score(current),
-                -_plan_price_value(current),
-            ):
-                bucket_best[bucket] = plan
-
-        picked = list(bucket_best.values())
-        picked.sort(key=_plan_display_sort_key)
-
-        for plan in extras:
-            if len(picked) >= _CURATED_MAX_PER_NETWORK:
-                break
-            if plan in picked:
-                continue
-            picked.append(plan)
-
-        # Guarantee minimum variety; fallback to cheapest if scoring became too strict.
-        if len(picked) < 4:
-            fallback = sorted(network_plans, key=lambda p: (_plan_price_value(p), str(p.plan_name or "")))
-            picked = fallback[: min(_CURATED_MAX_PER_NETWORK, len(fallback))]
-
-        curated.extend(picked[:_CURATED_MAX_PER_NETWORK])
-
-    curated.sort(key=lambda p: (str(p.network or "").lower(), *_plan_display_sort_key(p)))
-    return curated
+    )
 
 
 def _extract_variation_code(variation: dict) -> str:
@@ -640,21 +579,7 @@ def _refresh_provider_network_plans(db: Session, provider, network: str) -> tupl
         item = _provider_variation_to_item(network, variation)
         if not item:
             continue
-        if str(network or "").strip().lower() == "airtel":
-            if not _retain_airtel_bundle(item):
-                continue
         items.append(item)
-
-    if str(network or "").strip().lower() == "airtel":
-        deduped: dict[str, dict] = {}
-        for item in items:
-            capacity = _extract_capacity(f"{item.get('data_size') or ''} {item.get('plan_name') or ''}")
-            if not capacity:
-                continue
-            current = deduped.get(capacity)
-            if current is None or _airtel_bundle_preference(item) < _airtel_bundle_preference(current):
-                deduped[capacity] = item
-        items = [deduped[key] for key in sorted(deduped, key=lambda k: _AIRTEL_BUNDLE_ORDER.get(k, 999))]
 
     for item in items:
         canonical_code = canonical_plan_code(network, str(item.get("plan_code") or ""))
