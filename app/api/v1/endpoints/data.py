@@ -553,7 +553,8 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
     plan.data_size = str(item.get("data_size") or plan.data_size).strip() or plan.data_size
     plan.validity = str(item.get("validity") or plan.validity).strip() or plan.validity
     plan.base_price = Decimal(str(item.get("price", plan.base_price)))
-    plan.is_active = True
+    # Note: We NO LONGER force is_active=True for existing plans.
+    # This preserves manual Admin toggles during provider syncs.
     # NOTE: display_price is intentionally NOT overwritten here.
     # Admin-set price overrides are preserved across provider syncs.
     return True
