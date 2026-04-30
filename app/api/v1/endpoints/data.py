@@ -778,6 +778,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
         user_id=user.id,
         reference=reference,
         network=plan.network,
+        recipient_phone=str(payload.phone_number or "").strip(),
         data_plan_code=plan.plan_code,
         amount=price,
         status=TransactionStatus.PENDING,

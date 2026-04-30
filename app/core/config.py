@@ -78,6 +78,10 @@ class Settings(BaseSettings):
     # Provider endpoint paths (Amigo deployments differ; keep these configurable).
     amigo_data_purchase_path: str = "/data/"
     amigo_plans_path: str = "/plans/efficiency"
+    pending_reconcile_enabled: bool = True
+    pending_reconcile_interval_seconds: int = 120
+    pending_reconcile_batch_size: int = 30
+    pending_reconcile_min_age_seconds: int = 30
 
     # VTPass API (airtime, cable, electricity, exam)
     vtpass_base_url: AnyHttpUrl = "https://vtpass.com/api"

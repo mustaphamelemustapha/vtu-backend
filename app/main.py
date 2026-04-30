@@ -14,6 +14,7 @@ from app.core.database import Base, engine, SessionLocal
 from app.core.logging import configure_logging
 from app.middlewares.rate_limit import limiter
 from app.models import User, UserRole
+from app.services.pending_reconcile import start_pending_reconcile_worker, stop_pending_reconcile_worker
 
 
 settings = get_settings()
@@ -122,6 +123,8 @@ def ensure_tables():
         _bootstrap_admins()
         _ensure_user_phone_column()
         _ensure_user_security_pin_columns()
+        _ensure_transaction_recipient_column()
+        start_pending_reconcile_worker()
         return
 
     # Optional local fallback for fresh environments.
@@ -135,6 +138,13 @@ def ensure_tables():
     _bootstrap_admins()
     _ensure_user_phone_column()
     _ensure_user_security_pin_columns()
+    _ensure_transaction_recipient_column()
+    start_pending_reconcile_worker()
+
+
+@app.on_event("shutdown")
+def shutdown_workers():
+    stop_pending_reconcile_worker()
 
 @app.get("/")
 def root():
@@ -191,6 +201,24 @@ def _ensure_user_security_pin_columns() -> None:
         logging.getLogger(__name__).info("Added users transaction PIN columns for backend security.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure transaction pin columns: %s", exc)
+
+
+def _ensure_transaction_recipient_column() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("transactions"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("transactions")}
+        if "recipient_phone" in cols:
+            return
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE transactions ADD COLUMN recipient_phone VARCHAR(32)"))
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_transactions_recipient_phone ON transactions (recipient_phone)")
+            )
+        logging.getLogger(__name__).info("Added transactions.recipient_phone for safer reconciliation.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure recipient_phone column: %s", exc)
 
 
 @app.get("/healthz")

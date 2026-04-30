@@ -28,6 +28,7 @@ class Transaction(Base, TimestampMixin):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     reference = Column(String(64), unique=True, nullable=False, index=True)
     network = Column(String(32), nullable=True)
+    recipient_phone = Column(String(32), nullable=True)
     data_plan_code = Column(String(64), nullable=True)
     amount = Column(Numeric(12, 2), nullable=False)
     status = Column(Enum(TransactionStatus), nullable=False, default=TransactionStatus.PENDING)
