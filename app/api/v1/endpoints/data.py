@@ -31,7 +31,7 @@ router = APIRouter()
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
-_PLAN_CACHE_VERSION = "v4"
+_PLAN_CACHE_VERSION = "v5"
 
 
 _SUCCESS_STATUS = {"success", "successful", "delivered", "completed", "ok", "done"}
@@ -91,6 +91,27 @@ _VALIDITY_RE = re.compile(r"(\d+)\s*(d|day|days|month|months|week|weeks)", re.IG
 def _safe_reason(value: str, limit: int = 255) -> str:
     text = str(value or "").strip()
     return text[:limit] if text else "Unknown provider error"
+
+
+def _is_ambiguous_provider_error(exc: AmigoApiError) -> bool:
+    """
+    Returns True when provider outcome is uncertain and we must NOT auto-refund.
+    Example: vendor accepted order but returned non-JSON/plain-text response.
+    """
+    msg = str(getattr(exc, "message", "") or "").strip().lower()
+    status = getattr(exc, "status_code", None)
+    if status is not None and 200 <= int(status) < 300:
+        return True
+    ambiguous_hints = (
+        "non-json",
+        "invalid json",
+        "unexpected response",
+        "temporarily unavailable",
+        "remote protocol",
+        "timeout",
+        "timed out",
+    )
+    return any(hint in msg for hint in ambiguous_hints)
 
 
 def _client_request_reference(prefix: str, user_id: int, request_id: str | None) -> str | None:
@@ -960,6 +981,23 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             reference=reference,
             success=0,
         ))
+        if _is_ambiguous_provider_error(exc):
+            # Fail-safe: when provider response is ambiguous, do NOT auto-refund.
+            # Mark pending so we can reconcile from history/provider callbacks.
+            transaction.status = TransactionStatus.PENDING
+            transaction.failure_reason = _safe_reason(exc.message)
+            db.commit()
+            return {
+                "reference": reference,
+                "status": transaction.status,
+                "message": "Transaction submitted and is being confirmed. Please check history shortly.",
+                "provider": "amigo",
+                "network": plan.network,
+                "plan_code": plan.plan_code,
+                "failure_reason": str(transaction.failure_reason or "").strip(),
+                "test_mode": settings.amigo_test_mode,
+            }
+
         transaction.status = TransactionStatus.FAILED
         transaction.failure_reason = _safe_reason(exc.message)
         credit_wallet(db, wallet, Decimal(price), reference, "Auto refund due to Amigo error")
@@ -967,10 +1005,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
         db.commit()
         raise HTTPException(
             status_code=502,
-            detail=(
-                f"Data provider failed: {_safe_reason(exc.message, 140)}. Wallet refunded. "
-                "If this persists, set AMIGO_TEST_MODE=true temporarily."
-            ),
+            detail="Data provider rejected this purchase. Wallet refunded.",
         )
     except Exception as exc:
         duration_ms = round((time.time() - start) * 1000, 2)
