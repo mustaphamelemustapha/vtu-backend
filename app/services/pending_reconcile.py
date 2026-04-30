@@ -31,6 +31,22 @@ _AMBIGUOUS_HINTS = (
     "timed out",
 )
 _RECHECK_TAG = "[rechecked-once]"
+_DEFINITIVE_FAILURE_CODES = {
+    "invalid_token",
+    "plan_not_found",
+    "insufficient_balance",
+    "invalid_network",
+    "invalid_phone",
+    "coming_soon",
+}
+_DEFINITIVE_FAILURE_HINTS = (
+    "invalid token",
+    "plan not found",
+    "insufficient balance",
+    "invalid network",
+    "invalid phone",
+    "coming soon",
+)
 
 _stop_event = threading.Event()
 _worker_thread: threading.Thread | None = None
@@ -69,10 +85,24 @@ def _is_ambiguous_reason(reason: str | None) -> bool:
 def _should_attempt_recheck(tx: Transaction) -> bool:
     if tx.status != TransactionStatus.PENDING or tx.tx_type != TransactionType.DATA:
         return False
-    reason = str(tx.failure_reason or "")
-    if _RECHECK_TAG in reason.lower():
-        return False
-    return _is_ambiguous_reason(reason)
+    return True
+
+
+def _contains_any(text: str, hints: tuple[str, ...]) -> bool:
+    return any(hint in text for hint in hints)
+
+
+def _is_definitive_failure(response: dict | None = None, reason: str | None = None, status_code: int | None = None) -> bool:
+    payload = response or {}
+    code = _normalize_text(payload.get("error") or payload.get("code") or "")
+    message = _normalize_text(reason or payload.get("message") or payload.get("detail") or payload.get("remark"))
+    if code in _DEFINITIVE_FAILURE_CODES:
+        return True
+    if _contains_any(message, _DEFINITIVE_FAILURE_HINTS):
+        return True
+    if status_code is not None and int(status_code) in {401, 403, 404, 422}:
+        return True
+    return False
 
 
 def _finalize_refund(db: Session, tx: Transaction, reason: str) -> None:
@@ -147,8 +177,12 @@ def reconcile_pending_data_once(limit: int = 50) -> dict[str, int]:
                     )
                     moved_success += 1
                 elif outcome == TransactionStatus.FAILED.value:
-                    _finalize_refund(db, tx, str(response.get("message") or "Provider rejected transaction"))
-                    moved_refunded += 1
+                    msg = str(response.get("message") or "Provider rejected transaction")
+                    if _is_definitive_failure(response=response, reason=msg):
+                        _finalize_refund(db, tx, msg)
+                        moved_refunded += 1
+                    else:
+                        stayed_pending += 1
                 else:
                     tx.failure_reason = f"{str(tx.failure_reason or '').strip()} {_RECHECK_TAG}".strip()[:255]
                     stayed_pending += 1
@@ -157,15 +191,13 @@ def reconcile_pending_data_once(limit: int = 50) -> dict[str, int]:
                 msg = str(exc.message or "Provider reconciliation error").strip()
                 code = exc.status_code or 0
                 # Definitive 4xx failures can be safely refunded.
-                if 400 <= int(code) < 500 and int(code) != 429:
+                if _is_definitive_failure(reason=msg, status_code=code):
                     _finalize_refund(db, tx, msg)
                     moved_refunded += 1
                 else:
-                    tx.failure_reason = f"{str(tx.failure_reason or '').strip()} {_RECHECK_TAG}".strip()[:255]
                     stayed_pending += 1
                 db.commit()
             except Exception as exc:
-                tx.failure_reason = f"{str(tx.failure_reason or '').strip()} {_RECHECK_TAG}".strip()[:255]
                 stayed_pending += 1
                 db.commit()
                 logger.warning("Pending reconcile exception for %s: %s", tx.reference, exc)

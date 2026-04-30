@@ -41,6 +41,22 @@ _FAILURE_STATUS = {"failed", "fail", "error", "rejected", "declined", "cancelled
 _SUCCESS_HINTS = ("successfully", "delivered", "gifted", "completed")
 _FAILURE_HINTS = ("failed", "unsuccessful", "unable", "error", "rejected", "declined", "cancelled", "canceled")
 _PENDING_HINTS = ("pending", "processing", "queued", "in progress", "submitted")
+_DEFINITIVE_FAILURE_CODES = {
+    "invalid_token",
+    "plan_not_found",
+    "insufficient_balance",
+    "invalid_network",
+    "invalid_phone",
+    "coming_soon",
+}
+_DEFINITIVE_FAILURE_HINTS = (
+    "invalid token",
+    "plan not found",
+    "insufficient balance",
+    "invalid network",
+    "invalid phone",
+    "coming soon",
+)
 _VTPASS_DATA_NETWORKS = {"9mobile", "etisalat", "t2"}
 _AMIGO_DATA_NETWORKS = {"mtn", "glo", "airtel"}
 _CURATED_SIZE_TARGETS_GB = (0.2, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0, 15.0, 20.0)
@@ -532,6 +548,21 @@ def _classify_amigo_recheck(response: dict) -> TransactionStatus:
     return status
 
 
+def _is_definitive_amigo_failure(response: dict | None = None, error_message: str | None = None, status_code: int | None = None) -> bool:
+    """Return True only for failures that are safely non-delivery (refund-safe)."""
+    payload = response or {}
+    error_code = _normalize_provider_text(payload.get("error") or payload.get("code") or "")
+    message = _normalize_provider_text(error_message or payload.get("message") or payload.get("detail") or "")
+
+    if error_code in _DEFINITIVE_FAILURE_CODES:
+        return True
+    if _contains_any(message, _DEFINITIVE_FAILURE_HINTS):
+        return True
+    if status_code is not None and int(status_code) in {401, 403, 404, 422}:
+        return True
+    return False
+
+
 def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
     network = str(item.get("network") or "").strip().lower()
     if not network:
@@ -955,10 +986,16 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 or response.get("transaction_id")
             )
         elif outcome_status == TransactionStatus.FAILED:
-            transaction.status = TransactionStatus.FAILED
-            transaction.failure_reason = outcome_reason or _safe_reason(response.get("message"))
-            credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed data purchase")
-            transaction.status = TransactionStatus.REFUNDED
+            failure_msg = outcome_reason or _safe_reason(response.get("message"))
+            if _is_definitive_amigo_failure(response=response, error_message=failure_msg):
+                transaction.status = TransactionStatus.FAILED
+                transaction.failure_reason = failure_msg
+                credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed data purchase")
+                transaction.status = TransactionStatus.REFUNDED
+            else:
+                # Conservative safety: ambiguous provider failures should not auto-refund immediately.
+                transaction.status = TransactionStatus.PENDING
+                transaction.failure_reason = failure_msg
         else:
             transaction.status = TransactionStatus.PENDING
             transaction.failure_reason = None
@@ -1023,14 +1060,29 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                         "test_mode": settings.amigo_test_mode,
                     }
                 if confirm_outcome == TransactionStatus.FAILED:
-                    transaction.status = TransactionStatus.FAILED
-                    transaction.failure_reason = _safe_reason(
+                    confirm_msg = _safe_reason(
                         str(confirm_response.get("message") or "Provider rejected transaction")
                     )
-                    credit_wallet(db, wallet, Decimal(price), reference, "Auto refund after immediate provider confirmation failure")
-                    transaction.status = TransactionStatus.REFUNDED
+                    if _is_definitive_amigo_failure(response=confirm_response, error_message=confirm_msg):
+                        transaction.status = TransactionStatus.FAILED
+                        transaction.failure_reason = confirm_msg
+                        credit_wallet(db, wallet, Decimal(price), reference, "Auto refund after immediate provider confirmation failure")
+                        transaction.status = TransactionStatus.REFUNDED
+                        db.commit()
+                        raise HTTPException(status_code=502, detail="Data provider rejected this purchase. Wallet refunded.")
+                    transaction.status = TransactionStatus.PENDING
+                    transaction.failure_reason = confirm_msg
                     db.commit()
-                    raise HTTPException(status_code=502, detail="Data provider rejected this purchase. Wallet refunded.")
+                    return {
+                        "reference": reference,
+                        "status": transaction.status,
+                        "message": "Transaction submitted and is being confirmed. Please check history shortly.",
+                        "provider": "amigo",
+                        "network": plan.network,
+                        "plan_code": plan.plan_code,
+                        "failure_reason": str(transaction.failure_reason or "").strip(),
+                        "test_mode": settings.amigo_test_mode,
+                    }
             except HTTPException:
                 raise
             except Exception as recheck_exc:
@@ -1051,15 +1103,30 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 "test_mode": settings.amigo_test_mode,
             }
 
-        transaction.status = TransactionStatus.FAILED
+        if _is_definitive_amigo_failure(error_message=exc.message, status_code=exc.status_code):
+            transaction.status = TransactionStatus.FAILED
+            transaction.failure_reason = _safe_reason(exc.message)
+            credit_wallet(db, wallet, Decimal(price), reference, "Auto refund due to Amigo error")
+            transaction.status = TransactionStatus.REFUNDED
+            db.commit()
+            raise HTTPException(
+                status_code=502,
+                detail="Data provider rejected this purchase. Wallet refunded.",
+            )
+
+        transaction.status = TransactionStatus.PENDING
         transaction.failure_reason = _safe_reason(exc.message)
-        credit_wallet(db, wallet, Decimal(price), reference, "Auto refund due to Amigo error")
-        transaction.status = TransactionStatus.REFUNDED
         db.commit()
-        raise HTTPException(
-            status_code=502,
-            detail="Data provider rejected this purchase. Wallet refunded.",
-        )
+        return {
+            "reference": reference,
+            "status": transaction.status,
+            "message": "Transaction submitted and is being confirmed. Please check history shortly.",
+            "provider": "amigo",
+            "network": plan.network,
+            "plan_code": plan.plan_code,
+            "failure_reason": str(transaction.failure_reason or "").strip(),
+            "test_mode": settings.amigo_test_mode,
+        }
     except Exception as exc:
         duration_ms = round((time.time() - start) * 1000, 2)
         db.add(ApiLog(
