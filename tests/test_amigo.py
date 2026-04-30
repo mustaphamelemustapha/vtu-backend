@@ -72,3 +72,36 @@ def test_purchase_data_falls_back_on_404(monkeypatch):
     assert out["success"] is True
     assert "/wrong/" in calls
     assert "/data/" in calls
+
+
+def test_parse_best_effort_payload_extracts_embedded_json():
+    from app.services.amigo import AmigoClient
+
+    class _Resp:
+        status_code = 200
+        text = "OK >>> {\"success\": true, \"status\": \"delivered\", \"reference\": \"ABC123\"} <<<"
+
+        def json(self):
+            raise ValueError("not-json")
+
+    client = AmigoClient()
+    out = client._parse_best_effort_payload(_Resp())
+    assert out["success"] is True
+    assert out["status"] == "delivered"
+    assert out["reference"] == "ABC123"
+
+
+def test_parse_best_effort_payload_maps_success_plain_text():
+    from app.services.amigo import AmigoClient
+
+    class _Resp:
+        status_code = 200
+        text = "Transaction completed successfully"
+
+        def json(self):
+            raise ValueError("not-json")
+
+    client = AmigoClient()
+    out = client._parse_best_effort_payload(_Resp())
+    assert out["success"] is True
+    assert out["status"] == "delivered"

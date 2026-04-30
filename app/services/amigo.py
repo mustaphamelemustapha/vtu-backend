@@ -1,5 +1,7 @@
 import time
 import logging
+import json
+import re
 import httpx
 from urllib.parse import urlparse, urlunparse
 from app.core.config import get_settings
@@ -55,6 +57,25 @@ NETWORK_ID_MAP.update(
         if item.get("network") and item.get("network_id") is not None
     }
 )
+
+_TEXT_SUCCESS_HINTS = (
+    "success",
+    "successful",
+    "delivered",
+    "completed",
+    "gifted",
+    "processed",
+)
+_TEXT_FAILURE_HINTS = (
+    "failed",
+    "unsuccessful",
+    "declined",
+    "rejected",
+    "invalid",
+    "insufficient",
+    "error",
+)
+_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 def split_plan_code(plan_code: str | None) -> tuple[str | None, str]:
@@ -229,6 +250,62 @@ class AmigoClient:
         text = (response.text or "").strip()
         return text[:300] if text else f"HTTP {response.status_code}"
 
+    def _parse_best_effort_payload(self, response: httpx.Response) -> dict:
+        """
+        Parse provider response defensively.
+        Some upstream gateways intermittently return non-JSON wrappers while
+        still including a useful success/failure payload in text.
+        """
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                return payload
+        except ValueError:
+            pass
+
+        raw_text = str(response.text or "").strip()
+        if not raw_text:
+            raise AmigoApiError("Amigo returned empty response.", status_code=response.status_code, raw=response.text)
+
+        # Try exact JSON text first.
+        try:
+            payload = json.loads(raw_text)
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            pass
+
+        # Try extracting first JSON object from wrapped/plain responses.
+        match = _JSON_OBJECT_RE.search(raw_text)
+        if match:
+            candidate = match.group(0)
+            try:
+                payload = json.loads(candidate)
+                if isinstance(payload, dict):
+                    return payload
+            except Exception:
+                pass
+
+        lowered = raw_text.lower()
+        if any(hint in lowered for hint in _TEXT_SUCCESS_HINTS):
+            return {
+                "success": True,
+                "status": "delivered",
+                "message": raw_text[:300],
+            }
+        if any(hint in lowered for hint in _TEXT_FAILURE_HINTS):
+            return {
+                "success": False,
+                "status": "failed",
+                "message": raw_text[:300],
+            }
+
+        raise AmigoApiError(
+            "Amigo returned invalid JSON response.",
+            status_code=response.status_code,
+            raw=response.text,
+        )
+
     def _request(
         self,
         method: str,
@@ -257,10 +334,7 @@ class AmigoClient:
                 if response.status_code >= 400:
                     message = self._extract_error_message(response)
                     raise AmigoApiError(message, status_code=response.status_code, raw=response.text)
-                try:
-                    return response.json()
-                except ValueError as exc:
-                    raise AmigoApiError("Amigo returned invalid JSON response.", status_code=response.status_code, raw=response.text) from exc
+                return self._parse_best_effort_payload(response)
             except AmigoApiError as exc:
                 last_exc = exc
                 # Do not retry definitive client/path/auth errors.
