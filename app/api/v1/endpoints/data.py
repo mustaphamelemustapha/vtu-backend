@@ -102,6 +102,8 @@ _AIRTEL_VALIDITY_TARGETS = {
 
 _SIZE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(GB|MB)", re.IGNORECASE)
 _VALIDITY_RE = re.compile(r"(\d+)\s*(d|day|days|month|months|week|weeks)", re.IGNORECASE)
+_AMIGO_PENDING_CONFIRM_ATTEMPTS = 6
+_AMIGO_PENDING_CONFIRM_DELAY_SECONDS = 1.4
 
 
 def _safe_reason(value: str, limit: int = 255) -> str:
@@ -563,6 +565,57 @@ def _is_definitive_amigo_failure(response: dict | None = None, error_message: st
     return False
 
 
+def _confirm_pending_amigo_purchase(
+    *,
+    client: AmigoClient,
+    network_id: int,
+    phone_number: str,
+    plan_code: str,
+    idempotency_key: str,
+    ported_number: bool,
+) -> tuple[TransactionStatus, dict | None, str | None]:
+    """
+    Best-effort synchronous confirmation for initially pending responses.
+    Returns (final_status_guess, last_response, last_message).
+    """
+    last_response: dict | None = None
+    last_message: str | None = None
+
+    for _ in range(_AMIGO_PENDING_CONFIRM_ATTEMPTS):
+        time.sleep(_AMIGO_PENDING_CONFIRM_DELAY_SECONDS)
+        try:
+            response = client.purchase_data(
+                {
+                    "network": network_id,
+                    "mobile_number": phone_number,
+                    "plan": normalize_plan_code(plan_code),
+                    "Ported_number": ported_number,
+                },
+                idempotency_key=idempotency_key,
+            )
+            last_response = response
+            outcome_status, outcome_reason = _classify_provider_outcome(response)
+            last_message = outcome_reason or str(response.get("message") or "").strip()
+
+            if outcome_status == TransactionStatus.SUCCESS:
+                return TransactionStatus.SUCCESS, response, last_message
+            if outcome_status == TransactionStatus.FAILED:
+                if _is_definitive_amigo_failure(response=response, error_message=last_message):
+                    return TransactionStatus.FAILED, response, last_message
+                # Ambiguous failure signal: keep waiting for a clear outcome.
+                continue
+            # Still pending: keep checking within window.
+        except AmigoApiError as exc:
+            last_message = str(exc.message or "").strip()
+            if _is_definitive_amigo_failure(error_message=last_message, status_code=exc.status_code):
+                return TransactionStatus.FAILED, last_response, last_message
+            continue
+        except Exception:
+            continue
+
+    return TransactionStatus.PENDING, last_response, last_message
+
+
 def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
     network = str(item.get("network") or "").strip().lower()
     if not network:
@@ -997,8 +1050,44 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 transaction.status = TransactionStatus.PENDING
                 transaction.failure_reason = failure_msg
         else:
-            transaction.status = TransactionStatus.PENDING
-            transaction.failure_reason = None
+            # Provider accepted but returned pending.
+            # Run a short synchronous confirmation window to reduce
+            # false-pending receipts for delivered purchases.
+            confirmed_status, confirmed_response, confirmed_message = _confirm_pending_amigo_purchase(
+                client=client,
+                network_id=network_id,
+                phone_number=str(payload.phone_number),
+                plan_code=plan.plan_code,
+                idempotency_key=reference,
+                ported_number=payload.ported_number,
+            )
+            if confirmed_status == TransactionStatus.SUCCESS:
+                transaction.status = TransactionStatus.SUCCESS
+                transaction.failure_reason = None
+                source = confirmed_response or response
+                transaction.external_reference = (
+                    source.get("reference")
+                    or source.get("transaction_reference")
+                    or source.get("transaction_id")
+                    or transaction.external_reference
+                )
+            elif confirmed_status == TransactionStatus.FAILED:
+                failure_msg = _safe_reason(
+                    confirmed_message
+                    or outcome_reason
+                    or str((confirmed_response or response).get("message") or "Provider rejected transaction")
+                )
+                if _is_definitive_amigo_failure(response=confirmed_response or response, error_message=failure_msg):
+                    transaction.status = TransactionStatus.FAILED
+                    transaction.failure_reason = failure_msg
+                    credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed data purchase")
+                    transaction.status = TransactionStatus.REFUNDED
+                else:
+                    transaction.status = TransactionStatus.PENDING
+                    transaction.failure_reason = failure_msg
+            else:
+                transaction.status = TransactionStatus.PENDING
+                transaction.failure_reason = None
 
         db.commit()
         return {
