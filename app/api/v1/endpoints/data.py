@@ -527,6 +527,11 @@ def _classify_provider_outcome(response: dict) -> tuple[TransactionStatus, str]:
     return TransactionStatus.PENDING, ""
 
 
+def _classify_amigo_recheck(response: dict) -> TransactionStatus:
+    status, _ = _classify_provider_outcome(response)
+    return status
+
+
 def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
     network = str(item.get("network") or "").strip().lower()
     if not network:
@@ -983,8 +988,55 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             success=0,
         ))
         if _is_ambiguous_provider_error(exc):
-            # Fail-safe: when provider response is ambiguous, do NOT auto-refund.
-            # Mark pending so we can reconcile from history/provider callbacks.
+            # Critical protection: one immediate idempotent recheck before returning pending.
+            # This closes the "delivered but pending" window for many ambiguous provider responses.
+            try:
+                time.sleep(1.0)
+                confirm_response = client.purchase_data(
+                    {
+                        "network": network_id,
+                        "mobile_number": payload.phone_number,
+                        "plan": normalize_plan_code(plan.plan_code),
+                        "Ported_number": payload.ported_number,
+                    },
+                    idempotency_key=reference,
+                )
+                confirm_outcome = _classify_amigo_recheck(confirm_response)
+                if confirm_outcome == TransactionStatus.SUCCESS:
+                    transaction.status = TransactionStatus.SUCCESS
+                    transaction.failure_reason = None
+                    transaction.external_reference = (
+                        confirm_response.get("reference")
+                        or confirm_response.get("transaction_reference")
+                        or confirm_response.get("transaction_id")
+                        or transaction.external_reference
+                    )
+                    db.commit()
+                    return {
+                        "reference": reference,
+                        "status": transaction.status,
+                        "message": str(confirm_response.get("message") or "Transaction confirmed successfully.").strip(),
+                        "provider": "amigo",
+                        "network": plan.network,
+                        "plan_code": plan.plan_code,
+                        "failure_reason": "",
+                        "test_mode": settings.amigo_test_mode,
+                    }
+                if confirm_outcome == TransactionStatus.FAILED:
+                    transaction.status = TransactionStatus.FAILED
+                    transaction.failure_reason = _safe_reason(
+                        str(confirm_response.get("message") or "Provider rejected transaction")
+                    )
+                    credit_wallet(db, wallet, Decimal(price), reference, "Auto refund after immediate provider confirmation failure")
+                    transaction.status = TransactionStatus.REFUNDED
+                    db.commit()
+                    raise HTTPException(status_code=502, detail="Data provider rejected this purchase. Wallet refunded.")
+            except HTTPException:
+                raise
+            except Exception as recheck_exc:
+                logger.warning("Immediate data confirmation recheck failed for %s: %s", reference, recheck_exc)
+
+            # Still ambiguous after immediate recheck: keep pending (no refund).
             transaction.status = TransactionStatus.PENDING
             transaction.failure_reason = _safe_reason(exc.message)
             db.commit()
