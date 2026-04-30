@@ -110,6 +110,11 @@ class AdjustWalletRequest(BaseModel):
     reason: str
 
 
+class ReconcileTransactionRequest(BaseModel):
+    reference: str
+    note: Optional[str] = None
+
+
 class ServiceToggleUpdate(BaseModel):
     is_active: bool
 

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, select, union_all, String, cast, inspect
 from app.core.database import get_db
 from app.dependencies import require_admin
-from app.models import User, Wallet, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, MarginType, ApiLog, DataPlan, TransactionDispute, DisputeStatus, AdminAuditLog, ServiceToggle, Referral
+from app.models import User, Wallet, WalletLedger, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, MarginType, ApiLog, DataPlan, TransactionDispute, DisputeStatus, AdminAuditLog, ServiceToggle, Referral
 from app.schemas.admin import (
     FundUserWalletRequest,
     PricingRuleUpdate,
@@ -23,6 +23,7 @@ from app.schemas.admin import (
     AdminDataPlanOut,
     AdminAuditLogsResponse,
     AdminReferralsResponse,
+    ReconcileTransactionRequest,
 )
 from app.services.wallet import get_or_create_wallet, credit_wallet, debit_wallet
 from app.services.pricing import build_service_pricing_key, parse_pricing_key
@@ -587,6 +588,203 @@ def get_user_details(
     }
 
 
+@router.get("/wallets")
+def list_wallets(
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db),
+    q: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+):
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be >= 1")
+    if page_size < 1 or page_size > 200:
+        raise HTTPException(status_code=400, detail="page_size must be between 1 and 200")
+
+    query = (
+        db.query(User, Wallet)
+        .outerjoin(Wallet, Wallet.user_id == User.id)
+    )
+    if q:
+        needle = f"%{q.strip()}%"
+        query = query.filter(
+            or_(
+                User.email.ilike(needle),
+                User.full_name.ilike(needle),
+                User.phone_number.ilike(needle),
+            )
+        )
+
+    total = query.count()
+    rows = (
+        query.order_by(User.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    items = []
+    aggregate_balance = 0.0
+    for user, wallet in rows:
+        balance = float(wallet.balance) if wallet and wallet.balance is not None else 0.0
+        aggregate_balance += balance
+        items.append(
+            {
+                "user_id": user.id,
+                "full_name": user.full_name,
+                "email": user.email,
+                "phone_number": user.phone_number,
+                "is_active": user.is_active,
+                "wallet_balance": round(balance, 2),
+                "wallet_locked": bool(wallet.is_locked) if wallet else False,
+                "wallet_updated_at": wallet.updated_at if wallet else None,
+            }
+        )
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "aggregate_balance": round(aggregate_balance, 2),
+    }
+
+
+@router.post("/transactions/reconcile-delivered")
+def reconcile_transaction_delivered(
+    payload: ReconcileTransactionRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    reference = (payload.reference or "").strip()
+    if not reference:
+        raise HTTPException(status_code=400, detail="reference is required")
+
+    note = (payload.note or "").strip() or "Admin marked delivered after customer confirmation."
+
+    tx = db.query(Transaction).filter(Transaction.reference == reference).first()
+    service_tx = None
+    source = "transaction"
+    if not tx:
+        try:
+            if inspect(db.bind).has_table("service_transactions"):
+                service_tx = db.query(ServiceTransaction).filter(ServiceTransaction.reference == reference).first()
+        except Exception:
+            service_tx = None
+        if not service_tx:
+            raise HTTPException(status_code=404, detail="Transaction reference not found")
+        source = "service_transaction"
+
+    wallet_action = "none"
+
+    if tx:
+        previous_status = _normalize_status_value(tx.status)
+        tx.status = TransactionStatus.SUCCESS
+        tx.failure_reason = None
+
+        if previous_status == TransactionStatus.REFUNDED.value:
+            wallet = get_or_create_wallet(db, tx.user_id)
+            reversal_ref = f"REVERSAL_{reference}"
+            existing_reversal = (
+                db.query(WalletLedger)
+                .filter(
+                    WalletLedger.wallet_id == wallet.id,
+                    WalletLedger.reference == reversal_ref,
+                )
+                .first()
+            )
+            if not existing_reversal:
+                if Decimal(wallet.balance) < Decimal(tx.amount):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="User wallet balance is lower than refunded amount. Manual recovery required before reconciliation.",
+                    )
+                debit_wallet(
+                    db,
+                    wallet,
+                    Decimal(tx.amount),
+                    reversal_ref,
+                    f"Refund reversal for delivered transaction {reference}",
+                )
+            wallet_action = "refund_reversal_debit"
+
+        audit_log = AdminAuditLog(
+            admin_email=admin.email,
+            action="reconcile_delivered",
+            target=reference,
+            details={
+                "source": source,
+                "previous_status": previous_status,
+                "new_status": TransactionStatus.SUCCESS.value,
+                "wallet_action": wallet_action,
+                "note": note,
+            },
+        )
+        db.add(audit_log)
+        db.commit()
+        return {
+            "status": "ok",
+            "reference": reference,
+            "source": source,
+            "previous_status": previous_status,
+            "new_status": TransactionStatus.SUCCESS.value,
+            "wallet_action": wallet_action,
+        }
+
+    previous_status = _normalize_status_value(service_tx.status)
+    service_tx.status = TransactionStatus.SUCCESS.value
+    service_tx.failure_reason = None
+
+    if previous_status == TransactionStatus.REFUNDED.value:
+        wallet = get_or_create_wallet(db, service_tx.user_id)
+        reversal_ref = f"REVERSAL_{reference}"
+        existing_reversal = (
+            db.query(WalletLedger)
+            .filter(
+                WalletLedger.wallet_id == wallet.id,
+                WalletLedger.reference == reversal_ref,
+            )
+            .first()
+        )
+        if not existing_reversal:
+            if Decimal(wallet.balance) < Decimal(service_tx.amount):
+                raise HTTPException(
+                    status_code=409,
+                    detail="User wallet balance is lower than refunded amount. Manual recovery required before reconciliation.",
+                )
+            debit_wallet(
+                db,
+                wallet,
+                Decimal(service_tx.amount),
+                reversal_ref,
+                f"Refund reversal for delivered transaction {reference}",
+            )
+        wallet_action = "refund_reversal_debit"
+
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action="reconcile_delivered",
+        target=reference,
+        details={
+            "source": source,
+            "previous_status": previous_status,
+            "new_status": TransactionStatus.SUCCESS.value,
+            "wallet_action": wallet_action,
+            "note": note,
+        },
+    )
+    db.add(audit_log)
+    db.commit()
+    return {
+        "status": "ok",
+        "reference": reference,
+        "source": source,
+        "previous_status": previous_status,
+        "new_status": TransactionStatus.SUCCESS.value,
+        "wallet_action": wallet_action,
+    }
+
+
 @router.get("/reports", response_model=AdminReportsResponse)
 def list_reports(
     admin=Depends(require_admin),
@@ -827,11 +1025,11 @@ def adjust_user_wallet(
         raise HTTPException(status_code=404, detail="User wallet not found")
     
     if payload.action == "credit":
-        credit_wallet(db, wallet.id, payload.amount, f"Admin credit: {payload.reason}")
+        credit_wallet(db, wallet, payload.amount, f"ADMIN_ADJUST_{payload.user_id}_CREDIT", f"Admin credit: {payload.reason}")
     elif payload.action == "debit":
         if wallet.balance < payload.amount:
             raise HTTPException(status_code=400, detail="Insufficient balance for debit")
-        debit_wallet(db, wallet.id, payload.amount, f"Admin debit: {payload.reason}")
+        debit_wallet(db, wallet, payload.amount, f"ADMIN_ADJUST_{payload.user_id}_DEBIT", f"Admin debit: {payload.reason}")
     else:
         raise HTTPException(status_code=400, detail="Invalid action")
     
