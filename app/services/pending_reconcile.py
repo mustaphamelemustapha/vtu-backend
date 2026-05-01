@@ -113,6 +113,16 @@ def _finalize_refund(db: Session, tx: Transaction, reason: str) -> None:
     tx.status = TransactionStatus.REFUNDED
 
 
+def _tx_age_seconds(tx: Transaction) -> int:
+    created = tx.created_at
+    if not created:
+        return 0
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    return max(0, int((now - created).total_seconds()))
+
+
 def reconcile_pending_data_once(limit: int = 50) -> dict[str, int]:
     db = SessionLocal()
     processed = 0
@@ -184,8 +194,19 @@ def reconcile_pending_data_once(limit: int = 50) -> dict[str, int]:
                     else:
                         stayed_pending += 1
                 else:
-                    tx.failure_reason = f"{str(tx.failure_reason or '').strip()} {_RECHECK_TAG}".strip()[:255]
-                    stayed_pending += 1
+                    age = _tx_age_seconds(tx)
+                    if age >= max(30, int(settings.pending_reconcile_auto_success_seconds)):
+                        tx.status = TransactionStatus.SUCCESS
+                        tx.failure_reason = None
+                        moved_success += 1
+                        logger.warning(
+                            "Pending data auto-settled to success after timeout ref=%s age=%ss",
+                            tx.reference,
+                            age,
+                        )
+                    else:
+                        tx.failure_reason = f"{str(tx.failure_reason or '').strip()} {_RECHECK_TAG}".strip()[:255]
+                        stayed_pending += 1
                 db.commit()
             except AmigoApiError as exc:
                 msg = str(exc.message or "Provider reconciliation error").strip()
@@ -195,7 +216,18 @@ def reconcile_pending_data_once(limit: int = 50) -> dict[str, int]:
                     _finalize_refund(db, tx, msg)
                     moved_refunded += 1
                 else:
-                    stayed_pending += 1
+                    age = _tx_age_seconds(tx)
+                    if age >= max(30, int(settings.pending_reconcile_auto_success_seconds)):
+                        tx.status = TransactionStatus.SUCCESS
+                        tx.failure_reason = None
+                        moved_success += 1
+                        logger.warning(
+                            "Pending data auto-settled to success after provider ambiguity ref=%s age=%ss",
+                            tx.reference,
+                            age,
+                        )
+                    else:
+                        stayed_pending += 1
                 db.commit()
             except Exception as exc:
                 stayed_pending += 1
