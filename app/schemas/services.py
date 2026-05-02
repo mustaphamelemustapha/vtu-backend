@@ -42,6 +42,7 @@ class ElectricityVerifyRequest(BaseModel):
 class ExamPurchaseRequest(BaseModel):
     client_request_id: Optional[str] = Field(default=None, max_length=128)
     exam: str = Field(..., min_length=2, max_length=64)
+    exam_type: Optional[str] = Field(default=None, min_length=2, max_length=64)
     quantity: int = Field(1, ge=1, le=10)
     phone_number: Optional[str] = Field(default=None, min_length=7, max_length=20)
 

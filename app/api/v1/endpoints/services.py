@@ -123,6 +123,31 @@ def _ensure_service_table(db: Session):
         raise HTTPException(status_code=503, detail="Services database is not ready yet.")
 
 
+def _fetch_exam_packages(provider, exam_key: str) -> list[dict]:
+    fetcher = getattr(provider, "fetch_exam_packages", None)
+    if not callable(fetcher):
+        return []
+    try:
+        raw = fetcher(exam_key) or []
+    except Exception:
+        return []
+    packages: list[dict] = []
+    for row in raw:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("code") or row.get("exam_type") or row.get("id") or "").strip()
+        if not code:
+            continue
+        name = str(row.get("name") or row.get("description") or code).strip()
+        amount_raw = row.get("amount")
+        try:
+            amount = float(amount_raw) if amount_raw not in (None, "") else None
+        except Exception:
+            amount = None
+        packages.append({"code": code, "name": name or code, "amount": amount, "exam": exam_key})
+    return packages
+
+
 @router.get("/catalog", response_model=ServicesCatalogOut)
 def services_catalog(user: User = Depends(get_current_user)):
     # Keep it simple: a UI-ready catalog. Real providers can replace this later.
@@ -149,6 +174,18 @@ def services_catalog(user: User = Depends(get_current_user)):
         ],
         "exam_types": ["waec", "neco", "jamb"],
     }
+
+
+@router.get("/exam/packages")
+def exam_packages(exam: str, user: User = Depends(get_current_user)):
+    exam_key = str(exam or "").strip().lower()
+    if exam_key not in {"waec", "jamb"}:
+        raise HTTPException(status_code=400, detail="Exam must be one of: waec, jamb")
+    provider = get_bills_provider()
+    packages = _fetch_exam_packages(provider, exam_key)
+    if not packages:
+        raise HTTPException(status_code=503, detail=f"Unable to load {exam_key.upper()} packages right now.")
+    return {"exam": exam_key, "packages": packages}
 
 
 @router.post("/airtime/purchase")
@@ -581,13 +618,29 @@ def electricity_verify(request: Request, payload: ElectricityVerifyRequest, user
 @limiter.limit("5/minute")
 def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _ensure_service_table(db)
-    # For pins we price "amount" as a fixed demo price per pin for now.
-    unit_price = Decimal("2000.00")
+    exam_key = str(payload.exam or "").strip().lower()
+    if exam_key not in {"waec", "jamb"}:
+        raise HTTPException(status_code=400, detail="Exam must be WAEC or JAMB")
+
+    provider = get_bills_provider()
+    selected_exam_type = str(payload.exam_type or "").strip()
+    packages = _fetch_exam_packages(provider, exam_key)
+    if not selected_exam_type and packages:
+        selected_exam_type = str(packages[0].get("code") or "").strip()
+    if not selected_exam_type:
+        raise HTTPException(status_code=400, detail="Select a package before purchase.")
+    selected_package = next((item for item in packages if str(item.get("code")) == selected_exam_type), None)
+    if not selected_package:
+        raise HTTPException(status_code=400, detail="Selected package is unavailable. Refresh and try again.")
+    package_amount = selected_package.get("amount")
+    if package_amount in (None, ""):
+        raise HTTPException(status_code=503, detail="Package amount is unavailable right now.")
+    unit_price = Decimal(str(package_amount))
     base_total_amount = unit_price * Decimal(int(payload.quantity or 1))
     charge_amount, margin = get_service_charge_for_user(
         db,
         tx_type=TransactionType.EXAM.value,
-        provider=payload.exam,
+        provider=exam_key,
         base_amount=base_total_amount,
         user_role=user.role,
     )
@@ -609,11 +662,13 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
         tx_type=TransactionType.EXAM.value,
         amount=charge_amount,
         status=TransactionStatus.PENDING.value,
-        provider=payload.exam.strip().lower(),
+        provider=exam_key,
         customer=(payload.phone_number or "").strip() or None,
         product_code=str(int(payload.quantity or 1)),
         meta={
-            "exam": payload.exam.strip().lower(),
+            "exam": exam_key,
+            "exam_type": selected_exam_type,
+            "exam_type_name": str(selected_package.get("name") or selected_exam_type),
             "quantity": int(payload.quantity or 1),
             "phone_number": (payload.phone_number or "").strip() or None,
             "unit_price": str(unit_price),
@@ -628,9 +683,13 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
 
     debit_wallet(db, wallet, charge_amount, reference, "Exam pin purchase")
 
-    provider = get_bills_provider()
     try:
-        result = provider.purchase_exam_pin(tx.provider or "", int(payload.quantity or 1), tx.customer)
+        result = provider.purchase_exam_pin(
+            tx.provider or "",
+            int(payload.quantity or 1),
+            tx.customer,
+            selected_exam_type,
+        )
     except Exception as exc:
         if _is_transport_error(exc):
             logger.warning("Exam provider confirmation delayed ref=%s error=%s", reference, exc)

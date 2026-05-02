@@ -507,12 +507,20 @@ class VTPassBillsProvider:
         data = self._post("/pay", payload)
         return self._parse_result(data)
 
-    def purchase_exam_pin(self, exam: str, quantity: int, phone_number: str | None = None) -> ProviderResult:
+    def purchase_exam_pin(
+        self,
+        exam: str,
+        quantity: int,
+        phone_number: str | None = None,
+        exam_type: str | None = None,
+    ) -> ProviderResult:
         phone = str(phone_number or "").strip()
         if not phone:
             return ProviderResult(False, message="Phone number is required for exam pin purchase.")
         exam_key = _normalize_exam_key(exam)
         service_id, variation_code = self._resolve_exam_service_and_variation(exam_key)
+        if exam_type:
+            variation_code = str(exam_type).strip()
         if not service_id:
             return ProviderResult(False, message=f"Unsupported exam type: {exam}")
 
@@ -542,6 +550,30 @@ class VTPassBillsProvider:
             if pins:
                 result.meta["pins"] = pins
         return result
+
+    def fetch_exam_packages(self, exam: str) -> list[dict]:
+        exam_key = _normalize_exam_key(exam)
+        service_id, _ = self._resolve_exam_service_and_variation(exam_key)
+        if not service_id:
+            return []
+        try:
+            data = self._get("/service-variations", params={"serviceID": service_id})
+        except Exception:
+            return []
+        rows = self._extract_variations(data)
+        packages: list[dict] = []
+        for row in rows:
+            code = str(row.get("variation_code") or row.get("code") or "").strip()
+            name = str(row.get("name") or row.get("variation_name") or code).strip()
+            amount_raw = row.get("variation_amount") or row.get("amount")
+            try:
+                amount = float(str(amount_raw).replace(",", "").strip()) if amount_raw not in (None, "") else None
+            except Exception:
+                amount = None
+            if not code:
+                continue
+            packages.append({"code": code, "name": name or code, "amount": amount, "exam": exam_key})
+        return packages
 
     def fetch_cable_packages(self, provider: str) -> list[dict]:
         service_id = _cable_service_id(provider)
@@ -1132,7 +1164,13 @@ class ClubKonnectBillsProvider:
             return {"ok": True, "customer_name": customer_name}
         return {"ok": False, "message": customer_name or "Unable to verify meter number."}
 
-    def purchase_exam_pin(self, exam: str, quantity: int, phone_number: str | None = None) -> ProviderResult:
+    def purchase_exam_pin(
+        self,
+        exam: str,
+        quantity: int,
+        phone_number: str | None = None,
+        exam_type: str | None = None,
+    ) -> ProviderResult:
         exam_key = _normalize_exam_key(exam)
         endpoint = {
             "waec": "APIWAECV1.asp",
@@ -1143,12 +1181,12 @@ class ClubKonnectBillsProvider:
 
         request_id = _clubkonnect_request_id("EXAM")
         params = {
-            "Quantity": max(1, int(quantity or 1)),
+            "ExamType": str(exam_type or exam_key).strip(),
             "RequestID": request_id,
             "CallBackURL": self._callback_url(),
         }
         if phone_number:
-            params["MobileNumber"] = str(phone_number).strip()
+            params["PhoneNo"] = str(phone_number).strip()
 
         data = self._request(endpoint, params)
         result = self._settle_pending(self._parse_result(data, action=f"exam:{exam_key}"), f"exam:{exam_key}", request_id=request_id)
@@ -1156,6 +1194,57 @@ class ClubKonnectBillsProvider:
         if pins:
             result.meta = {**(result.meta or {}), "pins": pins}
         return result
+
+    def fetch_exam_packages(self, exam: str) -> list[dict]:
+        exam_key = _normalize_exam_key(exam)
+        endpoint = {
+            "waec": "APIWAECPackagesV2.asp",
+            "jamb": "APIJAMBPackagesV2.asp",
+        }.get(exam_key)
+        if not endpoint:
+            return []
+        data = self._request(endpoint, {})
+        rows = data.get("data") or data.get("Data") or data.get("EXAM_TYPE") or data.get("exam_type") or data
+        flattened: list[dict] = []
+        if isinstance(rows, list):
+            flattened = [row for row in rows if isinstance(row, dict)]
+        elif isinstance(rows, dict):
+            for value in rows.values():
+                if isinstance(value, list):
+                    flattened.extend([item for item in value if isinstance(item, dict)])
+                elif isinstance(value, dict):
+                    flattened.append(value)
+
+        packages: list[dict] = []
+        for row in flattened:
+            code = str(
+                row.get("ExamType")
+                or row.get("exam_type")
+                or row.get("ID")
+                or row.get("code")
+                or row.get("Package")
+                or ""
+            ).strip()
+            name = str(
+                row.get("Description")
+                or row.get("description")
+                or row.get("Name")
+                or row.get("name")
+                or row.get("ExamName")
+                or code
+            ).strip()
+            amount_raw = row.get("Amount") or row.get("amount") or row.get("Price") or row.get("price")
+            try:
+                amount = float(str(amount_raw).replace(",", "").strip()) if amount_raw not in (None, "") else None
+            except Exception:
+                amount = None
+            if not code:
+                continue
+            packages.append({"code": code, "name": name or code, "amount": amount, "exam": exam_key})
+        dedup: dict[str, dict] = {}
+        for item in packages:
+            dedup[item["code"]] = item
+        return list(dedup.values())
 
     def fetch_data_variations(self, network: str) -> list[dict]:
         target = self._network_code(network)
@@ -1278,11 +1367,33 @@ class MockBillsProvider:
             meta={"disco": disco, "meter_number": meter_number, "meter_type": meter_type, "token": token},
         )
 
-    def purchase_exam_pin(self, exam: str, quantity: int, phone_number: str | None = None) -> ProviderResult:
+    def purchase_exam_pin(
+        self,
+        exam: str,
+        quantity: int,
+        phone_number: str | None = None,
+        exam_type: str | None = None,
+    ) -> ProviderResult:
         pins = []
         for _ in range(int(quantity or 1)):
             pins.append(f"{secrets.randbelow(10**12):012d}")
-        return ProviderResult(True, external_reference=self._ref("EXAM"), meta={"exam": exam, "pins": pins, "phone_number": phone_number})
+        return ProviderResult(
+            True,
+            external_reference=self._ref("EXAM"),
+            meta={"exam": exam, "exam_type": exam_type, "pins": pins, "phone_number": phone_number},
+        )
+
+    def fetch_exam_packages(self, exam: str) -> list[dict]:
+        key = _normalize_exam_key(exam)
+        defaults = {
+            "waec": [{"code": "waecdirect", "name": "WAEC Result Checker PIN", "amount": 2000.0, "exam": "waec"}],
+            "jamb": [
+                {"code": "de", "name": "Direct Entry (DE)", "amount": 2000.0, "exam": "jamb"},
+                {"code": "utme-mock", "name": "UTME PIN (with mock)", "amount": 2000.0, "exam": "jamb"},
+                {"code": "utme-no-mock", "name": "UTME PIN (without mock)", "amount": 2000.0, "exam": "jamb"},
+            ],
+        }
+        return defaults.get(key, [])
 
     def fetch_cable_packages(self, provider: str) -> list[dict]:
         return []
