@@ -1,5 +1,6 @@
 from datetime import date, datetime, time, timezone, timedelta
 from typing import Optional
+import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -30,6 +31,49 @@ from app.services.pricing import build_service_pricing_key, parse_pricing_key
 from app.api.v1.endpoints.data import _invalidate_plans_cache
 
 router = APIRouter()
+
+_SENSITIVE_META_KEYS = {
+    "api_key",
+    "apikey",
+    "token",
+    "authorization",
+    "x-api-key",
+    "secret",
+    "password",
+}
+
+
+def _sanitize_meta(value):
+    if isinstance(value, dict):
+        out = {}
+        for key, item in value.items():
+            key_text = str(key or "")
+            if key_text.strip().lower() in _SENSITIVE_META_KEYS:
+                out[key] = "***redacted***"
+            else:
+                out[key] = _sanitize_meta(item)
+        return out
+    if isinstance(value, list):
+        return [_sanitize_meta(item) for item in value]
+    return value
+
+
+def _extract_provider_payload(meta: dict | None):
+    payload = meta or {}
+    if not isinstance(payload, dict):
+        return None
+    for key in ("provider_response", "raw_provider_response", "provider_raw", "response", "result"):
+        if key in payload and payload.get(key) is not None:
+            return payload.get(key)
+    for provider_key in ("amigo", "clubkonnect", "vtpass"):
+        provider_obj = payload.get(provider_key)
+        if isinstance(provider_obj, dict):
+            for key in ("raw_response", "response", "result"):
+                if key in provider_obj and provider_obj.get(key) is not None:
+                    return provider_obj.get(key)
+            if provider_obj:
+                return provider_obj
+    return payload if payload else None
 
 def _coerce_status(value: Optional[str]) -> Optional[TransactionStatus]:
     if value is None:
@@ -441,6 +485,98 @@ def list_all_transactions(
         items.append(row)
 
     return {"items": items, "total": int(total), "page": page, "page_size": page_size}
+
+
+@router.get("/transactions/{reference}")
+def get_transaction_details(
+    reference: str,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    ref = (reference or "").strip()
+    if not ref:
+        raise HTTPException(status_code=400, detail="reference is required")
+
+    tx = db.query(Transaction).filter(Transaction.reference == ref).first()
+    if tx:
+        raw_meta_value = getattr(tx, "meta", None)
+        raw_meta = raw_meta_value if isinstance(raw_meta_value, dict) else {}
+        provider_payload = _extract_provider_payload(raw_meta)
+        latest_api_log = (
+            db.query(ApiLog)
+            .filter(ApiLog.reference == tx.reference)
+            .order_by(ApiLog.created_at.desc())
+            .first()
+        )
+        provider_trace = {
+            "provider": "amigo" if _normalize_type_value(tx.tx_type) == "data" else "unknown",
+            "tx_status": _normalize_status_value(tx.status),
+            "failure_reason": tx.failure_reason or "",
+            "external_reference": tx.external_reference or "",
+            "api_log_status_code": getattr(latest_api_log, "status_code", None),
+            "api_log_duration_ms": (
+                float(getattr(latest_api_log, "duration_ms"))
+                if getattr(latest_api_log, "duration_ms", None) is not None
+                else None
+            ),
+            "api_log_endpoint": getattr(latest_api_log, "endpoint", None),
+            "api_log_service": getattr(latest_api_log, "service", None),
+            "api_log_success": getattr(latest_api_log, "success", None),
+            "provider_payload_present": provider_payload is not None,
+            "meta_present": bool(raw_meta),
+        }
+        provider_payload_for_display = provider_payload if provider_payload is not None else provider_trace
+        return {
+            "source": "transaction",
+            "id": tx.id,
+            "reference": tx.reference,
+            "status": _normalize_status_value(tx.status),
+            "tx_type": _normalize_type_value(tx.tx_type),
+            "amount": tx.amount,
+            "user_id": tx.user_id,
+            "network": tx.network,
+            "data_plan_code": tx.data_plan_code,
+            "external_reference": tx.external_reference,
+            "failure_reason": tx.failure_reason,
+            "created_at": tx.created_at,
+            "meta": _sanitize_meta(raw_meta),
+            "provider_payload": _sanitize_meta(provider_payload_for_display),
+            "provider_payload_pretty": json.dumps(_sanitize_meta(provider_payload_for_display), indent=2, ensure_ascii=False),
+            "provider_trace": _sanitize_meta(provider_trace),
+        }
+
+    has_services = False
+    try:
+        has_services = inspect(db.bind).has_table("service_transactions")
+    except Exception:
+        has_services = False
+
+    if has_services:
+        service_tx = db.query(ServiceTransaction).filter(ServiceTransaction.reference == ref).first()
+        if service_tx:
+            raw_meta = service_tx.meta if isinstance(service_tx.meta, dict) else {}
+            provider_payload = _extract_provider_payload(raw_meta)
+            return {
+                "source": "service_transaction",
+                "id": service_tx.id,
+                "reference": service_tx.reference,
+                "status": _normalize_status_value(service_tx.status),
+                "tx_type": _normalize_type_value(service_tx.tx_type),
+                "amount": service_tx.amount,
+                "user_id": service_tx.user_id,
+                "network": service_tx.provider,
+                "data_plan_code": service_tx.product_code,
+                "external_reference": service_tx.external_reference,
+                "failure_reason": service_tx.failure_reason,
+                "created_at": service_tx.created_at,
+                "meta": _sanitize_meta(raw_meta),
+                "provider_payload": _sanitize_meta(provider_payload),
+                "provider_payload_pretty": json.dumps(_sanitize_meta(provider_payload), indent=2, ensure_ascii=False)
+                if provider_payload is not None
+                else None,
+            }
+
+    raise HTTPException(status_code=404, detail="Transaction reference not found")
 
 
 @router.get("/users", response_model=AdminUsersResponse)
