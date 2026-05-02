@@ -1220,6 +1220,8 @@ class ClubKonnectBillsProvider:
             code = str(
                 row.get("ExamType")
                 or row.get("exam_type")
+                or row.get("PRODUCT_CODE")
+                or row.get("product_code")
                 or row.get("ID")
                 or row.get("code")
                 or row.get("Package")
@@ -1228,12 +1230,21 @@ class ClubKonnectBillsProvider:
             name = str(
                 row.get("Description")
                 or row.get("description")
+                or row.get("PRODUCT_DESCRIPTION")
+                or row.get("product_description")
                 or row.get("Name")
                 or row.get("name")
                 or row.get("ExamName")
                 or code
             ).strip()
-            amount_raw = row.get("Amount") or row.get("amount") or row.get("Price") or row.get("price")
+            amount_raw = (
+                row.get("Amount")
+                or row.get("amount")
+                or row.get("PRODUCT_AMOUNT")
+                or row.get("product_amount")
+                or row.get("Price")
+                or row.get("price")
+            )
             try:
                 amount = float(str(amount_raw).replace(",", "").strip()) if amount_raw not in (None, "") else None
             except Exception:
