@@ -412,14 +412,15 @@ class AmigoClient:
         for path in candidates:
             tried.append(path)
             try:
-                # Purchase requests are intentionally single-attempt to avoid
-                # accidental duplicate provider debits on retry.
+                # Purchase requests are low-retry with Idempotency-Key enabled.
+                # This protects against transient network/provider edge failures
+                # while still preventing duplicate debits.
                 return self._request(
                     "POST",
                     path,
                     payload,
                     extra_headers=extra_headers,
-                    retry_count_override=0,
+                    retry_count_override=1,
                 )
             except AmigoApiError as exc:
                 last_exc = exc

@@ -196,11 +196,14 @@ def reconcile_pending_data_once(limit: int = 50) -> dict[str, int]:
                 else:
                     age = _tx_age_seconds(tx)
                     if age >= max(30, int(settings.pending_reconcile_auto_success_seconds)):
-                        tx.status = TransactionStatus.SUCCESS
-                        tx.failure_reason = None
-                        moved_success += 1
+                        _finalize_refund(
+                            db,
+                            tx,
+                            "Pending reconciliation timeout reached without provider confirmation",
+                        )
+                        moved_refunded += 1
                         logger.warning(
-                            "Pending data auto-settled to success after timeout ref=%s age=%ss",
+                            "Pending data auto-refunded after reconciliation timeout ref=%s age=%ss",
                             tx.reference,
                             age,
                         )
@@ -218,11 +221,14 @@ def reconcile_pending_data_once(limit: int = 50) -> dict[str, int]:
                 else:
                     age = _tx_age_seconds(tx)
                     if age >= max(30, int(settings.pending_reconcile_auto_success_seconds)):
-                        tx.status = TransactionStatus.SUCCESS
-                        tx.failure_reason = None
-                        moved_success += 1
+                        _finalize_refund(
+                            db,
+                            tx,
+                            "Pending reconciliation timeout reached after provider ambiguity",
+                        )
+                        moved_refunded += 1
                         logger.warning(
-                            "Pending data auto-settled to success after provider ambiguity ref=%s age=%ss",
+                            "Pending data auto-refunded after provider ambiguity timeout ref=%s age=%ss",
                             tx.reference,
                             age,
                         )

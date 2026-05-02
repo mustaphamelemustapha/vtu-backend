@@ -128,6 +128,12 @@ def _is_ambiguous_provider_error(exc: AmigoApiError) -> bool:
         "remote protocol",
         "timeout",
         "timed out",
+        "unable to reach data provider",
+        "unable to reach provider",
+        "connection reset",
+        "connection error",
+        "connection aborted",
+        "service unavailable",
     )
     return any(hint in msg for hint in ambiguous_hints)
 
@@ -542,6 +548,28 @@ def _classify_provider_outcome(response: dict) -> tuple[TransactionStatus, str]:
         return TransactionStatus.FAILED, _safe_reason(str(reason))
     if pending_signal or (success_signal and failure_signal):
         return TransactionStatus.PENDING, ""
+
+    # Amigo can acknowledge accepted orders without a final delivery keyword,
+    # while still returning a usable provider reference/order id. In production,
+    # those transactions are typically delivered shortly after acceptance.
+    # We treat this as success to avoid false-pending receipts for users.
+    provider_refs = (
+        response.get("reference"),
+        response.get("transaction_reference"),
+        response.get("transaction_id"),
+        response.get("orderid"),
+        response.get("order_id"),
+    )
+    status_code_text = _normalize_provider_text(
+        response.get("statuscode")
+        or response.get("status_code")
+        or response.get("StatusCode")
+    )
+    has_reference = any(str(ref or "").strip() for ref in provider_refs)
+    accepted_code = status_code_text in {"100", "200", "201", "202"}
+    if (has_reference or accepted_code) and not failure_signal:
+        return TransactionStatus.SUCCESS, ""
+
     return TransactionStatus.PENDING, ""
 
 
@@ -1046,9 +1074,11 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed data purchase")
                 transaction.status = TransactionStatus.REFUNDED
             else:
-                # Conservative safety: ambiguous provider failures should not auto-refund immediately.
-                transaction.status = TransactionStatus.PENDING
+                # Strict production policy: avoid unresolved pending for customers.
+                transaction.status = TransactionStatus.FAILED
                 transaction.failure_reason = failure_msg
+                credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for ambiguous provider failure")
+                transaction.status = TransactionStatus.REFUNDED
         else:
             # Provider accepted but returned pending.
             # Run a short synchronous confirmation window to reduce
@@ -1083,11 +1113,16 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                     credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed data purchase")
                     transaction.status = TransactionStatus.REFUNDED
                 else:
-                    transaction.status = TransactionStatus.PENDING
+                    transaction.status = TransactionStatus.FAILED
                     transaction.failure_reason = failure_msg
+                    credit_wallet(db, wallet, Decimal(price), reference, "Auto refund after ambiguous confirmation failure")
+                    transaction.status = TransactionStatus.REFUNDED
             else:
-                transaction.status = TransactionStatus.PENDING
-                transaction.failure_reason = None
+                # Strict production policy: unresolved outcome after synchronous confirmation window.
+                transaction.status = TransactionStatus.FAILED
+                transaction.failure_reason = "Provider confirmation timeout"
+                credit_wallet(db, wallet, Decimal(price), reference, "Auto refund after provider confirmation timeout")
+                transaction.status = TransactionStatus.REFUNDED
 
         db.commit()
         return {
@@ -1161,36 +1196,27 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                         raise HTTPException(status_code=502, detail="Data provider rejected this purchase. Wallet refunded.")
                     transaction.status = TransactionStatus.PENDING
                     transaction.failure_reason = confirm_msg
+                    # Strict production policy: ambiguous failure after recheck => refund now.
+                    transaction.status = TransactionStatus.FAILED
+                    credit_wallet(db, wallet, Decimal(price), reference, "Auto refund after ambiguous recheck failure")
+                    transaction.status = TransactionStatus.REFUNDED
                     db.commit()
-                    return {
-                        "reference": reference,
-                        "status": transaction.status,
-                        "message": "Transaction submitted and is being confirmed. Please check history shortly.",
-                        "provider": "amigo",
-                        "network": plan.network,
-                        "plan_code": plan.plan_code,
-                        "failure_reason": str(transaction.failure_reason or "").strip(),
-                        "test_mode": settings.amigo_test_mode,
-                    }
+                    raise HTTPException(status_code=502, detail="Provider confirmation failed. Wallet refunded.")
             except HTTPException:
                 raise
             except Exception as recheck_exc:
                 logger.warning("Immediate data confirmation recheck failed for %s: %s", reference, recheck_exc)
 
-            # Still ambiguous after immediate recheck: keep pending (no refund).
-            transaction.status = TransactionStatus.PENDING
+            # Strict production policy: still ambiguous after immediate recheck => fail + refund.
+            transaction.status = TransactionStatus.FAILED
             transaction.failure_reason = _safe_reason(exc.message)
+            credit_wallet(db, wallet, Decimal(price), reference, "Auto refund after unresolved provider ambiguity")
+            transaction.status = TransactionStatus.REFUNDED
             db.commit()
-            return {
-                "reference": reference,
-                "status": transaction.status,
-                "message": "Transaction submitted and is being confirmed. Please check history shortly.",
-                "provider": "amigo",
-                "network": plan.network,
-                "plan_code": plan.plan_code,
-                "failure_reason": str(transaction.failure_reason or "").strip(),
-                "test_mode": settings.amigo_test_mode,
-            }
+            raise HTTPException(
+                status_code=502,
+                detail="Provider confirmation unavailable. Wallet refunded.",
+            )
 
         if _is_definitive_amigo_failure(error_message=exc.message, status_code=exc.status_code):
             transaction.status = TransactionStatus.FAILED
@@ -1203,19 +1229,15 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 detail="Data provider rejected this purchase. Wallet refunded.",
             )
 
-        transaction.status = TransactionStatus.PENDING
+        transaction.status = TransactionStatus.FAILED
         transaction.failure_reason = _safe_reason(exc.message)
+        credit_wallet(db, wallet, Decimal(price), reference, "Auto refund due to unresolved provider response")
+        transaction.status = TransactionStatus.REFUNDED
         db.commit()
-        return {
-            "reference": reference,
-            "status": transaction.status,
-            "message": "Transaction submitted and is being confirmed. Please check history shortly.",
-            "provider": "amigo",
-            "network": plan.network,
-            "plan_code": plan.plan_code,
-            "failure_reason": str(transaction.failure_reason or "").strip(),
-            "test_mode": settings.amigo_test_mode,
-        }
+        raise HTTPException(
+            status_code=502,
+            detail="Provider response was inconclusive. Wallet refunded.",
+        )
     except Exception as exc:
         duration_ms = round((time.time() - start) * 1000, 2)
         db.add(ApiLog(

@@ -14,7 +14,8 @@ from app.core.database import Base, engine, SessionLocal
 from app.core.logging import configure_logging
 from app.middlewares.rate_limit import limiter
 from app.models import User, UserRole
-from app.services.pending_reconcile import start_pending_reconcile_worker, stop_pending_reconcile_worker
+# Pending reconciliation worker intentionally disabled for data purchases.
+# We now enforce deterministic purchase outcomes at request time.
 
 
 settings = get_settings()
@@ -124,7 +125,6 @@ def ensure_tables():
         _ensure_user_phone_column()
         _ensure_user_security_pin_columns()
         _ensure_transaction_recipient_column()
-        start_pending_reconcile_worker()
         return
 
     # Optional local fallback for fresh environments.
@@ -139,12 +139,12 @@ def ensure_tables():
     _ensure_user_phone_column()
     _ensure_user_security_pin_columns()
     _ensure_transaction_recipient_column()
-    start_pending_reconcile_worker()
 
 
 @app.on_event("shutdown")
 def shutdown_workers():
-    stop_pending_reconcile_worker()
+    # no-op: pending reconcile worker disabled
+    return
 
 @app.get("/")
 def root():
