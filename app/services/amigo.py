@@ -230,23 +230,41 @@ class AmigoClient:
         }
 
     def _extract_error_message(self, response: httpx.Response) -> str:
+        def _pick_message(value):
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, list):
+                for item in value:
+                    picked = _pick_message(item)
+                    if picked:
+                        return picked
+                return None
+            if isinstance(value, dict):
+                for nested_key in (
+                    "message",
+                    "detail",
+                    "error",
+                    "errors",
+                    "remark",
+                    "status",
+                    "reason",
+                    "description",
+                ):
+                    if nested_key in value:
+                        picked = _pick_message(value.get(nested_key))
+                        if picked:
+                            return picked
+                return None
+            return None
+
         try:
             data = response.json()
         except ValueError:
             data = {}
-        if isinstance(data, dict):
-            for key in ("message", "detail", "error", "errors"):
-                value = data.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
-                if isinstance(value, list) and value:
-                    first = value[0]
-                    if isinstance(first, str) and first.strip():
-                        return first.strip()
-                    if isinstance(first, dict):
-                        msg = first.get("message") or first.get("detail")
-                        if isinstance(msg, str) and msg.strip():
-                            return msg.strip()
+        if isinstance(data, (dict, list)):
+            picked = _pick_message(data)
+            if picked:
+                return picked
         text = (response.text or "").strip()
         return text[:300] if text else f"HTTP {response.status_code}"
 

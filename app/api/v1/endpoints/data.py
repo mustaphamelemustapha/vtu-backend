@@ -111,6 +111,28 @@ def _safe_reason(value: str, limit: int = 255) -> str:
     return text[:limit] if text else "Unknown provider error"
 
 
+def _build_amigo_failure_reason(exc: AmigoApiError) -> str:
+    """
+    Convert provider exceptions into user/admin-friendly, supportable reasons.
+    """
+    message = _safe_reason(getattr(exc, "message", "") or "")
+    raw_text = str(getattr(exc, "raw", "") or "").strip()
+    status_code = getattr(exc, "status_code", None)
+
+    generic_markers = {"transaction failed", "failed", "error", "unknown provider error"}
+    if message.lower() in generic_markers and raw_text:
+        # Try to salvage a clearer reason from raw provider payload/text.
+        cleaned_raw = raw_text.replace("\n", " ").replace("\r", " ").strip()
+        if cleaned_raw:
+            message = _safe_reason(cleaned_raw)
+
+    if status_code:
+        # Prefix with provider HTTP status for faster admin diagnosis.
+        message = _safe_reason(f"Provider rejected request (HTTP {status_code}): {message}")
+
+    return message
+
+
 def _is_ambiguous_provider_error(exc: AmigoApiError) -> bool:
     """
     Returns True when provider outcome is uncertain and we must NOT auto-refund.
@@ -1148,6 +1170,14 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             reference=reference,
             success=0,
         ))
+        failure_reason = _build_amigo_failure_reason(exc)
+        logger.warning(
+            "Amigo purchase failed ref=%s status=%s reason=%s raw=%s",
+            reference,
+            getattr(exc, "status_code", None),
+            failure_reason,
+            (str(getattr(exc, "raw", "") or "")[:500] or "—"),
+        )
         if _is_ambiguous_provider_error(exc):
             # Critical protection: one immediate idempotent recheck before returning pending.
             # This closes the "delivered but pending" window for many ambiguous provider responses.
@@ -1209,7 +1239,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
 
             # Strict production policy: still ambiguous after immediate recheck => fail + refund.
             transaction.status = TransactionStatus.FAILED
-            transaction.failure_reason = _safe_reason(exc.message)
+            transaction.failure_reason = failure_reason
             credit_wallet(db, wallet, Decimal(price), reference, "Auto refund after unresolved provider ambiguity")
             transaction.status = TransactionStatus.REFUNDED
             db.commit()
@@ -1220,7 +1250,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
 
         if _is_definitive_amigo_failure(error_message=exc.message, status_code=exc.status_code):
             transaction.status = TransactionStatus.FAILED
-            transaction.failure_reason = _safe_reason(exc.message)
+            transaction.failure_reason = failure_reason
             credit_wallet(db, wallet, Decimal(price), reference, "Auto refund due to Amigo error")
             transaction.status = TransactionStatus.REFUNDED
             db.commit()
@@ -1230,7 +1260,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             )
 
         transaction.status = TransactionStatus.FAILED
-        transaction.failure_reason = _safe_reason(exc.message)
+        transaction.failure_reason = failure_reason
         credit_wallet(db, wallet, Decimal(price), reference, "Auto refund due to unresolved provider response")
         transaction.status = TransactionStatus.REFUNDED
         db.commit()
