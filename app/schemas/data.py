@@ -21,5 +21,5 @@ class BuyDataRequest(BaseModel):
     client_request_id: Optional[str] = Field(default=None, max_length=128)
     plan_code: str
     phone_number: str
-    ported_number: bool = False
+    ported_number: bool = True
     network: Optional[str] = None
