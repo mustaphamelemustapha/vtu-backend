@@ -318,6 +318,17 @@ class AmigoClient:
                 "message": raw_text[:300],
             }
 
+        # Provider sometimes returns 200 with unreadable wrapper text.
+        # Treat this as pending/accepted instead of throwing an error so
+        # upper layers do not auto-refund ambiguous outcomes.
+        if 200 <= int(response.status_code or 0) < 300:
+            return {
+                "success": None,
+                "status": "pending",
+                "message": "Awaiting provider confirmation",
+                "raw_text": raw_text[:500],
+            }
+
         raise AmigoApiError(
             "Amigo returned invalid JSON response.",
             status_code=response.status_code,
