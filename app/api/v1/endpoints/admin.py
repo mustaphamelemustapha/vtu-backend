@@ -1,7 +1,6 @@
 from datetime import date, datetime, time, timezone, timedelta
 from typing import Optional
 import json
-from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -283,15 +282,16 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
         if bool(settings.promo_mtn_1gb_enabled) and promo_limit > 0:
             promo_network = str(settings.promo_mtn_1gb_network or "mtn").strip().lower()
             promo_suffix = str(settings.promo_mtn_1gb_plan_code or "1001").strip().lower()
-            promo_price = Decimal(str(settings.promo_mtn_1gb_price or "199"))
             promo_users_used = int(
                 db.query(func.count(func.distinct(Transaction.user_id)))
                 .filter(
                     Transaction.tx_type == TransactionType.DATA,
                     Transaction.status == TransactionStatus.SUCCESS,
                     func.lower(Transaction.network) == promo_network,
-                    func.lower(Transaction.data_plan_code).like(f"%:{promo_suffix}"),
-                    Transaction.amount == promo_price,
+                    or_(
+                        func.lower(Transaction.data_plan_code) == promo_suffix,
+                        func.lower(Transaction.data_plan_code).like(f"%:{promo_suffix}"),
+                    ),
                 )
                 .scalar()
                 or 0

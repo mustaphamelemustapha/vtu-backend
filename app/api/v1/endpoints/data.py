@@ -5,7 +5,7 @@ import secrets
 import time
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.config import get_settings
@@ -130,15 +130,16 @@ def _is_mtn_1gb_promo_plan(plan: DataPlan) -> bool:
 def _count_mtn_1gb_promo_successes(db: Session) -> int:
     network = str(settings.promo_mtn_1gb_network or "mtn").strip().lower()
     suffix = str(settings.promo_mtn_1gb_plan_code or "1001").strip().lower()
-    promo_price = Decimal(str(settings.promo_mtn_1gb_price or "199"))
     count = (
         db.query(func.count(func.distinct(Transaction.user_id)))
         .filter(
             Transaction.tx_type == TransactionType.DATA,
             Transaction.status == TransactionStatus.SUCCESS,
             func.lower(Transaction.network) == network,
-            func.lower(Transaction.data_plan_code).like(f"%:{suffix}"),
-            Transaction.amount == promo_price,
+            or_(
+                func.lower(Transaction.data_plan_code) == suffix,
+                func.lower(Transaction.data_plan_code).like(f"%:{suffix}"),
+            ),
         )
         .scalar()
     )
