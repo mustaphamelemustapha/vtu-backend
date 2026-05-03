@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from decimal import Decimal
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 from app.models.transaction import TransactionStatus, TransactionType
 from app.models.user import UserRole
@@ -116,7 +116,7 @@ class ReconcileTransactionRequest(BaseModel):
 
 
 class ReconcileTransactionsBulkRequest(BaseModel):
-    references: list[str]
+    references: List[str]
     note: Optional[str] = None
 
 
