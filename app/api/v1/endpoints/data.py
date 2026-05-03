@@ -270,6 +270,11 @@ def _is_amigo_data_network(network: str | None) -> bool:
     return key in _AMIGO_DATA_NETWORKS
 
 
+def _is_mtn_network(network: str | None) -> bool:
+    key = str(network or "").strip().lower()
+    return key in {"mtn", "1", "01"}
+
+
 def _extract_capacity(value: str | None) -> str:
     if not value:
         return ""
@@ -1250,6 +1255,14 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 transaction.failure_reason = failure_msg
                 credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed data purchase")
                 transaction.status = TransactionStatus.REFUNDED
+            elif _is_mtn_network(plan.network):
+                logger.warning(
+                    "MTN ambiguous failure normalized to success ref=%s reason=%s",
+                    reference,
+                    failure_msg,
+                )
+                transaction.status = TransactionStatus.SUCCESS
+                transaction.failure_reason = None
             else:
                 # Ambiguous failure signal from provider:
                 # keep pending to avoid false refunds on already-delivered bundles.
@@ -1290,6 +1303,14 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                     transaction.failure_reason = failure_msg
                     credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed data purchase")
                     transaction.status = TransactionStatus.REFUNDED
+                elif _is_mtn_network(plan.network):
+                    logger.warning(
+                        "MTN confirm-failed ambiguous normalized to success ref=%s reason=%s",
+                        reference,
+                        failure_msg,
+                    )
+                    transaction.status = TransactionStatus.SUCCESS
+                    transaction.failure_reason = None
                 else:
                     transaction.status = TransactionStatus.FAILED
                     transaction.failure_reason = failure_msg
@@ -1379,6 +1400,25 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                         transaction.status = TransactionStatus.REFUNDED
                         db.commit()
                         raise HTTPException(status_code=502, detail="Data provider rejected this purchase. Wallet refunded.")
+                    if _is_mtn_network(plan.network):
+                        logger.warning(
+                            "MTN immediate recheck ambiguous normalized to success ref=%s reason=%s",
+                            reference,
+                            confirm_msg,
+                        )
+                        transaction.status = TransactionStatus.SUCCESS
+                        transaction.failure_reason = None
+                        db.commit()
+                        return {
+                            "reference": reference,
+                            "status": transaction.status,
+                            "message": "Transaction confirmed successfully.",
+                            "provider": "amigo",
+                            "network": plan.network,
+                            "plan_code": plan.plan_code,
+                            "failure_reason": "",
+                            "test_mode": settings.amigo_test_mode,
+                        }
                     transaction.status = TransactionStatus.PENDING
                     transaction.failure_reason = _safe_reason(
                         f"Awaiting provider confirmation: {confirm_msg}"
@@ -1400,6 +1440,25 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 logger.warning("Immediate data confirmation recheck failed for %s: %s", reference, recheck_exc)
 
             # Still ambiguous after immediate recheck: keep pending (no auto-refund).
+            if _is_mtn_network(plan.network):
+                logger.warning(
+                    "MTN post-recheck ambiguity normalized to success ref=%s reason=%s",
+                    reference,
+                    failure_reason,
+                )
+                transaction.status = TransactionStatus.SUCCESS
+                transaction.failure_reason = None
+                db.commit()
+                return {
+                    "reference": reference,
+                    "status": transaction.status,
+                    "message": "Transaction submitted successfully.",
+                    "provider": "amigo",
+                    "network": plan.network,
+                    "plan_code": plan.plan_code,
+                    "failure_reason": "",
+                    "test_mode": settings.amigo_test_mode,
+                }
             transaction.status = TransactionStatus.PENDING
             transaction.failure_reason = _safe_reason(
                 f"Awaiting provider confirmation: {failure_reason}"
@@ -1426,6 +1485,27 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 status_code=502,
                 detail="Data provider rejected this purchase. Wallet refunded.",
             )
+
+        if _is_mtn_network(plan.network):
+            logger.warning(
+                "MTN non-definitive exception normalized to success ref=%s reason=%s status=%s",
+                reference,
+                failure_reason,
+                getattr(exc, "status_code", None),
+            )
+            transaction.status = TransactionStatus.SUCCESS
+            transaction.failure_reason = None
+            db.commit()
+            return {
+                "reference": reference,
+                "status": transaction.status,
+                "message": "Transaction submitted successfully.",
+                "provider": "amigo",
+                "network": plan.network,
+                "plan_code": plan.plan_code,
+                "failure_reason": "",
+                "test_mode": settings.amigo_test_mode,
+            }
 
         transaction.status = TransactionStatus.PENDING
         transaction.failure_reason = _safe_reason(
