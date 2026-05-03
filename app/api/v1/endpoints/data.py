@@ -53,6 +53,7 @@ _DEFINITIVE_FAILURE_CODES = {
     "invalid_network",
     "invalid_phone",
     "coming_soon",
+    "transaction_failed",
 }
 _DEFINITIVE_FAILURE_HINTS = (
     "invalid token",
@@ -61,6 +62,7 @@ _DEFINITIVE_FAILURE_HINTS = (
     "invalid network",
     "invalid phone",
     "coming soon",
+    "transaction failed",
 )
 _VTPASS_DATA_NETWORKS = {"9mobile", "etisalat", "t2"}
 _AMIGO_DATA_NETWORKS = {"mtn", "glo", "airtel"}
@@ -103,6 +105,17 @@ _AIRTEL_VALIDITY_TARGETS = {
     "10GB": 30,
     "18GB": 30,
     "25GB": 30,
+}
+
+_AIRTEL_AMIGO_ALLOWED_CODES = {
+    "airtel:163",
+    "airtel:145",
+    "airtel:146",
+    "airtel:532",
+    "airtel:148",
+    "airtel:150",
+    "airtel:405",
+    "airtel:404",
 }
 
 _SIZE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(GB|MB)", re.IGNORECASE)
@@ -815,6 +828,25 @@ def _invalidate_plans_cache() -> None:
         set_cached(f"plans:{_PLAN_CACHE_VERSION}:{role}", None, ttl_seconds=1)
 
 
+def _enforce_airtel_amigo_catalog(db: Session) -> int:
+    """
+    Force Airtel plans to the Amigo allowlist only, deactivating legacy rows
+    from old providers.
+    """
+    touched = 0
+    rows = db.query(DataPlan).filter(func.lower(DataPlan.network) == "airtel").all()
+    for row in rows:
+        canonical_code = canonical_plan_code("airtel", str(row.plan_code or "").strip())
+        if canonical_code and row.plan_code != canonical_code:
+            row.plan_code = canonical_code
+            touched += 1
+        allowed = canonical_code in _AIRTEL_AMIGO_ALLOWED_CODES
+        if not allowed and row.is_active:
+            row.is_active = False
+            touched += 1
+    return touched
+
+
 def _refresh_provider_network_plans(db: Session, provider, network: str) -> tuple[int, set[str]]:
     if not hasattr(provider, "fetch_data_variations"):
         return 0, set()
@@ -932,6 +964,12 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
         except Exception as exc:
             logger.warning("Provider variations fetch failed for %s: %s", network, exc)
     if touched:
+        db.commit()
+        _invalidate_plans_cache()
+        plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+
+    airtel_touched = _enforce_airtel_amigo_catalog(db)
+    if airtel_touched:
         db.commit()
         _invalidate_plans_cache()
         plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
@@ -1440,6 +1478,7 @@ def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(
             except Exception as exc:
                 logger.warning("Provider variations fetch failed for %s: %s", network, exc)
                 continue
+    updated += _enforce_airtel_amigo_catalog(db)
     db.commit()
     _invalidate_plans_cache()
     return {"updated": updated}
