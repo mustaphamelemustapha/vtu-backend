@@ -41,6 +41,11 @@ _FAILURE_STATUS = {"failed", "fail", "error", "rejected", "declined", "cancelled
 _SUCCESS_HINTS = ("successfully", "delivered", "gifted", "completed")
 _FAILURE_HINTS = ("failed", "unsuccessful", "unable", "error", "rejected", "declined", "cancelled", "canceled")
 _PENDING_HINTS = ("pending", "processing", "queued", "in progress", "submitted")
+_PENDING_PROVIDER_HINTS = (
+    "already processing",
+    "check your wallet before trying again",
+    "please wait a moment",
+)
 _DEFINITIVE_FAILURE_CODES = {
     "invalid_token",
     "plan_not_found",
@@ -156,6 +161,9 @@ def _is_ambiguous_provider_error(exc: AmigoApiError) -> bool:
         "connection error",
         "connection aborted",
         "service unavailable",
+        "already processing",
+        "check your wallet before trying again",
+        "please wait a moment",
     )
     return any(hint in msg for hint in ambiguous_hints)
 
@@ -555,10 +563,20 @@ def _classify_provider_outcome(response: dict) -> tuple[TransactionStatus, str]:
         or bool(error_text)
         or _contains_any(message_text, _FAILURE_HINTS)
     )
-    pending_signal = status_text in _PENDING_STATUS or _contains_any(message_text, _PENDING_HINTS)
+    pending_signal = (
+        status_text in _PENDING_STATUS
+        or _contains_any(message_text, _PENDING_HINTS)
+        or _contains_any(message_text, _PENDING_PROVIDER_HINTS)
+        or _contains_any(error_text, _PENDING_PROVIDER_HINTS)
+    )
 
     if success_signal and not failure_signal:
         return TransactionStatus.SUCCESS, ""
+    # Provider may return error wrappers like "transaction_failed" while the
+    # message still says the request is being processed. Keep those as pending.
+    if pending_signal and failure_signal and not success_signal:
+        return TransactionStatus.PENDING, ""
+
     if failure_signal and not success_signal:
         reason = (
             response.get("message")
