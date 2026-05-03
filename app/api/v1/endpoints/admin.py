@@ -851,6 +851,12 @@ def _reconcile_single_reference(*, db: Session, admin_email: str, reference: str
 
     wallet_action = "none"
 
+    can_write_audit = True
+    try:
+        can_write_audit = bool(inspect(db.bind).has_table("admin_audit_logs"))
+    except Exception:
+        can_write_audit = False
+
     if tx:
         previous_status = _normalize_status_value(tx.status)
         tx.status = TransactionStatus.SUCCESS
@@ -882,19 +888,20 @@ def _reconcile_single_reference(*, db: Session, admin_email: str, reference: str
                 )
             wallet_action = "refund_reversal_debit"
 
-        audit_log = AdminAuditLog(
-            admin_email=admin_email,
-            action="reconcile_delivered",
-            target=reference,
-            details={
-                "source": source,
-                "previous_status": previous_status,
-                "new_status": TransactionStatus.SUCCESS.value,
-                "wallet_action": wallet_action,
-                "note": note,
-            },
-        )
-        db.add(audit_log)
+        if can_write_audit:
+            audit_log = AdminAuditLog(
+                admin_email=admin_email,
+                action="reconcile_delivered",
+                target=reference,
+                details={
+                    "source": source,
+                    "previous_status": previous_status,
+                    "new_status": TransactionStatus.SUCCESS.value,
+                    "wallet_action": wallet_action,
+                    "note": note,
+                },
+            )
+            db.add(audit_log)
         db.commit()
         return {
             "status": "ok",
@@ -935,19 +942,20 @@ def _reconcile_single_reference(*, db: Session, admin_email: str, reference: str
             )
         wallet_action = "refund_reversal_debit"
 
-    audit_log = AdminAuditLog(
-        admin_email=admin_email,
-        action="reconcile_delivered",
-        target=reference,
-        details={
-            "source": source,
-            "previous_status": previous_status,
-            "new_status": TransactionStatus.SUCCESS.value,
-            "wallet_action": wallet_action,
-            "note": note,
-        },
-    )
-    db.add(audit_log)
+    if can_write_audit:
+        audit_log = AdminAuditLog(
+            admin_email=admin_email,
+            action="reconcile_delivered",
+            target=reference,
+            details={
+                "source": source,
+                "previous_status": previous_status,
+                "new_status": TransactionStatus.SUCCESS.value,
+                "wallet_action": wallet_action,
+                "note": note,
+            },
+        )
+        db.add(audit_log)
     db.commit()
     return {
         "status": "ok",
