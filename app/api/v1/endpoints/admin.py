@@ -26,6 +26,7 @@ from app.schemas.admin import (
     AdminAuditLogsResponse,
     AdminReferralsResponse,
     ReconcileTransactionRequest,
+    ReconcileTransactionsBulkRequest,
 )
 from app.services.wallet import get_or_create_wallet, credit_wallet, debit_wallet
 from app.services.pricing import build_service_pricing_key, parse_pricing_key
@@ -822,11 +823,18 @@ def reconcile_transaction_delivered(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    reference = (payload.reference or "").strip()
+    return _reconcile_single_reference(
+        db=db,
+        admin_email=admin.email,
+        reference=(payload.reference or "").strip(),
+        note=(payload.note or "").strip() or "Admin marked delivered after customer confirmation.",
+    )
+
+
+def _reconcile_single_reference(*, db: Session, admin_email: str, reference: str, note: str):
+    reference = str(reference or "").strip()
     if not reference:
         raise HTTPException(status_code=400, detail="reference is required")
-
-    note = (payload.note or "").strip() or "Admin marked delivered after customer confirmation."
 
     tx = db.query(Transaction).filter(Transaction.reference == reference).first()
     service_tx = None
@@ -875,7 +883,7 @@ def reconcile_transaction_delivered(
             wallet_action = "refund_reversal_debit"
 
         audit_log = AdminAuditLog(
-            admin_email=admin.email,
+            admin_email=admin_email,
             action="reconcile_delivered",
             target=reference,
             details={
@@ -928,7 +936,7 @@ def reconcile_transaction_delivered(
         wallet_action = "refund_reversal_debit"
 
     audit_log = AdminAuditLog(
-        admin_email=admin.email,
+        admin_email=admin_email,
         action="reconcile_delivered",
         target=reference,
         details={
@@ -948,6 +956,56 @@ def reconcile_transaction_delivered(
         "previous_status": previous_status,
         "new_status": TransactionStatus.SUCCESS.value,
         "wallet_action": wallet_action,
+    }
+
+
+@router.post("/transactions/reconcile-delivered-bulk")
+def reconcile_transactions_delivered_bulk(
+    payload: ReconcileTransactionsBulkRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    refs: list[str] = []
+    seen = set()
+    for item in payload.references or []:
+        ref = str(item or "").strip()
+        if not ref or ref in seen:
+            continue
+        refs.append(ref)
+        seen.add(ref)
+
+    if not refs:
+        raise HTTPException(status_code=400, detail="references must contain at least one reference")
+    if len(refs) > 200:
+        raise HTTPException(status_code=400, detail="maximum 200 references per request")
+
+    note = (payload.note or "").strip() or "Bulk delivered reconciliation after customer confirmation."
+    results = []
+    ok = 0
+    failed = 0
+    for ref in refs:
+        try:
+            item_result = _reconcile_single_reference(
+                db=db,
+                admin_email=admin.email,
+                reference=ref,
+                note=note,
+            )
+            ok += 1
+            results.append({"reference": ref, "ok": True, "result": item_result})
+        except HTTPException as exc:
+            failed += 1
+            results.append({"reference": ref, "ok": False, "detail": exc.detail, "status_code": exc.status_code})
+        except Exception as exc:
+            failed += 1
+            results.append({"reference": ref, "ok": False, "detail": str(exc), "status_code": 500})
+
+    return {
+        "status": "ok",
+        "processed": len(refs),
+        "succeeded": ok,
+        "failed": failed,
+        "results": results,
     }
 
 

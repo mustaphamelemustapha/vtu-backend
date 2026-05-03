@@ -115,6 +115,11 @@ class ReconcileTransactionRequest(BaseModel):
     note: Optional[str] = None
 
 
+class ReconcileTransactionsBulkRequest(BaseModel):
+    references: list[str]
+    note: Optional[str] = None
+
+
 class ServiceToggleUpdate(BaseModel):
     is_active: bool
 
