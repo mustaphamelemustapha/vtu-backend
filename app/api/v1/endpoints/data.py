@@ -160,6 +160,28 @@ def _mtn_1gb_promo_snapshot(db: Session) -> dict[str, object]:
     }
 
 
+def _user_has_used_mtn_1gb_promo(db: Session, user_id: int) -> bool:
+    network = str(settings.promo_mtn_1gb_network or "mtn").strip().lower()
+    suffix = str(settings.promo_mtn_1gb_plan_code or "1001").strip().lower()
+    promo_price = Decimal(str(settings.promo_mtn_1gb_price or "199"))
+    row = (
+        db.query(Transaction.id)
+        .filter(
+            Transaction.user_id == int(user_id),
+            Transaction.tx_type == TransactionType.DATA,
+            Transaction.status == TransactionStatus.SUCCESS,
+            func.lower(Transaction.network) == network,
+            or_(
+                func.lower(Transaction.data_plan_code) == suffix,
+                func.lower(Transaction.data_plan_code).like(f"%:{suffix}"),
+            ),
+            Transaction.amount == promo_price,
+        )
+        .first()
+    )
+    return bool(row)
+
+
 def _safe_reason(value: str, limit: int = 255) -> str:
     text = str(value or "").strip()
     return text[:limit] if text else "Unknown provider error"
@@ -914,6 +936,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
         _invalidate_plans_cache()
         plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
     promo_snapshot = _mtn_1gb_promo_snapshot(db)
+    user_promo_used = _user_has_used_mtn_1gb_promo(db, user.id)
     priced = []
     for plan in plans:
         price = get_price_for_user(db, plan, user.role)
@@ -925,7 +948,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
         if _is_mtn_1gb_promo_plan(plan):
             promo_limit = int(promo_snapshot["limit"])
             promo_remaining = int(promo_snapshot["remaining"])
-            promo_active = bool(promo_snapshot["active"])
+            promo_active = bool(promo_snapshot["active"]) and not user_promo_used
             if promo_active:
                 promo_price = Decimal(str(promo_snapshot["price"]))
                 if promo_price < Decimal(str(price)):
@@ -983,7 +1006,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
         raise HTTPException(status_code=404, detail="Plan not found")
 
     price = get_price_for_user(db, plan, user.role)
-    if _is_mtn_1gb_promo_plan(plan):
+    if _is_mtn_1gb_promo_plan(plan) and not _user_has_used_mtn_1gb_promo(db, user.id):
         promo_snapshot = _mtn_1gb_promo_snapshot(db)
         if bool(promo_snapshot["active"]):
             promo_price = Decimal(str(promo_snapshot["price"]))
