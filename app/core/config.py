@@ -86,6 +86,11 @@ class Settings(BaseSettings):
     # provider failure signal, we settle it as success to prevent false-negative
     # customer experience for already-delivered data.
     pending_reconcile_auto_success_seconds: int = 120
+    promo_mtn_1gb_enabled: bool = True
+    promo_mtn_1gb_limit: int = 50
+    promo_mtn_1gb_price: Decimal = Decimal("199")
+    promo_mtn_1gb_network: str = "mtn"
+    promo_mtn_1gb_plan_code: str = "1001"
 
     # VTPass API (airtime, cable, electricity, exam)
     vtpass_base_url: AnyHttpUrl = "https://vtpass.com/api"

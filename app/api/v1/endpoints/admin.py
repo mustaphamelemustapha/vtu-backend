@@ -1,11 +1,13 @@
 from datetime import date, datetime, time, timezone, timedelta
 from typing import Optional
 import json
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, select, union_all, String, cast, inspect
 from app.core.database import get_db
+from app.core.config import get_settings
 from app.dependencies import require_admin
 from app.models import User, Wallet, WalletLedger, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, MarginType, ApiLog, DataPlan, TransactionDispute, DisputeStatus, AdminAuditLog, ServiceToggle, Referral
 from app.schemas.admin import (
@@ -31,6 +33,7 @@ from app.services.pricing import build_service_pricing_key, parse_pricing_key
 from app.api.v1.endpoints.data import _invalidate_plans_cache
 
 router = APIRouter()
+settings = get_settings()
 
 _SENSITIVE_META_KEYS = {
     "api_key",
@@ -183,6 +186,10 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
     service_profit_estimate = 0
     reports_open = 0
     reports_resolved = 0
+    promo_users_used = 0
+    promo_remaining = 0
+    promo_limit = max(int(settings.promo_mtn_1gb_limit or 0), 0)
+    promo_active = False
     period_starts = {}
     period_profit_estimates = {
         "daily": {"revenue": 0.0, "cost_estimate": 0.0, "profit_estimate": 0.0, "tx_count": 0},
@@ -273,6 +280,24 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
                 .scalar()
                 or 0
             )
+        if bool(settings.promo_mtn_1gb_enabled) and promo_limit > 0:
+            promo_network = str(settings.promo_mtn_1gb_network or "mtn").strip().lower()
+            promo_suffix = str(settings.promo_mtn_1gb_plan_code or "1001").strip().lower()
+            promo_price = Decimal(str(settings.promo_mtn_1gb_price or "199"))
+            promo_users_used = int(
+                db.query(func.count(func.distinct(Transaction.user_id)))
+                .filter(
+                    Transaction.tx_type == TransactionType.DATA,
+                    Transaction.status == TransactionStatus.SUCCESS,
+                    func.lower(Transaction.network) == promo_network,
+                    func.lower(Transaction.data_plan_code).like(f"%:{promo_suffix}"),
+                    Transaction.amount == promo_price,
+                )
+                .scalar()
+                or 0
+            )
+            promo_remaining = max(promo_limit - promo_users_used, 0)
+            promo_active = promo_remaining > 0
     except Exception:
         # Keep analytics endpoint resilient when the service table is not yet available.
         pass
@@ -301,6 +326,11 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
         "api_failed": api_failed,
         "reports_open": int(reports_open),
         "reports_resolved": int(reports_resolved),
+        "promo_mtn_1gb_enabled": bool(settings.promo_mtn_1gb_enabled),
+        "promo_mtn_1gb_limit": int(promo_limit),
+        "promo_mtn_1gb_users_used": int(promo_users_used),
+        "promo_mtn_1gb_remaining": int(promo_remaining),
+        "promo_mtn_1gb_active": bool(promo_active),
         "profit_period_estimates": period_profit_payload,
     }
 

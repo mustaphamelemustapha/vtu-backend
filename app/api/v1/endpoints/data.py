@@ -111,6 +111,54 @@ _AMIGO_PENDING_CONFIRM_ATTEMPTS = 6
 _AMIGO_PENDING_CONFIRM_DELAY_SECONDS = 1.4
 
 
+def _promo_plan_code_suffix(plan_code: str | None) -> str:
+    raw = str(plan_code or "").strip().lower()
+    if not raw:
+        return ""
+    return raw.split(":")[-1] if ":" in raw else raw
+
+
+def _is_mtn_1gb_promo_plan(plan: DataPlan) -> bool:
+    if not settings.promo_mtn_1gb_enabled:
+        return False
+    network = str(plan.network or "").strip().lower()
+    if network != str(settings.promo_mtn_1gb_network or "mtn").strip().lower():
+        return False
+    return _promo_plan_code_suffix(plan.plan_code) == str(settings.promo_mtn_1gb_plan_code or "1001").strip().lower()
+
+
+def _count_mtn_1gb_promo_successes(db: Session) -> int:
+    network = str(settings.promo_mtn_1gb_network or "mtn").strip().lower()
+    suffix = str(settings.promo_mtn_1gb_plan_code or "1001").strip().lower()
+    promo_price = Decimal(str(settings.promo_mtn_1gb_price or "199"))
+    count = (
+        db.query(func.count(func.distinct(Transaction.user_id)))
+        .filter(
+            Transaction.tx_type == TransactionType.DATA,
+            Transaction.status == TransactionStatus.SUCCESS,
+            func.lower(Transaction.network) == network,
+            func.lower(Transaction.data_plan_code).like(f"%:{suffix}"),
+            Transaction.amount == promo_price,
+        )
+        .scalar()
+    )
+    return int(count or 0)
+
+
+def _mtn_1gb_promo_snapshot(db: Session) -> dict[str, object]:
+    limit = max(int(settings.promo_mtn_1gb_limit or 0), 0)
+    if not settings.promo_mtn_1gb_enabled or limit <= 0:
+        return {"active": False, "remaining": 0, "limit": limit, "price": None}
+    consumed = _count_mtn_1gb_promo_successes(db)
+    remaining = max(limit - consumed, 0)
+    return {
+        "active": remaining > 0,
+        "remaining": remaining,
+        "limit": limit,
+        "price": Decimal(str(settings.promo_mtn_1gb_price or "199")),
+    }
+
+
 def _safe_reason(value: str, limit: int = 255) -> str:
     text = str(value or "").strip()
     return text[:limit] if text else "Unknown provider error"
@@ -864,9 +912,25 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
         db.commit()
         _invalidate_plans_cache()
         plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+    promo_snapshot = _mtn_1gb_promo_snapshot(db)
     priced = []
     for plan in plans:
         price = get_price_for_user(db, plan, user.role)
+        promo_active = False
+        promo_old_price = None
+        promo_label = None
+        promo_remaining = None
+        promo_limit = None
+        if _is_mtn_1gb_promo_plan(plan):
+            promo_limit = int(promo_snapshot["limit"])
+            promo_remaining = int(promo_snapshot["remaining"])
+            promo_active = bool(promo_snapshot["active"])
+            if promo_active:
+                promo_price = Decimal(str(promo_snapshot["price"]))
+                if promo_price < Decimal(str(price)):
+                    promo_old_price = Decimal(str(price))
+                    price = promo_price
+                    promo_label = "First 50 promo"
         priced.append(
             DataPlanOut(
                 id=plan.id,
@@ -877,6 +941,11 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                 validity=plan.validity,
                 price=price,
                 base_price=plan.base_price,
+                promo_active=promo_active,
+                promo_old_price=promo_old_price,
+                promo_label=promo_label,
+                promo_remaining=promo_remaining,
+                promo_limit=promo_limit,
             )
         )
     curated = _curate_sharp_plans(priced)
@@ -913,6 +982,12 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
         raise HTTPException(status_code=404, detail="Plan not found")
 
     price = get_price_for_user(db, plan, user.role)
+    if _is_mtn_1gb_promo_plan(plan):
+        promo_snapshot = _mtn_1gb_promo_snapshot(db)
+        if bool(promo_snapshot["active"]):
+            promo_price = Decimal(str(promo_snapshot["price"]))
+            if promo_price < Decimal(str(price)):
+                price = promo_price
     wallet = get_or_create_wallet(db, user.id)
     enforce_purchase_limits(db, user_id=user.id, amount=Decimal(price), tx_type=TransactionType.DATA.value)
     if Decimal(wallet.balance) < Decimal(price):
