@@ -357,456 +357,6 @@ def _parse_size_gb(value: str | None) -> float | None:
     return amount
 
 
-def _parse_validity_days(value: str | None) -> int | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    match = _VALIDITY_RE.search(text)
-    if not match:
-        return None
-    amount = int(match.group(1))
-    unit = match.group(2).lower()
-    if unit.startswith("month"):
-        return amount * 30
-    if unit.startswith("week"):
-        return amount * 7
-    return amount
-
-
-def _plan_price_value(plan: DataPlanOut) -> Decimal:
-    try:
-        return Decimal(str(plan.price or 0))
-    except Exception:
-        return Decimal("0")
-
-
-def _closest_target_size(size_gb: float | None) -> float | None:
-    if size_gb is None:
-        return None
-    best = None
-    best_delta = None
-    for target in _CURATED_SIZE_TARGETS_GB:
-        delta = abs(size_gb - target)
-        if best is None or delta < best_delta:
-            best = target
-            best_delta = delta
-    if best is None:
-        return None
-    # Keep only reasonably close buckets to avoid weird mismatches.
-    allowed = max(0.12, best * 0.28)
-    if float(best_delta or 0.0) > allowed:
-        return None
-    return best
-
-
-def _plan_quality_score(plan: DataPlanOut) -> int:
-    score = 0
-    combined = " ".join(
-        [
-            str(plan.plan_name or "").lower(),
-            str(plan.data_size or "").lower(),
-            str(plan.validity or "").lower(),
-        ]
-    )
-    size_gb = _parse_size_gb(plan.data_size or plan.plan_name)
-    validity_days = _parse_validity_days(plan.validity or plan.plan_name)
-    target = _closest_target_size(size_gb)
-
-    if target is not None:
-        score += 5
-    elif size_gb is not None:
-        score += 2
-
-    if validity_days is not None:
-        if 25 <= validity_days <= 35:
-            score += 4
-        elif 6 <= validity_days <= 10:
-            score += 1
-        elif validity_days < 4:
-            score -= 2
-
-    if size_gb is not None and 0.15 <= size_gb <= 25:
-        score += 1
-    if size_gb is not None and size_gb > 40:
-        score -= 2
-
-    if any(keyword in combined for keyword in _CURATED_FILTER_KEYWORDS):
-        score -= 5
-
-    return score
-
-
-def _is_airtel_30_day_bundle(plan: DataPlanOut) -> bool:
-    if str(plan.network or "").strip().lower() != "airtel":
-        return True
-    capacity = _extract_capacity(f"{plan.data_size or ''} {plan.plan_name or ''}")
-    if capacity not in _AIRTEL_BUNDLE_ORDER:
-        return False
-    validity_days = _parse_validity_days(str(plan.validity or "") or str(plan.plan_name or ""))
-    return validity_days == _AIRTEL_VALIDITY_TARGETS.get(capacity)
-
-
-def _is_noisy_plan(plan: DataPlanOut) -> bool:
-    combined = " ".join(
-        [
-            str(plan.plan_name or "").lower(),
-            str(plan.data_size or "").lower(),
-            str(plan.validity or "").lower(),
-        ]
-    )
-    if any(keyword in combined for keyword in _CURATED_FILTER_KEYWORDS):
-        return True
-    return False
-
-
-def _curate_sharp_plans(priced: list[DataPlanOut]) -> list[DataPlanOut]:
-    """
-    Returns all active plans, sorted by network and then by price/size.
-    No longer drops 'noisy' plans or limits results, as the Admin's 
-    is_active flag is now the absolute source of truth.
-    """
-    if not priced:
-        return []
-
-    # Sort primarily by network, then price, then extracted size
-    return sorted(
-        priced,
-        key=lambda p: (
-            str(p.network or "").lower(),
-            _plan_price_value(p),
-            _parse_size_gb(p.data_size or p.plan_name) or 0.0,
-            str(p.plan_name or "")
-        )
-    )
-
-
-def _extract_variation_code(variation: dict) -> str:
-    # Prefer explicit provider plan-code fields before generic `id`.
-    # ClubKonnect frequently sends both `id` and `DataPlan`; `DataPlan` is the
-    # one accepted by purchase endpoints.
-    preferred_keys = (
-        "DataPlan",
-        "dataplan",
-        "DataPlanID",
-        "dataplanid",
-        "plan_id",
-        "planid",
-        "PLANID",
-        "data_plan",
-        "DATA_PLAN",
-        "databundle_id",
-        "variation_code",
-        "code",
-        "variation_id",
-        "id",
-    )
-    for key in preferred_keys:
-        value = str(variation.get(key) or "").strip()
-        if value:
-            return value
-    return ""
-
-
-def _provider_variation_to_item(network: str, variation: dict) -> dict | None:
-    code = _extract_variation_code(variation)
-    if not code:
-        return None
-    name = str(
-        variation.get("name")
-        or variation.get("Name")
-        or variation.get("variation_name")
-        or variation.get("variation")
-        or variation.get("service")
-        or variation.get("PRODUCT_NAME")
-        or variation.get("plan_name")
-        or variation.get("PLANNAME")
-        or variation.get("plan")
-        or variation.get("DataType")
-        or ""
-    ).strip()
-    price_raw = (
-        variation.get("variation_amount")
-        or variation.get("variation_price")
-        or variation.get("amount")
-        or variation.get("price")
-        or variation.get("Amount")
-        or variation.get("PRODUCT_AMOUNT")
-        or variation.get("plan_amount")
-        or variation.get("userprice")
-        or variation.get("USER_PRICE")
-        or variation.get("cost")
-        or variation.get("Cost")
-        or variation.get("amountcharged")
-        or variation.get("AmountCharged")
-    )
-    if price_raw in (None, ""):
-        return None
-    try:
-        price = Decimal(str(price_raw))
-    except Exception:
-        return None
-    size = (
-        str(
-            variation.get("data")
-            or variation.get("data_size")
-            or variation.get("bundle")
-            or variation.get("size")
-            or variation.get("plan_size")
-            or variation.get("bundle_size")
-            or variation.get("Data")
-            or variation.get("datavalue")
-            or variation.get("DataValue")
-            or ""
-        ).strip()
-        or str(variation.get("DataLimit") or variation.get("datalimit") or variation.get("datacapacity") or "").strip()
-        or _extract_capacity(name)
-    )
-    validity = (
-        str(
-            variation.get("validity")
-            or variation.get("duration")
-            or variation.get("Validity")
-            or variation.get("validity_days")
-            or variation.get("days")
-            or variation.get("durationdays")
-            or ""
-        ).strip()
-        or _extract_validity(name)
-    )
-    if validity and validity.isdigit():
-        validity = f"{validity}d"
-    if not validity:
-        validity = "30d"
-    plan_name = _clean_plan_label(name or f"{network.upper()} {size or code}")
-    return {
-        "network": network,
-        "plan_code": code,
-        "plan_name": plan_name,
-        "data_size": size or plan_name,
-        "validity": validity,
-        "price": price,
-        "_source_name": name,
-    }
-
-
-def _retain_airtel_bundle(item: dict) -> bool:
-    capacity = _extract_capacity(f"{item.get('data_size') or ''} {item.get('plan_name') or ''}")
-    if capacity not in _AIRTEL_BUNDLE_ORDER:
-        return False
-    validity_days = _parse_validity_days(str(item.get("validity") or "") or str(item.get("_source_name") or ""))
-    return validity_days == _AIRTEL_VALIDITY_TARGETS.get(capacity)
-
-
-def _airtel_bundle_preference(item: dict) -> tuple[int, int, int, Decimal, str]:
-    capacity = _extract_capacity(f"{item.get('data_size') or ''} {item.get('plan_name') or ''}")
-    order = _AIRTEL_BUNDLE_ORDER.get(capacity, 999)
-    target_days = _AIRTEL_VALIDITY_TARGETS.get(capacity, 30)
-    validity_days = _parse_validity_days(
-        str(item.get("validity") or "") or str(item.get("_source_name") or "")
-    )
-    if validity_days is None:
-        validity_days = 999
-    validity_delta = abs(validity_days - target_days)
-    price = Decimal(str(item.get("price", 0)))
-    code = str(item.get("plan_code") or "")
-    source_text = " ".join(
-        [
-            str(item.get("_source_name") or ""),
-            str(item.get("plan_name") or ""),
-            str(item.get("data_size") or ""),
-        ]
-    ).lower()
-    direct_rank = 0 if "direct data" in source_text else 1
-    return order, validity_delta, direct_rank, price, code
-
-def _plan_display_sort_key(plan: DataPlanOut) -> tuple[int, Decimal, float, str]:
-    network = str(plan.network or "").strip().lower()
-    if network == "airtel":
-        capacity = _extract_capacity(f"{plan.data_size or ''} {plan.plan_name or ''}")
-        order = _AIRTEL_BUNDLE_ORDER.get(capacity, 999)
-        return order, _plan_price_value(plan), _parse_size_gb(plan.data_size or plan.plan_name) or 0.0, str(plan.plan_name or "")
-    return 999, _plan_price_value(plan), _parse_size_gb(plan.data_size or plan.plan_name) or 0.0, str(plan.plan_name or "")
-
-
-def _normalize_provider_text(value) -> str:
-    return str(value or "").strip().lower()
-
-
-def _provider_bool(value) -> bool | None:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        if value == 1:
-            return True
-        if value == 0:
-            return False
-        return None
-    raw = _normalize_provider_text(value)
-    if raw in {"true", "1", "yes", "ok", "success", "successful", "delivered"}:
-        return True
-    if raw in {"false", "0", "no", "failed", "fail", "error", "unsuccessful"}:
-        return False
-    return None
-
-
-def _bills_pending_status(meta: dict | None) -> str:
-    payload = meta or {}
-    for provider_key in ("vtpass", "clubkonnect"):
-        status = str((payload.get(provider_key) or {}).get("status") or "").strip().lower()
-        if status:
-            return status
-    return ""
-
-
-def _contains_any(text: str, hints: tuple[str, ...]) -> bool:
-    return any(hint in text for hint in hints)
-
-
-def _classify_provider_outcome(response: dict) -> tuple[TransactionStatus, str]:
-    status_text = _normalize_provider_text(
-        response.get("status") or response.get("delivery_status") or response.get("state")
-    )
-    message_text = _normalize_provider_text(response.get("message") or response.get("detail") or "")
-    error_text = _normalize_provider_text(response.get("error") or response.get("errors") or "")
-    success_flag = _provider_bool(response.get("success"))
-
-    success_signal = (
-        success_flag is True
-        or status_text in _SUCCESS_STATUS
-        or _contains_any(message_text, _SUCCESS_HINTS)
-    )
-    failure_signal = (
-        success_flag is False
-        or status_text in _FAILURE_STATUS
-        or bool(error_text)
-        or _contains_any(message_text, _FAILURE_HINTS)
-    )
-    pending_signal = (
-        status_text in _PENDING_STATUS
-        or _contains_any(message_text, _PENDING_HINTS)
-        or _contains_any(message_text, _PENDING_PROVIDER_HINTS)
-        or _contains_any(error_text, _PENDING_PROVIDER_HINTS)
-    )
-
-    if success_signal and not failure_signal:
-        return TransactionStatus.SUCCESS, ""
-    # Provider may return error wrappers like "transaction_failed" while the
-    # message still says the request is being processed. Keep those as pending.
-    if pending_signal and failure_signal and not success_signal:
-        return TransactionStatus.PENDING, ""
-
-    if failure_signal and not success_signal:
-        reason = (
-            response.get("message")
-            or response.get("detail")
-            or response.get("error")
-            or response.get("errors")
-            or "Data provider rejected purchase"
-        )
-        return TransactionStatus.FAILED, _safe_reason(str(reason))
-    if pending_signal or (success_signal and failure_signal):
-        return TransactionStatus.PENDING, ""
-
-    # Amigo can acknowledge accepted orders without a final delivery keyword,
-    # while still returning a usable provider reference/order id. In production,
-    # those transactions are typically delivered shortly after acceptance.
-    # We treat this as success to avoid false-pending receipts for users.
-    provider_refs = (
-        response.get("reference"),
-        response.get("transaction_reference"),
-        response.get("transaction_id"),
-        response.get("orderid"),
-        response.get("order_id"),
-    )
-    status_code_text = _normalize_provider_text(
-        response.get("statuscode")
-        or response.get("status_code")
-        or response.get("StatusCode")
-    )
-    has_reference = any(str(ref or "").strip() for ref in provider_refs)
-    accepted_code = status_code_text in {"100", "200", "201", "202"}
-    if (has_reference or accepted_code) and not failure_signal:
-        return TransactionStatus.SUCCESS, ""
-
-    return TransactionStatus.PENDING, ""
-
-
-def _classify_amigo_recheck(response: dict) -> TransactionStatus:
-    status, _ = _classify_provider_outcome(response)
-    return status
-
-
-def _is_definitive_amigo_failure(response: dict | None = None, error_message: str | None = None, status_code: int | None = None) -> bool:
-    """Return True only for failures that are safely non-delivery (refund-safe)."""
-    payload = response or {}
-    error_code = _normalize_provider_text(payload.get("error") or payload.get("code") or "")
-    message = _normalize_provider_text(error_message or payload.get("message") or payload.get("detail") or "")
-
-    if error_code in _DEFINITIVE_FAILURE_CODES:
-        return True
-    if _contains_any(message, _DEFINITIVE_FAILURE_HINTS):
-        return True
-    if status_code is not None and int(status_code) in {401, 403, 404, 422}:
-        return True
-    return False
-
-
-def _confirm_pending_amigo_purchase(
-    *,
-    client: AmigoClient,
-    network_id: int,
-    phone_number: str,
-    plan_code: str,
-    idempotency_key: str,
-    ported_number: bool,
-) -> tuple[TransactionStatus, dict | None, str | None]:
-    """
-    Best-effort synchronous confirmation for initially pending responses.
-    Returns (final_status_guess, last_response, last_message).
-    """
-    last_response: dict | None = None
-    last_message: str | None = None
-
-    for _ in range(_AMIGO_PENDING_CONFIRM_ATTEMPTS):
-        time.sleep(_AMIGO_PENDING_CONFIRM_DELAY_SECONDS)
-        try:
-            response = client.purchase_data(
-                {
-                    "network": network_id,
-                    "mobile_number": phone_number,
-                    "plan": normalize_plan_code(plan_code),
-                    "Ported_number": ported_number,
-                },
-                idempotency_key=idempotency_key,
-            )
-            last_response = response
-            outcome_status, outcome_reason = _classify_provider_outcome(response)
-            last_message = outcome_reason or str(response.get("message") or "").strip()
-
-            if outcome_status == TransactionStatus.SUCCESS:
-                return TransactionStatus.SUCCESS, response, last_message
-            if outcome_status == TransactionStatus.FAILED:
-                if _is_definitive_amigo_failure(response=response, error_message=last_message):
-                    return TransactionStatus.FAILED, response, last_message
-                # Ambiguous failure signal: keep waiting for a clear outcome.
-                continue
-            # Still pending: keep checking within window.
-        except AmigoApiError as exc:
-            last_message = str(exc.message or "").strip()
-            if _is_definitive_amigo_failure(error_message=last_message, status_code=exc.status_code):
-                return TransactionStatus.FAILED, last_response, last_message
-            continue
-        except Exception:
-            continue
-
-    return TransactionStatus.PENDING, last_response, last_message
-
-
-def _is_smeplug_network(network: str | None) -> bool:
-    key = str(network or "").strip().lower()
-    return key in _SMEPLUG_DATA_NETWORKS
-
-
 def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
     network = str(item.get("network") or "").strip().lower()
     if not network:
@@ -820,26 +370,9 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
     if not canonical_code:
         return False
 
-    _, provider_code = split_plan_code(canonical_code)
-    plan = (
-        db.query(DataPlan)
-        .filter(DataPlan.plan_code == canonical_code)
-        .first()
-    )
-    if not plan and provider_code:
-        # Migrate legacy records that used plain numeric codes.
-        plan = (
-            db.query(DataPlan)
-            .filter(DataPlan.network == network, DataPlan.plan_code == provider_code)
-            .first()
-        )
-        if plan:
-            plan.plan_code = canonical_code
-
-    clean_plan_name = (
-        _clean_plan_label(str(item.get("plan_name") or item.get("name") or "").strip())[:255]
-        or f"{network.upper()} {provider_code}"
-    )
+    plan = db.query(DataPlan).filter(DataPlan.plan_code == canonical_code).first()
+    
+    clean_plan_name = _clean_plan_label(str(item.get("plan_name") or item.get("name") or "").strip())[:255]
     clean_data_size = str(item.get("data_size") or item.get("size") or "").strip()[:255] or "—"
     clean_validity = str(item.get("validity") or "").strip()[:64]
     clean_provider = str(item.get("provider") or "")[:64]
@@ -861,27 +394,18 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
         return True
 
     plan.network = network
-    plan.plan_name = (
-        _clean_plan_label(str(item.get("plan_name") or item.get("name") or plan.plan_name).strip())[:255]
-        or str(plan.plan_name or "")[:255]
-    )
-    plan.data_size = (str(item.get("data_size") or item.get("size") or plan.data_size).strip()[:255] or str(plan.data_size or "")[:255])
-    plan.validity = (str(item.get("validity") or plan.validity).strip()[:64] or str(plan.validity or "")[:64])
+    plan.plan_name = clean_plan_name or plan.plan_name
+    plan.data_size = clean_data_size or plan.data_size
+    plan.validity = clean_validity or plan.validity
     plan.base_price = Decimal(str(item.get("price") or item.get("cost_price") or plan.base_price))
-    plan.provider = str(item.get("provider") or plan.provider or "")[:64]
-    plan.provider_plan_id = str(item.get("provider_plan_id") or plan.provider_plan_id or "")[:64]
-    # Note: We NO LONGER force is_active=True for existing plans.
-    # This preserves manual Admin toggles during provider syncs.
-    # NOTE: display_price is intentionally NOT overwritten here.
-    # Admin-set price overrides are preserved across provider syncs.
+    plan.provider = clean_provider or plan.provider
+    plan.provider_plan_id = clean_provider_plan_id or plan.provider_plan_id
     return True
-
 
 
 def _invalidate_plans_cache() -> None:
     for role in (UserRole.USER.value, UserRole.RESELLER.value, UserRole.ADMIN.value):
         pass
-        # set_cached(f"plans:{_PLAN_CACHE_VERSION}:{role}", None, ttl_seconds=1)
 
 
 def _refresh_provider_network_plans(db: Session, provider, network: str) -> tuple[int, set[str]]:
@@ -921,52 +445,7 @@ def _refresh_provider_network_plans(db: Session, provider, network: str) -> tupl
     return touched, active_codes
 
 
-def _normalize_match_token(value: str | None) -> str:
-    return re.sub(r"\s+", "", str(value or "").strip().lower())
-
-
-def _pick_replacement_plan(
-    db: Session,
-    original: DataPlan,
-    candidate_codes: set[str] | None = None,
-) -> DataPlan | None:
-    query = db.query(DataPlan).filter(
-        func.lower(DataPlan.network) == str(original.network or "").strip().lower(),
-        DataPlan.is_active == True,
-    )
-    candidates = query.all()
-    if candidate_codes:
-        candidates = [row for row in candidates if str(row.plan_code or "").strip() in candidate_codes]
-    if not candidates:
-        return None
-
-    wanted_size = _normalize_match_token(original.data_size)
-    wanted_validity = _normalize_match_token(original.validity)
-    wanted_price = Decimal(str(original.base_price or 0))
-
-    best = None
-    best_score = None
-    for row in candidates:
-        score = 0
-        if _normalize_match_token(row.data_size) == wanted_size and wanted_size:
-            score += 6
-        if _normalize_match_token(row.validity) == wanted_validity and wanted_validity:
-            score += 3
-        price_delta = abs(Decimal(str(row.base_price or 0)) - wanted_price)
-        if price_delta <= Decimal("1"):
-            score += 2
-        elif price_delta <= Decimal("5"):
-            score += 1
-
-        candidate_key = (score, -float(price_delta), -int(row.id or 0))
-        if best is None or candidate_key > best_score:
-            best = row
-            best_score = candidate_key
-    return best
-
-
 @router.get("/plans", response_model=list[DataPlanOut])
-
 def list_data_plans(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     # cache_key = f"plans:{_PLAN_CACHE_VERSION}:{user.role.value}"
     # cached = get_cached(cache_key)
@@ -1097,10 +576,8 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                 provider_plan_id=plan.provider_plan_id,
             )
         )
-    curated = _curate_sharp_plans(priced)
-    # Keep plans warm longer to reduce repeated DB/provider work on frequent page refreshes.
-    # set_cached(cache_key, curated, ttl_seconds=120)
-    return curated
+    priced.sort(key=lambda p: (str(p.network or "").lower(), p.price or 0, _parse_size_gb(p.data_size or p.plan_name) or 0))
+    return priced
 
 
 @router.post("/purchase")
@@ -1123,14 +600,10 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
         if len(suffix_matches) == 1:
             plan = suffix_matches[0]
         elif len(suffix_matches) > 1:
-            raise HTTPException(
-                status_code=400,
-                detail="Plan code is ambiguous across multiple networks. Refresh plans and retry.",
-            )
+            raise HTTPException(status_code=400, detail="Plan code is ambiguous. Refresh plans and retry.")
+    
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
-    if (plan.network or "").lower() == "airtel" and str(plan.provider or "").strip().lower() != "smeplug":
-        raise HTTPException(status_code=400, detail="Airtel plans are served only via SMEPlug. Refresh plans and retry.")
 
     price = get_price_for_user(db, plan, user.role)
     if _is_mtn_1gb_promo_plan(plan) and not _user_has_used_mtn_1gb_promo(db, user.id):
@@ -1139,24 +612,13 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             promo_price = Decimal(str(promo_snapshot["price"]))
             if promo_price < Decimal(str(price)):
                 price = promo_price
+
     wallet = get_or_create_wallet(db, user.id)
     enforce_purchase_limits(db, user_id=user.id, amount=Decimal(price), tx_type=TransactionType.DATA.value)
     if Decimal(wallet.balance) < Decimal(price):
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
-    reference = _client_request_reference("DATA", user.id, getattr(payload, "client_request_id", None)) or f"DATA_{secrets.token_hex(8)}"
-    existing = db.query(Transaction).filter(Transaction.user_id == user.id, Transaction.reference == reference).first()
-    if existing:
-        return {
-            "reference": existing.reference,
-            "status": existing.status,
-            "message": existing.failure_reason or "",
-            "provider": "axisvtu",
-            "network": existing.network,
-            "plan_code": existing.data_plan_code,
-            "failure_reason": existing.failure_reason or "",
-            "test_mode": False,
-        }
+    reference = f"DATA_{secrets.token_hex(8)}"
     transaction = Transaction(
         user_id=user.id,
         reference=reference,
@@ -1171,634 +633,127 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
     db.commit()
     db.refresh(transaction)
 
-    debit_wallet(
-        db,
-        wallet,
-        Decimal(price),
-        reference,
-        f"Data purchase to {str(payload.phone_number or '').strip()}",
-    )
+    debit_wallet(db, wallet, Decimal(price), reference, f"Data purchase to {payload.phone_number}")
 
     network_key = str(plan.network or "").strip().lower()
     
-    # SMEPlug Integration for Airtel
-    if _is_smeplug_network(network_key):
+    # --- STRICT PROVIDER PARTITIONING ---
+    
+    # 1. Airtel -> SMEPlug
+    if network_key == "airtel":
         smeplug = SMEPlugProvider()
         start = time.time()
         try:
-            # Prefer plan.provider_plan_id if available, else extract from plan_code
-            _, raw_code = split_plan_code(plan.plan_code)
-            provider_plan_id = plan.provider_plan_id or raw_code
+            _, suffix = split_plan_code(plan.plan_code)
+            provider_plan_id = plan.provider_plan_id or suffix
+            result = smeplug.purchase_airtel_data(phone=str(payload.phone_number).strip(), plan_id=provider_plan_id, client_request_id=reference)
             
-            result = smeplug.purchase_airtel_data(
-                phone=str(payload.phone_number).strip(),
-                plan_id=provider_plan_id,
-                client_request_id=reference
-            )
-            
-            duration_ms = round((time.time() - start) * 1000, 2)
-            db.add(ApiLog(
-                user_id=user.id,
-                service="smeplug",
-                endpoint="/data/purchase",
-                status_code=int(result.get("http_status") or 200),
-                duration_ms=duration_ms,
-                reference=reference,
-                success=1 if result.get("status") != "failed" else 0,
-            ))
+            db.add(ApiLog(user_id=user.id, service="smeplug", endpoint="/data/purchase", status_code=200, duration_ms=round((time.time() - start) * 1000, 2), reference=reference, success=1 if result.get("status") == "success" else 0))
             
             transaction.provider = "smeplug"
-            transaction.provider_plan_id = provider_plan_id
             transaction.external_reference = result.get("provider_reference")
-
-            if result.get("status") == "failed":
-                transaction.status = TransactionStatus.FAILED
-                transaction.failure_reason = result.get("error") or "Airtel service is temporarily unavailable"
-                credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed Airtel data purchase")
-                transaction.status = TransactionStatus.REFUNDED
-            elif result.get("status") == "success":
+            if result.get("status") == "success":
                 transaction.status = TransactionStatus.SUCCESS
-                transaction.failure_reason = None
-            else:
-                transaction.status = TransactionStatus.PENDING
-                transaction.failure_reason = None
-
-            # Requery only when SMEPlug did not already finalize the transaction.
-            if transaction.status == TransactionStatus.PENDING:
-                query_reference = transaction.external_reference or reference
-                query_result = smeplug.query_transaction(query_reference)
-                transaction.external_reference = (
-                    query_result.get("provider_reference")
-                    or transaction.external_reference
-                    or None
-                )
-                if query_result.get("status") == "success":
-                    transaction.status = TransactionStatus.SUCCESS
-                    transaction.failure_reason = None
-                elif query_result.get("status") == "failed":
-                    if transaction.status != TransactionStatus.REFUNDED:
-                        transaction.status = TransactionStatus.FAILED
-                        transaction.failure_reason = query_result.get("error") or result.get("error") or "Provider reported failure"
-                        credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed Airtel data purchase")
-                        transaction.status = TransactionStatus.REFUNDED
-                else:
-                    # Keep pending with actionable message for later webhook/reconcile.
-                    transaction.failure_reason = (
-                        query_result.get("error")
-                        or result.get("error")
-                        or "Awaiting provider confirmation"
-                    )
-
+            elif result.get("status") == "failed":
+                transaction.status = TransactionStatus.FAILED
+                credit_wallet(db, wallet, Decimal(price), reference, f"Refund: {result.get('error') or 'Airtel purchase failed'}")
+                transaction.status = TransactionStatus.REFUNDED
             db.commit()
-            return {
-                "reference": reference,
-                "status": transaction.status,
-                "message": (
-                    "Transaction successful"
-                    if transaction.status == TransactionStatus.SUCCESS
-                    else (transaction.failure_reason or "Transaction pending confirmation")
-                ),
-                "provider": "smeplug",
-                "network": plan.network,
-                "plan_code": plan.plan_code,
-                "failure_reason": transaction.failure_reason or "",
-                "test_mode": False,
-            }
+            return {"reference": reference, "status": transaction.status, "message": result.get("error") or "Processed", "provider": "smeplug"}
         except Exception as exc:
-            logger.error("SMEPlug purchase exception: %s", exc)
             transaction.status = TransactionStatus.PENDING
-            transaction.failure_reason = "Transaction pending confirmation"
             db.commit()
-            return {
-                "reference": reference,
-                "status": transaction.status,
-                "message": "Transaction pending confirmation",
-                "provider": "smeplug",
-                "network": plan.network,
-                "plan_code": plan.plan_code,
-                "failure_reason": "",
-                "test_mode": False,
-            }
+            return {"reference": reference, "status": "pending", "message": "Pending confirmation"}
 
-    use_bills_provider = not _is_amigo_data_network(network_key)
-
-    if use_bills_provider:
-        provider = get_bills_provider()
-        if not hasattr(provider, "purchase_data"):
-            transaction.status = TransactionStatus.FAILED
-            transaction.failure_reason = "No non-Amigo data provider configured for this network."
-            credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for unsupported network provider")
-            transaction.status = TransactionStatus.REFUNDED
-            db.commit()
-            raise HTTPException(status_code=502, detail="No data provider configured for this network. Wallet refunded.")
-
+    # 2. MTN & Glo -> Amigo
+    elif network_key in {"mtn", "glo"}:
+        client = AmigoClient()
         start = time.time()
         try:
-            selected_plan = plan
-            _, provider_code = split_plan_code(selected_plan.plan_code)
-            result = provider.purchase_data(
-                network=network_key,
-                phone_number=str(payload.phone_number),
-                plan_code=provider_code or str(selected_plan.plan_code),
-                amount=float(price),
-                request_id=reference,
-            )
-
-            message_text = str(result.message or "").strip().lower()
-            if (
-                not result.success
-                and "invalid_dataplan" in message_text
-                and hasattr(provider, "fetch_data_variations")
-            ):
-                try:
-                    updated, refreshed_codes = _refresh_provider_network_plans(db, provider, network_key)
-                except Exception as sync_exc:
-                    logger.warning("Data plan resync failed for %s: %s", network_key, sync_exc)
-                    updated, refreshed_codes = 0, set()
-
-                if updated:
-                    db.commit()
-                    # _invalidate_plans_cache()
-                retry_plan = _pick_replacement_plan(db, selected_plan, refreshed_codes)
-                if retry_plan and str(retry_plan.plan_code or "").strip() != str(selected_plan.plan_code or "").strip():
-                    selected_plan = retry_plan
-                    transaction.data_plan_code = retry_plan.plan_code
-                    _, retry_provider_code = split_plan_code(retry_plan.plan_code)
-                    result = provider.purchase_data(
-                        network=network_key,
-                        phone_number=str(payload.phone_number),
-                        plan_code=retry_provider_code or str(retry_plan.plan_code),
-                        amount=float(price),
-                        request_id=f"{reference}-R1",
-                    )
-
-            duration_ms = round((time.time() - start) * 1000, 2)
-            provider_service = "bills"
-            if (result.meta or {}).get("clubkonnect"):
-                provider_service = "clubkonnect"
-            elif (result.meta or {}).get("vtpass"):
-                provider_service = "vtpass"
-            db.add(ApiLog(
-                user_id=user.id,
-                service=provider_service,
-                endpoint="/data/purchase",
-                status_code=200 if result.success else 400,
-                duration_ms=duration_ms,
-                reference=reference,
-                success=1 if result.success else 0,
-            ))
-
-            provider_status = _bills_pending_status(result.meta)
-            if provider_status in _PENDING_STATUS:
-                transaction.status = TransactionStatus.PENDING
-                transaction.failure_reason = None
-            elif result.success:
-                transaction.status = TransactionStatus.SUCCESS
-                transaction.failure_reason = None
-            else:
-                transaction.status = TransactionStatus.FAILED
-                transaction.failure_reason = _safe_reason(result.message or "Provider failed")
-                credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed data purchase")
-                transaction.status = TransactionStatus.REFUNDED
-
-            transaction.external_reference = result.external_reference
+            amigo_network_id = 1 if network_key == "mtn" else 3
+            _, suffix = split_plan_code(plan.plan_code)
+            provider_plan_id = plan.provider_plan_id or suffix
+            amigo_payload = {"network": amigo_network_id, "plan": provider_plan_id, "mobile_number": str(payload.phone_number).strip()}
+            result = client.purchase_data(amigo_payload, idempotency_key=reference)
+            
+            db.add(ApiLog(user_id=user.id, service="amigo", endpoint="/data/", status_code=200, duration_ms=round((time.time() - start) * 1000, 2), reference=reference, success=1))
+            
+            transaction.provider = "amigo"
+            transaction.status = TransactionStatus.SUCCESS
+            transaction.external_reference = str(result.get("orderid") or result.get("reference") or "")
             db.commit()
-            return {
-                "reference": reference,
-                "status": transaction.status,
-                "message": str(result.message or "").strip(),
-                "provider": provider_service,
-                "network": plan.network,
-                "plan_code": transaction.data_plan_code or plan.plan_code,
-                "failure_reason": str(transaction.failure_reason or "").strip(),
-                "test_mode": False,
-            }
+            return {"reference": reference, "status": "success", "message": "Purchase successful", "provider": "amigo"}
         except Exception as exc:
-            duration_ms = round((time.time() - start) * 1000, 2)
-            db.add(ApiLog(
-                user_id=user.id,
-                service="bills",
-                endpoint="/data/purchase",
-                status_code=502,
-                duration_ms=duration_ms,
-                reference=reference,
-                success=0,
-            ))
             transaction.status = TransactionStatus.FAILED
-            transaction.failure_reason = _safe_reason(str(exc))
-            credit_wallet(db, wallet, Decimal(price), reference, "Auto refund due to provider error")
+            credit_wallet(db, wallet, Decimal(price), reference, f"Refund: {str(exc)}")
             transaction.status = TransactionStatus.REFUNDED
             db.commit()
-            raise HTTPException(status_code=502, detail="Data provider temporarily unavailable. Wallet refunded.")
+            return {"reference": reference, "status": "refunded", "message": str(exc), "provider": "amigo"}
 
-    client = AmigoClient()
-    start = time.time()
-    try:
-        network_id = resolve_network_id(plan.network, plan.plan_code)
-        if network_id is None:
-            transaction.status = TransactionStatus.FAILED
-            transaction.failure_reason = f"Unsupported network: {plan.network}"
-            credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for unsupported network")
-            transaction.status = TransactionStatus.REFUNDED
-            db.commit()
-            raise HTTPException(status_code=400, detail="Unsupported network for data purchase")
-
-        response = client.purchase_data(
-            {
-                "network": network_id,
-                "mobile_number": payload.phone_number,
-                "plan": normalize_plan_code(plan.plan_code),
-                "Ported_number": payload.ported_number,
-            },
-            idempotency_key=reference,
-        )
-        duration_ms = round((time.time() - start) * 1000, 2)
-        db.add(ApiLog(
-            user_id=user.id,
-            service="amigo",
-            endpoint="/data/purchase",
-            status_code=200,
-            duration_ms=duration_ms,
-            reference=reference,
-            success=1,
-        ))
-
-        outcome_status, outcome_reason = _classify_provider_outcome(response)
-        if outcome_status == TransactionStatus.SUCCESS:
-            transaction.status = TransactionStatus.SUCCESS
-            transaction.failure_reason = None
-            transaction.external_reference = (
-                response.get("reference")
-                or response.get("transaction_reference")
-                or response.get("transaction_id")
-            )
-        elif outcome_status == TransactionStatus.FAILED:
-            failure_msg = outcome_reason or _safe_reason(response.get("message"))
-            if _is_definitive_amigo_failure(response=response, error_message=failure_msg):
+    # 3. 9mobile -> ClubKonnect
+    else:
+        provider = get_bills_provider()
+        start = time.time()
+        try:
+            _, suffix = split_plan_code(plan.plan_code)
+            provider_plan_id = plan.provider_plan_id or suffix
+            result = provider.purchase_data(network=network_key, phone_number=str(payload.phone_number).strip(), plan_code=provider_plan_id, request_id=reference)
+            
+            db.add(ApiLog(user_id=user.id, service="clubkonnect", endpoint="/APIDatabundleV1.asp", status_code=200 if result.success else 400, duration_ms=round((time.time() - start) * 1000, 2), reference=reference, success=1 if result.success else 0))
+            
+            transaction.provider = "clubkonnect"
+            transaction.external_reference = result.external_reference
+            if result.success:
+                transaction.status = TransactionStatus.SUCCESS
+            else:
                 transaction.status = TransactionStatus.FAILED
-                transaction.failure_reason = failure_msg
-                credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed data purchase")
+                credit_wallet(db, wallet, Decimal(price), reference, f"Refund: {result.message}")
                 transaction.status = TransactionStatus.REFUNDED
-            elif _is_mtn_network(plan.network):
-                logger.warning(
-                    "MTN ambiguous failure normalized to success ref=%s reason=%s",
-                    reference,
-                    failure_msg,
-                )
-                transaction.status = TransactionStatus.SUCCESS
-                transaction.failure_reason = None
-            else:
-                # Ambiguous failure signal from provider:
-                # keep pending to avoid false refunds on already-delivered bundles.
-                transaction.status = TransactionStatus.PENDING
-                transaction.failure_reason = _safe_reason(
-                    f"Awaiting provider confirmation: {failure_msg}"
-                )
-        else:
-            # Provider accepted but returned pending.
-            # Run a short synchronous confirmation window to reduce
-            # false-pending receipts for delivered purchases.
-            confirmed_status, confirmed_response, confirmed_message = _confirm_pending_amigo_purchase(
-                client=client,
-                network_id=network_id,
-                phone_number=str(payload.phone_number),
-                plan_code=plan.plan_code,
-                idempotency_key=reference,
-                ported_number=payload.ported_number,
-            )
-            if confirmed_status == TransactionStatus.SUCCESS:
-                transaction.status = TransactionStatus.SUCCESS
-                transaction.failure_reason = None
-                source = confirmed_response or response
-                transaction.external_reference = (
-                    source.get("reference")
-                    or source.get("transaction_reference")
-                    or source.get("transaction_id")
-                    or transaction.external_reference
-                )
-            elif confirmed_status == TransactionStatus.FAILED:
-                failure_msg = _safe_reason(
-                    confirmed_message
-                    or outcome_reason
-                    or str((confirmed_response or response).get("message") or "Provider rejected transaction")
-                )
-                if _is_definitive_amigo_failure(response=confirmed_response or response, error_message=failure_msg):
-                    transaction.status = TransactionStatus.FAILED
-                    transaction.failure_reason = failure_msg
-                    credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed data purchase")
-                    transaction.status = TransactionStatus.REFUNDED
-                elif _is_mtn_network(plan.network):
-                    logger.warning(
-                        "MTN confirm-failed ambiguous normalized to success ref=%s reason=%s",
-                        reference,
-                        failure_msg,
-                    )
-                    transaction.status = TransactionStatus.SUCCESS
-                    transaction.failure_reason = None
-                else:
-                    transaction.status = TransactionStatus.FAILED
-                    transaction.failure_reason = failure_msg
-                    credit_wallet(db, wallet, Decimal(price), reference, "Auto refund after ambiguous confirmation failure")
-                    transaction.status = TransactionStatus.REFUNDED
-            else:
-                # Still unresolved after short synchronous window.
-                # Keep pending and let admin/query reconciliation finalize it.
-                transaction.status = TransactionStatus.PENDING
-                transaction.failure_reason = "Awaiting provider confirmation"
-
-        db.commit()
-        return {
-            "reference": reference,
-            "status": transaction.status,
-            "message": str(response.get("message") or "").strip(),
-            "provider": "amigo",
-            "network": plan.network,
-            "plan_code": plan.plan_code,
-            "failure_reason": str(transaction.failure_reason or "").strip(),
-            "test_mode": settings.amigo_test_mode,
-        }
-    except HTTPException:
-        raise
-    except AmigoApiError as exc:
-        duration_ms = round((time.time() - start) * 1000, 2)
-        db.add(ApiLog(
-            user_id=user.id,
-            service="amigo",
-            endpoint="/data/purchase",
-            status_code=exc.status_code or 502,
-            duration_ms=duration_ms,
-            reference=reference,
-            success=0,
-        ))
-        failure_reason = _build_amigo_failure_reason(exc)
-        logger.warning(
-            "Amigo purchase failed ref=%s status=%s reason=%s raw=%s",
-            reference,
-            getattr(exc, "status_code", None),
-            failure_reason,
-            (str(getattr(exc, "raw", "") or "")[:500] or "—"),
-        )
-        if _is_ambiguous_provider_error(exc):
-            # Critical protection: one immediate idempotent recheck before returning pending.
-            # This closes the "delivered but pending" window for many ambiguous provider responses.
-            try:
-                time.sleep(1.0)
-                confirm_response = client.purchase_data(
-                    {
-                        "network": network_id,
-                        "mobile_number": payload.phone_number,
-                        "plan": normalize_plan_code(plan.plan_code),
-                        "Ported_number": payload.ported_number,
-                    },
-                    idempotency_key=reference,
-                )
-                confirm_outcome = _classify_amigo_recheck(confirm_response)
-                if confirm_outcome == TransactionStatus.SUCCESS:
-                    transaction.status = TransactionStatus.SUCCESS
-                    transaction.failure_reason = None
-                    transaction.external_reference = (
-                        confirm_response.get("reference")
-                        or confirm_response.get("transaction_reference")
-                        or confirm_response.get("transaction_id")
-                        or transaction.external_reference
-                    )
-                    db.commit()
-                    return {
-                        "reference": reference,
-                        "status": transaction.status,
-                        "message": str(confirm_response.get("message") or "Transaction confirmed successfully.").strip(),
-                        "provider": "amigo",
-                        "network": plan.network,
-                        "plan_code": plan.plan_code,
-                        "failure_reason": "",
-                        "test_mode": settings.amigo_test_mode,
-                    }
-                if confirm_outcome == TransactionStatus.FAILED:
-                    confirm_msg = _safe_reason(
-                        str(confirm_response.get("message") or "Provider rejected transaction")
-                    )
-                    if _is_definitive_amigo_failure(response=confirm_response, error_message=confirm_msg):
-                        transaction.status = TransactionStatus.FAILED
-                        transaction.failure_reason = confirm_msg
-                        credit_wallet(db, wallet, Decimal(price), reference, "Auto refund after immediate provider confirmation failure")
-                        transaction.status = TransactionStatus.REFUNDED
-                        db.commit()
-                        raise HTTPException(status_code=502, detail="Data provider rejected this purchase. Wallet refunded.")
-                    if _is_mtn_network(plan.network):
-                        logger.warning(
-                            "MTN immediate recheck ambiguous normalized to success ref=%s reason=%s",
-                            reference,
-                            confirm_msg,
-                        )
-                        transaction.status = TransactionStatus.SUCCESS
-                        transaction.failure_reason = None
-                        db.commit()
-                        return {
-                            "reference": reference,
-                            "status": transaction.status,
-                            "message": "Transaction confirmed successfully.",
-                            "provider": "amigo",
-                            "network": plan.network,
-                            "plan_code": plan.plan_code,
-                            "failure_reason": "",
-                            "test_mode": settings.amigo_test_mode,
-                        }
-                    transaction.status = TransactionStatus.PENDING
-                    transaction.failure_reason = _safe_reason(
-                        f"Awaiting provider confirmation: {confirm_msg}"
-                    )
-                    db.commit()
-                    return {
-                        "reference": reference,
-                        "status": transaction.status,
-                        "message": "Transaction submitted and awaiting provider confirmation.",
-                        "provider": "amigo",
-                        "network": plan.network,
-                        "plan_code": plan.plan_code,
-                        "failure_reason": str(transaction.failure_reason or "").strip(),
-                        "test_mode": settings.amigo_test_mode,
-                    }
-            except HTTPException:
-                raise
-            except Exception as recheck_exc:
-                logger.warning("Immediate data confirmation recheck failed for %s: %s", reference, recheck_exc)
-
-            # Still ambiguous after immediate recheck: keep pending (no auto-refund).
-            if _is_mtn_network(plan.network):
-                logger.warning(
-                    "MTN post-recheck ambiguity normalized to success ref=%s reason=%s",
-                    reference,
-                    failure_reason,
-                )
-                transaction.status = TransactionStatus.SUCCESS
-                transaction.failure_reason = None
-                db.commit()
-                return {
-                    "reference": reference,
-                    "status": transaction.status,
-                    "message": "Transaction submitted successfully.",
-                    "provider": "amigo",
-                    "network": plan.network,
-                    "plan_code": plan.plan_code,
-                    "failure_reason": "",
-                    "test_mode": settings.amigo_test_mode,
-                }
+            db.commit()
+            return {"reference": reference, "status": transaction.status, "message": result.message or "Processed"}
+        except Exception as exc:
             transaction.status = TransactionStatus.PENDING
-            transaction.failure_reason = _safe_reason(
-                f"Awaiting provider confirmation: {failure_reason}"
-            )
             db.commit()
-            return {
-                "reference": reference,
-                "status": transaction.status,
-                "message": "Transaction submitted and awaiting provider confirmation.",
-                "provider": "amigo",
-                "network": plan.network,
-                "plan_code": plan.plan_code,
-                "failure_reason": str(transaction.failure_reason or "").strip(),
-                "test_mode": settings.amigo_test_mode,
-            }
-
-        if _is_definitive_amigo_failure(error_message=exc.message, status_code=exc.status_code):
-            transaction.status = TransactionStatus.FAILED
-            transaction.failure_reason = failure_reason
-            credit_wallet(db, wallet, Decimal(price), reference, "Auto refund due to Amigo error")
-            transaction.status = TransactionStatus.REFUNDED
-            db.commit()
-            raise HTTPException(
-                status_code=502,
-                detail="Data provider rejected this purchase. Wallet refunded.",
-            )
-
-        if _is_mtn_network(plan.network):
-            logger.warning(
-                "MTN non-definitive exception normalized to success ref=%s reason=%s status=%s",
-                reference,
-                failure_reason,
-                getattr(exc, "status_code", None),
-            )
-            transaction.status = TransactionStatus.SUCCESS
-            transaction.failure_reason = None
-            db.commit()
-            return {
-                "reference": reference,
-                "status": transaction.status,
-                "message": "Transaction submitted successfully.",
-                "provider": "amigo",
-                "network": plan.network,
-                "plan_code": plan.plan_code,
-                "failure_reason": "",
-                "test_mode": settings.amigo_test_mode,
-            }
-
-        transaction.status = TransactionStatus.PENDING
-        transaction.failure_reason = _safe_reason(
-            f"Awaiting provider confirmation: {failure_reason}"
-        )
-        db.commit()
-        return {
-            "reference": reference,
-            "status": transaction.status,
-            "message": "Transaction submitted and awaiting provider confirmation.",
-            "provider": "amigo",
-            "network": plan.network,
-            "plan_code": plan.plan_code,
-            "failure_reason": str(transaction.failure_reason or "").strip(),
-            "test_mode": settings.amigo_test_mode,
-        }
-    except Exception as exc:
-        duration_ms = round((time.time() - start) * 1000, 2)
-        db.add(ApiLog(
-            user_id=user.id,
-            service="amigo",
-            endpoint="/data/purchase",
-            status_code=500,
-            duration_ms=duration_ms,
-            reference=reference,
-            success=0,
-        ))
-        transaction.status = TransactionStatus.FAILED
-        transaction.failure_reason = _safe_reason(str(exc))
-        credit_wallet(db, wallet, Decimal(price), reference, "Auto refund due to Amigo error")
-        transaction.status = TransactionStatus.REFUNDED
-        db.commit()
-        raise HTTPException(status_code=502, detail="Data provider temporarily unavailable. Wallet refunded.")
+            return {"reference": reference, "status": "pending", "message": "Pending confirmation"}
 
 
 @router.post("/sync")
 def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
-    client = AmigoClient()
-    response = client.fetch_data_plans()
-    plans = response.get("data", [])
-    updated = 0
-    for item in plans:
-        try:
-            updated += 1 if _upsert_plan_from_provider(db, item) else 0
-            db.flush()
-        except Exception as exc:
-            db.rollback()
-            logger.warning("Skipping malformed plan from Amigo during sync: %s", exc)
-            continue
-    
-    # Non-Amigo providers
-    provider = get_bills_provider()
-    if hasattr(provider, "fetch_data_variations"):
-        for network in ("9mobile",):
-            try:
-                touched, _ = _refresh_provider_network_plans(db, provider, network)
-                updated += touched
-                db.flush()
-            except Exception as exc:
-                db.rollback()
-                logger.warning("Provider variations fetch failed for %s: %s", network, exc)
-                continue
+    # Sync MTN/Glo from Amigo
+    amigo_updated = 0
+    try:
+        client = AmigoClient()
+        response = client.fetch_data_plans()
+        for item in response.get("data", []):
+            if str(item.get("network")).lower() in {"mtn", "glo"}:
+                item["provider"] = "amigo"
+                amigo_updated += 1 if _upsert_plan_from_provider(db, item) else 0
+        db.commit()
+    except Exception as exc:
+        logger.warning("Amigo sync failed: %s", exc)
 
-    # SMEPlug sync for Airtel
+    # Sync Airtel from SMEPlug
     smeplug_updated = 0
-    smeplug_error = None
     try:
         smeplug = SMEPlugProvider()
-        airtel_plans = smeplug.get_airtel_plans()
-        if airtel_plans:
-            active_codes = set()
-            for p in airtel_plans:
-                canonical_code = canonical_plan_code("airtel", p["provider_plan_id"])
-                if canonical_code:
-                    active_codes.add(canonical_code)
-                try:
-                    smeplug_updated += 1 if _upsert_plan_from_provider(db, p) else 0
-                    db.flush()
-                except Exception as exc:
-                    db.rollback()
-                    logger.warning("Skipping malformed SMEPlug Airtel plan during sync: %s", exc)
-                    continue
-            
-            # Deactivate stale Airtel plans
-            stale_rows = db.query(DataPlan).filter(func.lower(DataPlan.network) == "airtel", DataPlan.is_active == True).all()
-            for row in stale_rows:
-                if str(row.plan_code or "").strip() not in active_codes:
-                    row.is_active = False
-                    smeplug_updated += 1
-        else:
-            smeplug_error = "SMEPlug returned no plans. Check API Key and network_id."
+        for item in smeplug.get_airtel_plans():
+            item["provider"] = "smeplug"
+            smeplug_updated += 1 if _upsert_plan_from_provider(db, item) else 0
+        db.commit()
     except Exception as exc:
-        db.rollback()
-        smeplug_error = str(exc)
-        logger.warning("SMEPlug Airtel sync failed: %s", exc)
+        logger.warning("SMEPlug sync failed: %s", exc)
 
-    # Final policy guard: deactivate any active Airtel rows not sourced from SMEPlug.
+    # Sync 9mobile from ClubKonnect
+    ck_updated = 0
     try:
-        smeplug_updated += _deactivate_non_smeplug_airtel_rows(db)
+        provider = get_bills_provider()
+        if hasattr(provider, "fetch_data_variations"):
+            for item in provider.fetch_data_variations("9mobile"):
+                item["network"] = "9mobile"
+                item["provider"] = "clubkonnect"
+                ck_updated += 1 if _upsert_plan_from_provider(db, item) else 0
+        db.commit()
     except Exception as exc:
-        db.rollback()
-        logger.warning("Could not enforce SMEPlug-only Airtel policy: %s", exc)
+        logger.warning("ClubKonnect sync failed: %s", exc)
 
-    db.commit()
-    # _invalidate_plans_cache()
-    return {
-        "updated": updated + smeplug_updated,
-        "smeplug_airtel": {
-            "updated": smeplug_updated,
-            "error": smeplug_error
-        }
-    }
+    return {"updated": amigo_updated + smeplug_updated + ck_updated, "details": {"amigo": amigo_updated, "smeplug": smeplug_updated, "clubkonnect": ck_updated}}

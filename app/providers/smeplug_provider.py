@@ -13,11 +13,11 @@ class SMEPlugProvider:
         self.api_key = settings.smeplug_api_key
         self.timeout = 30.0
 
-    def _headers(self) -> Dict[str, str]:
+    def _get_headers(self):
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "application/json"
         }
 
     def _json_or_none(self, response: httpx.Response) -> Any:
@@ -26,200 +26,128 @@ class SMEPlugProvider:
         except Exception:
             return None
 
-    def _extract_message(self, payload: Any) -> str:
-        if not isinstance(payload, dict):
-            return ""
-        data_node = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-        return str(
-            payload.get("msg")
-            or payload.get("message")
-            or data_node.get("msg")
-            or data_node.get("message")
-            or data_node.get("response")
-            or ""
-        ).strip()
-
-    def get_all_plans(self) -> List[Dict[str, Any]]:
+    def fetch_plans(self) -> dict:
         url = f"{self.base_url}/data/plans"
         try:
             with httpx.Client(timeout=self.timeout) as client:
-                response = client.get(url, headers=self._headers())
-                response.raise_for_status()
-                payload = response.json()
-                
-                data = payload.get("data")
-                if not isinstance(data, dict):
-                    logger.warning("SMEPlug plans response 'data' is not a dict: %s", data)
-                    return []
+                response = client.get(url, headers=self._get_headers())
+                logger.info("SMEPlug GET /data/plans status=%d", response.status_code)
+                return response.json()
+        except Exception as e:
+            logger.error(f"SMEPlug fetch_plans error: {e}")
+            return {}
 
-                # SMEPlug Network IDs: 1=MTN, 2=Airtel, 3=Glo, 4=9mobile (usually)
-                results = []
-                # Map SMEPlug network IDs to our internal names
-                id_map = {
-                    "1": "mtn",
-                    "2": "airtel",
-                    "3": "glo",
-                    "4": "9mobile"
-                }
-                # Also allow overrides from settings for the primary airtel ID
-                id_map[str(settings.smeplug_network_airtel)] = "airtel"
-
-                for nw_id, plans in data.items():
-                    nw_name = id_map.get(str(nw_id))
-                    if not nw_name or not isinstance(plans, list):
-                        continue
-                    
-                    for p in plans:
-                        results.append({
-                            "network": nw_name,
-                            "plan_code": f"{nw_name}:{p.get('id')}",
-                            "name": p.get("name"),
-                            "size": p.get("name"),
-                            "price": p.get("price") or p.get("telco_price") or 0,
-                            "provider": "smeplug",
-                            "provider_plan_id": str(p.get("id"))
-                        })
-                return results
-        except Exception as exc:
-            logger.error("Failed to fetch all plans from SMEPlug: %s", exc)
+    def get_all_plans(self) -> List[Dict[str, Any]]:
+        payload = self.fetch_plans()
+        if not payload.get("status"):
+            return []
+        
+        data = payload.get("data")
+        if not isinstance(data, dict):
             return []
 
-    def get_airtel_plans(self) -> List[Dict[str, Any]]:
-        all_plans = self.get_all_plans()
-        return [p for p in all_plans if p.get("network") == "airtel"]
+        results = []
+        # Documentation mapping: 1=MTN, 2=Airtel, 3=9mobile, 4=Glo
+        id_map = {
+            "1": "mtn",
+            "2": "airtel",
+            "3": "9mobile",
+            "4": "glo"
+        }
 
-    def purchase_airtel_data(self, phone: str, plan_id: str, client_request_id: str) -> Dict[str, Any]:
-        # Normalize phone: ensure it's digits and starts with 0 (11 digits)
-        clean_phone = "".join(filter(str.isdigit, str(phone)))
-        if clean_phone.startswith("234") and len(clean_phone) > 10:
-            clean_phone = "0" + clean_phone[3:]
-        
-        # Per SMEPlug docs: POST /api/v1/data/purchase
+        for nw_id, plans in data.items():
+            nw_name = id_map.get(str(nw_id))
+            if not nw_name or not isinstance(plans, list):
+                continue
+            
+            for p in plans:
+                results.append({
+                    "network": nw_name,
+                    "plan_code": f"{nw_name}:{p.get('id')}",
+                    "name": p.get("name"),
+                    "size": p.get("name"),
+                    "price": float(p.get("price") or p.get("telco_price") or 0),
+                    "provider": "smeplug",
+                    "provider_plan_id": str(p.get("id"))
+                })
+        return results
+
+    def get_airtel_plans(self) -> list:
+        # Strictly used by data sync
+        return [p for p in self.get_all_plans() if p.get("network") == "airtel"]
+
+    def purchase_data(self, network_id: int, plan_id: str, phone: str, reference: str) -> dict:
+        # Used by bills.py or generic purchase logic
         url = f"{self.base_url}/data/purchase"
-        normalized_plan_id: int | str
-        try:
-            normalized_plan_id = int(str(plan_id).strip())
-        except Exception:
-            normalized_plan_id = str(plan_id).strip()
-
         payload = {
-            "network_id": int(settings.smeplug_network_airtel),
-            "plan_id": normalized_plan_id,
-            # SMEPlug's public examples use `phone`, but some provider rails can
-            # still surface beneficiary validation messages. We send the common
-            # aliases together so Airtel requests do not fail over field naming.
-            "phone": clean_phone,
-            "phone_number": clean_phone,
-            "mobile_number": clean_phone,
-            "customer_reference": client_request_id,
+            "network_id": int(network_id),
+            "plan_id": str(plan_id),
+            "phone": str(phone),
+            "customer_reference": str(reference)
         }
         
-        logger.info("SMEPlug Purchase Request: %s", {**payload, "api_key": "***"})
-        
         try:
             with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(url, json=payload, headers=self._headers())
-                logger.info("SMEPlug Purchase Response status=%s body=%s", response.status_code, response.text)
+                response = client.post(url, json=payload, headers=self._get_headers())
+                logger.info("SMEPlug POST /data/purchase network=%s plan=%s phone=%s status=%d", 
+                            network_id, plan_id, phone, response.status_code)
+                
+                res_data = self._json_or_none(response) or {}
+                if not res_data.get("status"):
+                    logger.warning("SMEPlug Purchase Failed: provider=SMEPlug, endpoint=/data/purchase, "
+                                   "network_id=%s, plan_id=%s, phone=%s, status=%d, body=%s",
+                                   network_id, plan_id, phone, response.status_code, response.text)
+                return res_data
+        except Exception as e:
+            logger.error(f"SMEPlug purchase_data error: {e}")
+            return {"status": False, "msg": str(e)}
 
-                if response.status_code >= 500:
-                    return {
-                        "status": "pending",
-                        "provider_reference": None,
-                        "error": "Provider server error",
-                        "http_status": response.status_code,
-                        "raw": response.text,
-                    }
-
-                data = self._json_or_none(response) or {}
-                if response.status_code == 400:
-                    message = self._extract_message(data) or response.text
-                    return {
-                        "status": "failed",
-                        "error": message or "Bad Request",
-                        "http_status": response.status_code,
-                        "raw": response.text,
-                    }
-
-                if not data:
-                    # Non-JSON from provider: ambiguous, keep pending for reconcile/query.
-                    return {
-                        "status": "pending",
-                        "provider_reference": None,
-                        "error": "Awaiting provider confirmation",
-                        "http_status": response.status_code,
-                        "raw": response.text,
-                    }
-
-                status_value = data.get("status")
-                data_node = data.get("data") if isinstance(data.get("data"), dict) else {}
-                message = self._extract_message(data)
-
-                # Typical success shape:
-                # { "status": "success", "data": { "reference": "...", ... } }
-                if status_value is True or str(status_value).strip().lower() in {"success", "true"}:
-                    resp_data = data_node
-                    return {
-                        "status": "success",
-                        "provider_reference": str(resp_data.get("reference") or ""),
-                        "error": message,
-                        "http_status": response.status_code,
-                        "raw": response.text,
-                    }
-
-                # Some provider 400/failed responses are still eventually processed;
-                # keep those as pending to avoid false-negative instant refunds.
-                lowered = message.lower()
-                if (
-                    response.status_code in {400, 409, 422}
-                    and ("processing" in lowered or "pending" in lowered or "failed" in lowered)
-                ):
-                    return {
-                        "status": "pending",
-                        "provider_reference": str((data.get("data") or {}).get("reference") or ""),
-                        "error": message or "Awaiting provider confirmation",
-                        "http_status": response.status_code,
-                        "raw": response.text,
-                    }
-
-                return {
-                    "status": "failed",
-                    "provider_reference": str(data_node.get("reference") or ""),
-                    "error": message or "Purchase failed",
-                    "http_status": response.status_code,
-                    "raw": response.text,
-                }
-        except Exception as exc:
-            logger.error("SMEPlug purchase exception: %s", exc)
+    def purchase_airtel_data(self, phone: str, plan_id: str, client_request_id: str) -> Dict[str, Any]:
+        # Specifically used by purchase endpoints for Airtel partition
+        # Documentation: Airtel network_id = 2
+        res = self.purchase_data(network_id=2, plan_id=plan_id, phone=phone, reference=client_request_id)
+        
+        status_value = res.get("status")
+        message = str(res.get("msg") or res.get("message") or "")
+        data_node = res.get("data") if isinstance(res.get("data"), dict) else {}
+        
+        if status_value is True or str(status_value).lower() in {"success", "true"}:
+            return {
+                "status": "success",
+                "provider_reference": str(data_node.get("reference") or ""),
+                "error": message
+            }
+        
+        # Determine if it's a definitive failure or should be pending
+        lowered = message.lower()
+        if "processing" in lowered or "pending" in lowered:
             return {
                 "status": "pending",
-                "error": str(exc),
-                "http_status": None,
-                "raw": "",
+                "provider_reference": str(data_node.get("reference") or ""),
+                "error": message
             }
+            
+        return {
+            "status": "failed",
+            "provider_reference": str(data_node.get("reference") or ""),
+            "error": message or "Purchase failed"
+        }
 
     def query_transaction(self, reference: str) -> Dict[str, Any]:
-        ref = str(reference or "").strip()
-        if not ref:
-            return {"status": "pending", "error": "Missing reference"}
-        url = f"{self.base_url}/transactions/{ref}"
+        url = f"{self.base_url}/transactions/{reference}"
         try:
             with httpx.Client(timeout=self.timeout) as client:
-                response = client.get(url, headers=self._headers())
-                logger.info("SMEPlug Query Response status=%s body=%s", response.status_code, response.text)
+                response = client.get(url, headers=self._get_headers())
                 data = self._json_or_none(response) or {}
-                if response.status_code >= 500:
-                    return {"status": "pending", "error": "Provider query unavailable"}
-                if not data:
-                    return {"status": "pending", "error": "Provider query unavailable"}
-
+                
                 status_value = str(data.get("status") or "").strip().lower()
                 provider_reference = str(data.get("reference") or "")
-                message = str(data.get("response") or data.get("message") or data.get("memo") or "")
+                message = str(data.get("response") or data.get("message") or "")
 
                 if status_value == "success":
                     return {"status": "success", "provider_reference": provider_reference, "error": message}
                 if status_value == "failed":
-                    return {"status": "failed", "provider_reference": provider_reference, "error": message or "Provider reported failure"}
+                    return {"status": "failed", "provider_reference": provider_reference, "error": message}
                 return {"status": "pending", "provider_reference": provider_reference, "error": message}
         except Exception as exc:
             logger.error("SMEPlug query exception: %s", exc)
