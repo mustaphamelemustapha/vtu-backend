@@ -299,8 +299,17 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
     logger.info("Returning %d active data plans for user %s", len(priced), user.email)
     return priced
 
-
-@router.post("/purchase")
+@router.get("/debug-plans")
+def debug_data_plans(db: Session = Depends(get_db)):
+    plans = db.query(DataPlan).all()
+    return [{
+        "id": p.id,
+        "network": p.network,
+        "plan_code": p.plan_code,
+        "is_active": p.is_active,
+        "base_price": str(p.base_price),
+        "display_price": str(p.display_price) if p.display_price is not None else None
+    } for p in plans]
 @limiter.limit("5/minute")
 def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     plan_code_input = str(payload.plan_code or "").strip()
