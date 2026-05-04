@@ -126,6 +126,33 @@ _AMIGO_PENDING_CONFIRM_ATTEMPTS = 6
 _AMIGO_PENDING_CONFIRM_DELAY_SECONDS = 1.4
 
 
+def _is_airtel_row(row: DataPlan) -> bool:
+    return str(row.network or "").strip().lower() == "airtel"
+
+
+def _is_smeplug_airtel_row(row: DataPlan) -> bool:
+    if not _is_airtel_row(row):
+        return False
+    return str(row.provider or "").strip().lower() == "smeplug"
+
+
+def _deactivate_non_smeplug_airtel_rows(db: Session) -> int:
+    rows = (
+        db.query(DataPlan)
+        .filter(
+            func.lower(DataPlan.network) == "airtel",
+            DataPlan.is_active == True,
+        )
+        .all()
+    )
+    changed = 0
+    for row in rows:
+        if str(row.provider or "").strip().lower() != "smeplug":
+            row.is_active = False
+            changed += 1
+    return changed
+
+
 def _promo_plan_code_suffix(plan_code: str | None) -> str:
     raw = str(plan_code or "").strip().lower()
     if not raw:
@@ -1003,6 +1030,12 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                 plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
     except Exception as exc:
         logger.warning("SMEPlug Airtel sync failed: %s", exc)
+    # Enforce Airtel source policy: only SMEPlug Airtel plans are exposed.
+    plans = [
+        p for p in plans
+        if not _is_airtel_row(p) or _is_smeplug_airtel_row(p)
+    ]
+
     promo_snapshot = _mtn_1gb_promo_snapshot(db)
     user_promo_used = _user_has_used_mtn_1gb_promo(db, user.id)
     priced = []
@@ -1074,6 +1107,8 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             )
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
+    if str(plan.network or "").strip().lower() == "airtel" and str(plan.provider or "").strip().lower() != "smeplug":
+        raise HTTPException(status_code=400, detail="Airtel plans are served only via SMEPlug. Refresh plans and retry.")
 
     price = get_price_for_user(db, plan, user.role)
     if _is_mtn_1gb_promo_plan(plan) and not _user_has_used_mtn_1gb_promo(db, user.id):
@@ -1724,6 +1759,13 @@ def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(
         db.rollback()
         smeplug_error = str(exc)
         logger.warning("SMEPlug Airtel sync failed: %s", exc)
+
+    # Final policy guard: deactivate any active Airtel rows not sourced from SMEPlug.
+    try:
+        smeplug_updated += _deactivate_non_smeplug_airtel_rows(db)
+    except Exception as exc:
+        db.rollback()
+        logger.warning("Could not enforce SMEPlug-only Airtel policy: %s", exc)
 
     db.commit()
     _invalidate_plans_cache()
