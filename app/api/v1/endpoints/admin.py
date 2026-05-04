@@ -547,7 +547,7 @@ def get_transaction_details(
             .first()
         )
         provider_trace = {
-            "provider": "amigo" if _normalize_type_value(tx.tx_type) == "data" else "unknown",
+            "provider": tx.provider or ("amigo" if _normalize_type_value(tx.tx_type) == "data" else "unknown"),
             "tx_status": _normalize_status_value(tx.status),
             "failure_reason": tx.failure_reason or "",
             "external_reference": tx.external_reference or "",
@@ -1545,7 +1545,7 @@ def update_data_plan(
     )
     db.add(audit_log)
     db.commit()
-    _invalidate_plans_cache()
+    # _invalidate_plans_cache()
     return {
         "status": "ok",
         "id": plan.id,

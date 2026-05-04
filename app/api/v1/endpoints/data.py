@@ -967,10 +967,10 @@ def _pick_replacement_plan(
 @router.get("/plans", response_model=list[DataPlanOut])
 
 def list_data_plans(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    cache_key = f"plans:{_PLAN_CACHE_VERSION}:{user.role.value}"
-    cached = get_cached(cache_key)
-    if cached:
-        return cached
+    # cache_key = f"plans:{_PLAN_CACHE_VERSION}:{user.role.value}"
+    # cached = get_cached(cache_key)
+    # if cached:
+    #     return cached
 
     plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
     should_sync = not plans
@@ -1001,7 +1001,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
             logger.warning("Provider variations fetch failed for %s: %s", network, exc)
     if touched:
         db.commit()
-        _invalidate_plans_cache()
+        # _invalidate_plans_cache()
         plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
 
     # SMEPlug sync for Airtel
@@ -1026,7 +1026,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
             
             if airtel_touched:
                 db.commit()
-                _invalidate_plans_cache()
+                # _invalidate_plans_cache()
                 plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
     except Exception as exc:
         logger.warning("SMEPlug Airtel sync failed: %s", exc)
@@ -1107,7 +1107,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             )
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
-    if str(plan.network or "").strip().lower() == "airtel" and str(plan.provider or "").strip().lower() != "smeplug":
+    if (plan.network or "").lower() == "airtel" and str(plan.provider or "").strip().lower() != "smeplug":
         raise HTTPException(status_code=400, detail="Airtel plans are served only via SMEPlug. Refresh plans and retry.")
 
     price = get_price_for_user(db, plan, user.role)
@@ -1292,7 +1292,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
 
                 if updated:
                     db.commit()
-                    _invalidate_plans_cache()
+                    # _invalidate_plans_cache()
                 retry_plan = _pick_replacement_plan(db, selected_plan, refreshed_codes)
                 if retry_plan and str(retry_plan.plan_code or "").strip() != str(selected_plan.plan_code or "").strip():
                     selected_plan = retry_plan
@@ -1768,7 +1768,7 @@ def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(
         logger.warning("Could not enforce SMEPlug-only Airtel policy: %s", exc)
 
     db.commit()
-    _invalidate_plans_cache()
+    # _invalidate_plans_cache()
     return {
         "updated": updated + smeplug_updated,
         "smeplug_airtel": {

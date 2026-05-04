@@ -1,6 +1,7 @@
 import logging
 import httpx
-from typing import List, Dict, Any
+import time
+from typing import Dict, Any, List
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -10,23 +11,20 @@ class SMEPlugProvider:
     def __init__(self):
         self.base_url = str(settings.smeplug_base_url).rstrip("/")
         self.api_key = settings.smeplug_api_key
-        self.timeout = 20.0
+        self.timeout = 30.0
 
     def _headers(self) -> Dict[str, str]:
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
-            "Accept": "application/json"
+            "Accept": "application/json",
         }
 
-    def _json_or_none(self, response: httpx.Response) -> Dict[str, Any] | None:
+    def _json_or_none(self, response: httpx.Response) -> Any:
         try:
-            payload = response.json()
-            if isinstance(payload, dict):
-                return payload
+            return response.json()
         except Exception:
             return None
-        return None
 
     def get_airtel_plans(self) -> List[Dict[str, Any]]:
         url = f"{self.base_url}/data/plans"
@@ -34,30 +32,25 @@ class SMEPlugProvider:
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.get(url, headers=self._headers())
                 response.raise_for_status()
-                data = response.json()
+                payload = response.json()
                 
-                # SMEPlug returns plans grouped by network ID in a dictionary.
-                # '1' = MTN, '2' = Airtel, '3' = 9mobile, '4' = Glo
-                plans_data = data.get("data", {})
-                
-                # If it's a dictionary, get the specific list for Airtel ('2')
-                if isinstance(plans_data, dict):
-                    raw_plans = plans_data.get("2", [])
-                elif isinstance(plans_data, list):
-                    # Fallback for flat list format
-                    raw_plans = [p for p in plans_data if str(p.get("network_id")) == "2"]
+                # Handle grouping by network ID
+                data = payload.get("data")
+                if isinstance(data, dict):
+                    # Airtel is typically network ID 2
+                    airtel_plans = data.get("2") or data.get(str(settings.smeplug_network_airtel)) or []
+                elif isinstance(data, list):
+                    airtel_plans = [p for p in data if str(p.get("network_id")) == str(settings.smeplug_network_airtel)]
                 else:
-                    logger.warning("Unexpected SMEPlug plans data format: %s", type(plans_data))
-                    raw_plans = []
+                    logger.warning("SMEPlug plans response 'data' is not a list or dict: %s", data)
+                    return []
 
                 results = []
-                for p in raw_plans:
+                for p in airtel_plans:
                     results.append({
-                        "network": "airtel",
-                        "plan_name": p.get("name"),
                         "plan_code": f"airtel:{p.get('id')}",
-                        "data_size": p.get("name"), # SMEPlug doesn't provide explicit size field
-                        "validity": "30 Days", # Defaulting as SMEPlug doesn't provide this in a standard field
+                        "name": p.get("name"),
+                        "size": p.get("name"),
                         "price": p.get("price") or p.get("telco_price") or 0,
                         "provider": "smeplug",
                         "provider_plan_id": str(p.get("id"))
@@ -74,12 +67,17 @@ class SMEPlugProvider:
             return []
 
     def purchase_airtel_data(self, phone: str, plan_id: str, client_request_id: str) -> Dict[str, Any]:
+        # Normalize phone: ensure it's digits and starts with 0 (11 digits)
+        clean_phone = "".join(filter(str.isdigit, str(phone)))
+        if clean_phone.startswith("234") and len(clean_phone) > 10:
+            clean_phone = "0" + clean_phone[3:]
+        
         # Per SMEPlug docs: POST /api/v1/data/purchase
         url = f"{self.base_url}/data/purchase"
         payload = {
             "network_id": int(settings.smeplug_network_airtel),
             "plan_id": plan_id,
-            "phone": phone,
+            "phone": clean_phone,
             "customer_reference": client_request_id
         }
         
@@ -98,6 +96,13 @@ class SMEPlugProvider:
                     }
 
                 data = self._json_or_none(response) or {}
+                if response.status_code == 400:
+                    message = data.get("msg") or data.get("message") or response.text
+                    return {
+                        "status": "failed",
+                        "error": message or "Bad Request"
+                    }
+
                 if not data:
                     # Non-JSON from provider: ambiguous, keep pending for reconcile/query.
                     return {
