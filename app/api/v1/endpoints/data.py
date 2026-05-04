@@ -809,28 +809,40 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
         if plan:
             plan.plan_code = canonical_code
 
+    clean_plan_name = (
+        _clean_plan_label(str(item.get("plan_name") or item.get("name") or "").strip())[:255]
+        or f"{network.upper()} {provider_code}"
+    )
+    clean_data_size = str(item.get("data_size") or item.get("size") or "").strip()[:255] or "—"
+    clean_validity = str(item.get("validity") or "").strip()[:64]
+    clean_provider = str(item.get("provider") or "")[:64]
+    clean_provider_plan_id = str(item.get("provider_plan_id") or "")[:64]
+
     if not plan:
         plan = DataPlan(
             network=network,
             plan_code=canonical_code,
-            plan_name=_clean_plan_label(str(item.get("plan_name") or item.get("name") or "").strip()) or f"{network.upper()} {provider_code}",
-            data_size=str(item.get("data_size") or item.get("size") or "").strip() or "—",
-            validity=str(item.get("validity") or "").strip(),
+            plan_name=clean_plan_name,
+            data_size=clean_data_size,
+            validity=clean_validity,
             base_price=Decimal(str(item.get("price") or item.get("cost_price") or "0")),
-            provider=str(item.get("provider") or ""),
-            provider_plan_id=str(item.get("provider_plan_id") or ""),
+            provider=clean_provider,
+            provider_plan_id=clean_provider_plan_id,
             is_active=True,
         )
         db.add(plan)
         return True
 
     plan.network = network
-    plan.plan_name = _clean_plan_label(str(item.get("plan_name") or item.get("name") or plan.plan_name).strip()) or plan.plan_name
-    plan.data_size = str(item.get("data_size") or item.get("size") or plan.data_size).strip() or plan.data_size
-    plan.validity = str(item.get("validity") or plan.validity).strip() or plan.validity
+    plan.plan_name = (
+        _clean_plan_label(str(item.get("plan_name") or item.get("name") or plan.plan_name).strip())[:255]
+        or str(plan.plan_name or "")[:255]
+    )
+    plan.data_size = (str(item.get("data_size") or item.get("size") or plan.data_size).strip()[:255] or str(plan.data_size or "")[:255])
+    plan.validity = (str(item.get("validity") or plan.validity).strip()[:64] or str(plan.validity or "")[:64])
     plan.base_price = Decimal(str(item.get("price") or item.get("cost_price") or plan.base_price))
-    plan.provider = str(item.get("provider") or plan.provider or "")
-    plan.provider_plan_id = str(item.get("provider_plan_id") or plan.provider_plan_id or "")
+    plan.provider = str(item.get("provider") or plan.provider or "")[:64]
+    plan.provider_plan_id = str(item.get("provider_plan_id") or plan.provider_plan_id or "")[:64]
     # Note: We NO LONGER force is_active=True for existing plans.
     # This preserves manual Admin toggles during provider syncs.
     # NOTE: display_price is intentionally NOT overwritten here.
@@ -1141,7 +1153,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             transaction.provider = "smeplug"
             transaction.provider_plan_id = provider_plan_id
             transaction.external_reference = result.get("provider_reference")
-            
+
             if result.get("status") == "failed":
                 transaction.status = TransactionStatus.FAILED
                 transaction.failure_reason = result.get("error") or "Airtel service is temporarily unavailable"
@@ -1150,12 +1162,41 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             else:
                 transaction.status = TransactionStatus.PENDING
                 transaction.failure_reason = None
-            
+
+            # Immediate requery by customer reference to reduce false pending/failed states.
+            # If provider has already finalized the request, settle transaction right away.
+            query_result = smeplug.query_transaction(reference)
+            transaction.external_reference = (
+                query_result.get("provider_reference")
+                or transaction.external_reference
+                or None
+            )
+            if query_result.get("status") == "success":
+                transaction.status = TransactionStatus.SUCCESS
+                transaction.failure_reason = None
+            elif query_result.get("status") == "failed":
+                if transaction.status != TransactionStatus.REFUNDED:
+                    transaction.status = TransactionStatus.FAILED
+                    transaction.failure_reason = query_result.get("error") or result.get("error") or "Provider reported failure"
+                    credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed Airtel data purchase")
+                    transaction.status = TransactionStatus.REFUNDED
+            elif transaction.status == TransactionStatus.PENDING:
+                # Keep pending with actionable message for later webhook/reconcile.
+                transaction.failure_reason = (
+                    query_result.get("error")
+                    or result.get("error")
+                    or "Awaiting provider confirmation"
+                )
+
             db.commit()
             return {
                 "reference": reference,
                 "status": transaction.status,
-                "message": result.get("error") or "Transaction pending confirmation",
+                "message": (
+                    "Transaction successful"
+                    if transaction.status == TransactionStatus.SUCCESS
+                    else (transaction.failure_reason or "Transaction pending confirmation")
+                ),
                 "provider": "smeplug",
                 "network": plan.network,
                 "plan_code": plan.plan_code,
@@ -1630,7 +1671,13 @@ def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(
     plans = response.get("data", [])
     updated = 0
     for item in plans:
-        updated += 1 if _upsert_plan_from_provider(db, item) else 0
+        try:
+            updated += 1 if _upsert_plan_from_provider(db, item) else 0
+            db.flush()
+        except Exception as exc:
+            db.rollback()
+            logger.warning("Skipping malformed plan from Amigo during sync: %s", exc)
+            continue
     
     # Non-Amigo providers
     provider = get_bills_provider()
@@ -1639,7 +1686,9 @@ def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(
             try:
                 touched, _ = _refresh_provider_network_plans(db, provider, network)
                 updated += touched
+                db.flush()
             except Exception as exc:
+                db.rollback()
                 logger.warning("Provider variations fetch failed for %s: %s", network, exc)
                 continue
 
@@ -1655,7 +1704,13 @@ def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(
                 canonical_code = canonical_plan_code("airtel", p["provider_plan_id"])
                 if canonical_code:
                     active_codes.add(canonical_code)
-                smeplug_updated += 1 if _upsert_plan_from_provider(db, p) else 0
+                try:
+                    smeplug_updated += 1 if _upsert_plan_from_provider(db, p) else 0
+                    db.flush()
+                except Exception as exc:
+                    db.rollback()
+                    logger.warning("Skipping malformed SMEPlug Airtel plan during sync: %s", exc)
+                    continue
             
             # Deactivate stale Airtel plans
             stale_rows = db.query(DataPlan).filter(func.lower(DataPlan.network) == "airtel", DataPlan.is_active == True).all()
@@ -1666,6 +1721,7 @@ def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(
         else:
             smeplug_error = "SMEPlug returned no plans. Check API Key and network_id."
     except Exception as exc:
+        db.rollback()
         smeplug_error = str(exc)
         logger.warning("SMEPlug Airtel sync failed: %s", exc)
 

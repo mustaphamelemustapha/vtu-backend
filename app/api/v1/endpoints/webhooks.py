@@ -6,9 +6,11 @@ from decimal import Decimal
 from app.core.database import get_db
 from app.models import Transaction, TransactionStatus
 from app.services.wallet import get_or_create_wallet, credit_wallet
+from app.core.config import get_settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 @router.post("/smeplug")
 async def smeplug_webhook(request: Request, db: Session = Depends(get_db)):
@@ -26,15 +28,24 @@ async def smeplug_webhook(request: Request, db: Session = Depends(get_db)):
         }
     }
     """
+    # Optional webhook token validation (supports either bearer auth or x-webhook-token).
+    configured_secret = str(settings.smeplug_webhook_secret or "").strip()
+    if configured_secret:
+        auth_header = str(request.headers.get("authorization") or "")
+        token_header = str(request.headers.get("x-webhook-token") or "")
+        bearer = auth_header.replace("Bearer ", "").strip() if auth_header.lower().startswith("bearer ") else auth_header.strip()
+        if configured_secret not in {bearer, token_header.strip()}:
+            raise HTTPException(status_code=401, detail="Invalid SMEPlug webhook token")
+
     payload = await request.json()
     logger.info("SMEPlug Webhook received: %s", payload)
     
-    tx_data = payload.get("transaction")
+    tx_data = payload.get("transaction") or payload.get("data") or payload
     if not tx_data:
         logger.warning("SMEPlug Webhook missing transaction data")
         return {"status": "ignored"}
 
-    status = tx_data.get("status")
+    status = str(tx_data.get("status") or "").strip().lower()
     customer_reference = tx_data.get("customer_reference")
     provider_reference = tx_data.get("reference")
     

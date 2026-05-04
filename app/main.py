@@ -131,6 +131,7 @@ def ensure_tables():
         _ensure_user_security_pin_columns()
         _ensure_transaction_recipient_column()
         _ensure_data_plan_provider_columns()
+        _ensure_data_plan_text_lengths()
         _ensure_transaction_provider_columns()
         return
 
@@ -147,6 +148,7 @@ def ensure_tables():
     _ensure_user_security_pin_columns()
     _ensure_transaction_recipient_column()
     _ensure_data_plan_provider_columns()
+    _ensure_data_plan_text_lengths()
     _ensure_transaction_provider_columns()
 
 
@@ -256,6 +258,51 @@ def _ensure_data_plan_provider_columns() -> None:
         logging.getLogger(__name__).info("Added data_plans provider columns.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure data_plans provider columns: %s", exc)
+
+
+def _ensure_data_plan_text_lengths() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("data_plans"):
+            return
+        cols = {c["name"]: c for c in inspector.get_columns("data_plans")}
+        statements: list[str] = []
+        dialect_name = getattr(engine.dialect, "name", "")
+
+        def _varchar_len(col_name: str) -> int | None:
+            col = cols.get(col_name)
+            if not col:
+                return None
+            col_type = col.get("type")
+            length = getattr(col_type, "length", None)
+            if isinstance(length, int):
+                return length
+            return None
+
+        plan_name_len = _varchar_len("plan_name")
+        data_size_len = _varchar_len("data_size")
+        validity_len = _varchar_len("validity")
+
+        if dialect_name == "postgresql":
+            if plan_name_len is not None and plan_name_len < 255:
+                statements.append("ALTER TABLE data_plans ALTER COLUMN plan_name TYPE VARCHAR(255)")
+            if data_size_len is not None and data_size_len < 255:
+                statements.append("ALTER TABLE data_plans ALTER COLUMN data_size TYPE VARCHAR(255)")
+            if validity_len is not None and validity_len < 64:
+                statements.append("ALTER TABLE data_plans ALTER COLUMN validity TYPE VARCHAR(64)")
+        elif dialect_name == "sqlite":
+            # SQLite does not enforce VARCHAR length; nothing required.
+            statements = []
+
+        if not statements:
+            return
+
+        with engine.begin() as conn:
+            for statement in statements:
+                conn.execute(text(statement))
+        logging.getLogger(__name__).info("Expanded data_plans text columns for long provider plan labels.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure data_plans text lengths: %s", exc)
 
 
 def _ensure_transaction_provider_columns() -> None:

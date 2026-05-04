@@ -9,9 +9,9 @@ class DataPlan(Base, TimestampMixin):
     id = Column(Integer, primary_key=True, index=True)
     network = Column(String(32), nullable=False, index=True)
     plan_code = Column(String(64), nullable=False, unique=True)
-    plan_name = Column(String(128), nullable=False)
-    data_size = Column(String(32), nullable=False)
-    validity = Column(String(32), nullable=False)
+    plan_name = Column(String(255), nullable=False)
+    data_size = Column(String(255), nullable=False)
+    validity = Column(String(64), nullable=False)
     base_price = Column(Numeric(12, 2), nullable=False)
     # Admin-set override: when set, this price is used instead of base_price + margin.
     display_price = Column(Numeric(12, 2), nullable=True, default=None)
