@@ -181,10 +181,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
     plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
     
     if all_count > 0 and not plans:
-        logger.warning("DB has %d plans but none are active. Auto-activating all.", all_count)
-        db.query(DataPlan).update({DataPlan.is_active: True})
-        db.commit()
-        plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+        logger.warning("DB has %d plans but none are active. Returning empty list.", all_count)
     
     breakdown = {}
     for p in plans:
