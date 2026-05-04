@@ -222,6 +222,24 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
         except Exception as exc:
             logger.warning("9mobile sync failed: %s", exc)
 
+    # 3. MTN/GLO -> Amigo Sync (If low)
+    if breakdown.get("mtn", 0) < 5 or breakdown.get("glo", 0) < 5:
+        logger.info("MTN or Glo plans low. Syncing from Amigo...")
+        try:
+            amigo = AmigoClient()
+            res = amigo.fetch_data_plans()
+            items = res.get("data", [])
+            if items:
+                touched = 0
+                for item in items:
+                    touched += 1 if _upsert_plan_from_provider(db, item) else 0
+                if touched:
+                    db.commit()
+                    plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+                    logger.info("Amigo sync finished. Touched %d plans.", touched)
+        except Exception as exc:
+            logger.warning("Amigo sync failed: %s", exc)
+
     promo_snapshot = _mtn_1gb_promo_snapshot(db)
     user_promo_used = _user_has_used_mtn_1gb_promo(db, user.id)
     
