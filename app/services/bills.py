@@ -745,7 +745,7 @@ class ClubKonnectBillsProvider:
 
         pending = (
             (code in _CLUBKONNECT_PENDING_CODES if code is not None else False)
-            or status_text in {"ORDER_RECEIVED", "ORDER_PROCESSED", "ORDER_ONHOLD", "PENDING"}
+            or status_text in {"ORDER_RECEIVED", "ORDER_PROCESSED", "ORDER_ONHOLD", "PENDING", "TXN_HISTORY", "PROCESSING", "SUBMITTED"}
         )
         success = (
             (code in _CLUBKONNECT_SUCCESS_CODES if code is not None else False)

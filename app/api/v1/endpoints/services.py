@@ -275,6 +275,8 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
         return {"reference": reference, "status": tx.status}
 
     tx.failure_reason = result.message or "Provider failed"
+    if result.meta:
+        tx.meta = {**(tx.meta or {}), **result.meta}
     credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed airtime purchase")
     tx.status = TransactionStatus.REFUNDED.value
     db.commit()
@@ -367,6 +369,8 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
         return {"reference": reference, "status": tx.status}
 
     tx.failure_reason = result.message or "Provider failed"
+    if result.meta:
+        tx.meta = {**(tx.meta or {}), **result.meta}
     credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed cable purchase")
     tx.status = TransactionStatus.REFUNDED.value
     db.commit()
@@ -525,6 +529,8 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
         return {"reference": reference, "status": tx.status, "token": (tx.meta or {}).get("token")}
 
     tx.failure_reason = result.message or "Provider failed"
+    if result.meta:
+        tx.meta = {**(tx.meta or {}), **result.meta}
     credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed electricity purchase")
     tx.status = TransactionStatus.REFUNDED.value
     db.commit()
@@ -719,6 +725,8 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
         return {"reference": reference, "status": tx.status, "pins": (tx.meta or {}).get("pins", [])}
 
     tx.failure_reason = result.message or "Provider failed"
+    if result.meta:
+        tx.meta = {**(tx.meta or {}), **result.meta}
     credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed exam pin purchase")
     tx.status = TransactionStatus.REFUNDED.value
     db.commit()
