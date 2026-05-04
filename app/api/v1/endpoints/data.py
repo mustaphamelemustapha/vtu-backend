@@ -55,21 +55,80 @@ def _clean_plan_label(name: str | None) -> str:
         return ""
     return str(name).replace("(Direct Data)", "").replace("Direct Data", "").strip()
 
-def _is_mtn_1gb_promo_plan(plan) -> bool:
-    nw = str(plan.network or "").lower()
-    sz = str(plan.data_size or "").upper()
-    return nw == "mtn" and "1GB" in sz
+def _promo_plan_code_suffix(plan_code: str | None) -> str:
+    raw = str(plan_code or "").strip().lower()
+    if ":" in raw:
+        return raw.split(":")[-1]
+    return raw
+
+def _is_mtn_1gb_promo_plan(plan: DataPlan) -> bool:
+    if not getattr(settings, "promo_mtn_1gb_enabled", False):
+        return False
+    network = str(plan.network or "").strip().lower()
+    promo_nw = str(getattr(settings, "promo_mtn_1gb_network", "mtn")).strip().lower()
+    if network != promo_nw:
+        return False
+    suffix = _promo_plan_code_suffix(plan.plan_code)
+    promo_code = str(getattr(settings, "promo_mtn_1gb_plan_code", "1001")).strip().lower()
+    return suffix == promo_code
+
+def _count_mtn_1gb_promo_successes(db: Session) -> int:
+    network = str(getattr(settings, "promo_mtn_1gb_network", "mtn")).strip().lower()
+    promo_price = Decimal(str(getattr(settings, "promo_mtn_1gb_price", "199")))
+    count = (
+        db.query(func.count(func.distinct(Transaction.user_id)))
+        .filter(
+            Transaction.tx_type == TransactionType.DATA,
+            Transaction.status == TransactionStatus.SUCCESS,
+            Transaction.amount == promo_price,
+            func.lower(Transaction.network) == network,
+        )
+        .scalar()
+    )
+    return int(count or 0)
 
 def _mtn_1gb_promo_snapshot(db: Session) -> dict:
+    limit = max(int(getattr(settings, "promo_mtn_1gb_limit", 0)), 0)
+    enabled = bool(getattr(settings, "promo_mtn_1gb_enabled", False))
+    if not enabled or limit <= 0:
+        return {"active": False, "remaining": 0, "limit": limit, "price": Decimal("250")}
+    
+    consumed = _count_mtn_1gb_promo_successes(db)
+    remaining = max(limit - consumed, 0)
     return {
-        "active": False,
-        "price": "250",
-        "limit": 50,
-        "remaining": 0
+        "active": remaining > 0,
+        "remaining": remaining,
+        "limit": limit,
+        "price": Decimal(str(getattr(settings, "promo_mtn_1gb_price", "199")))
     }
 
 def _user_has_used_mtn_1gb_promo(db: Session, user_id: int) -> bool:
-    return False
+    network = str(getattr(settings, "promo_mtn_1gb_network", "mtn")).strip().lower()
+    promo_price = Decimal(str(getattr(settings, "promo_mtn_1gb_price", "199")))
+    row = (
+        db.query(Transaction.id)
+        .filter(
+            Transaction.user_id == int(user_id),
+            Transaction.tx_type == TransactionType.DATA,
+            Transaction.status == TransactionStatus.SUCCESS,
+            Transaction.amount == promo_price,
+            func.lower(Transaction.network) == network,
+        )
+        .first()
+    )
+    return bool(row)
+
+def _safe_reason(value: str, limit: int = 255) -> str:
+    text = str(value or "").strip()
+    return text[:limit] if text else "Unknown provider error"
+
+def _is_ambiguous_provider_error(exc: Exception) -> bool:
+    msg = str(exc).strip().lower()
+    ambiguous_hints = (
+        "timeout", "timed out", "connection error", "connection reset", 
+        "non-json", "invalid json", "service unavailable", "remote protocol"
+    )
+    return any(hint in msg for hint in ambiguous_hints)
 
 def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
     network = str(item.get("network") or "").lower()
@@ -144,7 +203,6 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
         logger.info("9mobile plans low. Syncing from Bills Provider...")
         try:
             provider = get_bills_provider()
-            # Many bills providers support fetch_data_variations
             if hasattr(provider, "fetch_data_variations"):
                 items = provider.fetch_data_variations("9mobile")
                 if items:
@@ -178,8 +236,8 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
             promo_active = bool(promo_snapshot["active"]) and not user_promo_used
             if promo_active:
                 promo_price = Decimal(str(promo_snapshot["price"]))
-                if promo_price < Decimal(str(price)):
-                    promo_old_price = Decimal(str(price))
+                if promo_price < price:
+                    promo_old_price = price
                     price = promo_price
                     promo_label = "First 50 promo"
 
@@ -203,7 +261,6 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
             )
         )
     
-    # Sort by network, price, and data size
     priced.sort(key=lambda p: (str(p.network or "").lower(), p.price or 0, _parse_size_gb(p.data_size or p.plan_name) or 0))
     return priced
 
@@ -214,13 +271,11 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
     plan_code_input = str(payload.plan_code or "").strip()
     payload_network = str(payload.network or "").strip().lower()
     
-    # Find active plan
     plan_query = db.query(DataPlan).filter(DataPlan.plan_code == plan_code_input, DataPlan.is_active == True)
     if payload_network:
         plan_query = plan_query.filter(func.lower(DataPlan.network) == payload_network)
     plan = plan_query.first()
     
-    # Suffix match fallback
     if not plan and ":" not in plan_code_input and plan_code_input:
         suffix_query = (
             db.query(DataPlan)
@@ -239,10 +294,8 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
     if not phone:
         raise HTTPException(status_code=400, detail="Recipient phone number is required.")
 
-    # Fraud checks
     enforce_purchase_limits(db, user, "data")
     
-    # Pricing (including promo)
     price = get_price_for_user(db, plan, user.role)
     if _is_mtn_1gb_promo_plan(plan):
         promo = _mtn_1gb_promo_snapshot(db)
@@ -264,17 +317,14 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
     transaction = Transaction(
         user_id=user.id,
         amount=price,
-        type=TransactionType.DATA,
+        tx_type=TransactionType.DATA,
         status=TransactionStatus.PENDING,
         reference=reference,
-        description=f"{plan.network.upper()} Data: {plan.plan_name} to {phone}",
-        meta={
-            "phone_number": phone,
-            "plan_id": plan.id,
-            "plan_code": plan.plan_code,
-            "network": plan.network,
-            "provider": plan.provider,
-        }
+        network=plan.network,
+        recipient_phone=phone,
+        data_plan_code=plan.plan_code,
+        provider=plan.provider,
+        provider_plan_id=plan.provider_plan_id
     )
     db.add(transaction)
     db.commit()
@@ -289,6 +339,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
         if network_key == "airtel":
             sme = SMEPlugProvider()
             provider_res = sme.purchase_airtel_data(phone, plan.provider_plan_id or plan.plan_code, reference)
+            transaction.provider = "smeplug"
             
         # MTN/GLO -> Amigo
         elif network_key in {"mtn", "glo"}:
@@ -300,6 +351,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 "plan": normalize_plan_code(plan.plan_code),
                 "Ported_number": True
             }
+            transaction.provider = "amigo"
             try:
                 res = amigo.purchase_data(amigo_payload, idempotency_key=reference)
                 if res.get("success") or str(res.get("status")).lower() in {"delivered", "success", "successful"}:
@@ -314,6 +366,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
         # 9MOBILE -> ClubKonnect/Bills
         elif network_key == "9mobile":
             bills = get_bills_provider()
+            transaction.provider = "clubkonnect"
             res = bills.purchase_data(network_key, phone, plan.provider_plan_id or plan.plan_code, amount=float(price), request_id=reference)
             if res.ok:
                 provider_res = {"status": "success", "provider_reference": res.external_reference}
@@ -327,7 +380,10 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
 
     except Exception as exc:
         logger.error("Data purchase provider exception: %s", exc)
-        provider_res = {"status": "pending", "error": f"Provider exception: {str(exc)}"}
+        if _is_ambiguous_provider_error(exc):
+            provider_res = {"status": "pending", "error": f"Provider timeout/error: {str(exc)}"}
+        else:
+            provider_res = {"status": "failed", "error": str(exc)}
 
     duration_ms = (time.time() - start_time) * 1000
     
@@ -337,22 +393,21 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
     transaction.external_reference = provider_res.get("provider_reference")
     
     if final_status == "failed":
-        transaction.failure_reason = provider_res.get("error")
+        transaction.failure_reason = _safe_reason(provider_res.get("error"))
         credit_wallet(db, user.id, price, f"Refund: {plan.plan_name} purchase failed", reference)
         transaction.status = TransactionStatus.REFUNDED
 
     db.commit()
 
-    # Log API call
+    # Log API call (Using correct ApiLog fields: user_id, service, endpoint, status_code, duration_ms, reference, success)
     api_log = ApiLog(
-        service="data",
-        endpoint="/purchase",
-        method="POST",
+        user_id=user.id,
+        service=transaction.provider or "data",
+        endpoint="/data/purchase",
         status_code=200,
-        success=1 if final_status == "success" else 0,
         duration_ms=duration_ms,
-        provider=plan.provider,
-        response_body=str(provider_res)
+        reference=reference,
+        success=1 if final_status == "success" else 0
     )
     db.add(api_log)
     db.commit()
