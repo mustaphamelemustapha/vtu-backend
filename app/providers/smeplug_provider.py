@@ -40,6 +40,7 @@ class SMEPlugProvider:
                 for p in plans:
                     if int(p.get("network_id", 0)) == airtel_network_id:
                         airtel_plans.append({
+                            "plan_code": str(p.get("id")),
                             "provider_plan_id": str(p.get("id")),
                             "name": p.get("name"),
                             "cost_price": float(p.get("price", 0)),

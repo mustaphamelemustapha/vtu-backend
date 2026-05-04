@@ -785,7 +785,7 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
     if not network:
         return False
 
-    incoming_code = str(item.get("plan_code") or "").strip()
+    incoming_code = str(item.get("plan_code") or item.get("provider_plan_id") or item.get("id") or "").strip()
     if not incoming_code:
         return False
 
@@ -842,25 +842,6 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
 def _invalidate_plans_cache() -> None:
     for role in (UserRole.USER.value, UserRole.RESELLER.value, UserRole.ADMIN.value):
         set_cached(f"plans:{_PLAN_CACHE_VERSION}:{role}", None, ttl_seconds=1)
-
-
-def _enforce_airtel_amigo_catalog(db: Session) -> int:
-    """
-    Force Airtel plans to the Amigo allowlist only, deactivating legacy rows
-    from old providers.
-    """
-    touched = 0
-    rows = db.query(DataPlan).filter(func.lower(DataPlan.network) == "airtel").all()
-    for row in rows:
-        canonical_code = canonical_plan_code("airtel", str(row.plan_code or "").strip())
-        if canonical_code and row.plan_code != canonical_code:
-            row.plan_code = canonical_code
-            touched += 1
-        allowed = canonical_code in _AIRTEL_AMIGO_ALLOWED_CODES
-        if not allowed and row.is_active:
-            row.is_active = False
-            touched += 1
-    return touched
 
 
 def _refresh_provider_network_plans(db: Session, provider, network: str) -> tuple[int, set[str]]:
@@ -1650,6 +1631,8 @@ def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(
     updated = 0
     for item in plans:
         updated += 1 if _upsert_plan_from_provider(db, item) else 0
+    
+    # Non-Amigo providers
     provider = get_bills_provider()
     if hasattr(provider, "fetch_data_variations"):
         for network in ("9mobile",):
@@ -1659,7 +1642,28 @@ def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(
             except Exception as exc:
                 logger.warning("Provider variations fetch failed for %s: %s", network, exc)
                 continue
-    updated += _enforce_airtel_amigo_catalog(db)
+
+    # SMEPlug sync for Airtel
+    try:
+        smeplug = SMEPlugProvider()
+        airtel_plans = smeplug.get_airtel_plans()
+        if airtel_plans:
+            active_codes = set()
+            for p in airtel_plans:
+                canonical_code = canonical_plan_code("airtel", p["provider_plan_id"])
+                if canonical_code:
+                    active_codes.add(canonical_code)
+                updated += 1 if _upsert_plan_from_provider(db, p) else 0
+            
+            # Deactivate stale Airtel plans
+            stale_rows = db.query(DataPlan).filter(func.lower(DataPlan.network) == "airtel", DataPlan.is_active == True).all()
+            for row in stale_rows:
+                if str(row.plan_code or "").strip() not in active_codes:
+                    row.is_active = False
+                    updated += 1
+    except Exception as exc:
+        logger.warning("SMEPlug Airtel sync failed: %s", exc)
+
     db.commit()
     _invalidate_plans_cache()
     return {"updated": updated}
