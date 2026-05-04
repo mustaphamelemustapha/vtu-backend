@@ -158,7 +158,7 @@ def reconcile_pending_data_once(limit: int = 50) -> dict[str, int]:
                 stayed_pending += 1
                 db.commit()
                 continue
-            network_id = resolve_network_id(network, tx.data_plan_code)
+            network_id = resolve_network_id(network)
             if network_id is None:
                 _finalize_refund(db, tx, "Unsupported network during pending reconciliation")
                 moved_refunded += 1
