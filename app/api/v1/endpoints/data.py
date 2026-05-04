@@ -254,12 +254,31 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
 
     promo_snapshot = _mtn_1gb_promo_snapshot(db)
     user_promo_used = _user_has_used_mtn_1gb_promo(db, user.id)
+    
+    # PERFORMANCE OPTIMIZATION: Fetch pricing rules once to avoid N+1 query timeout
+    from app.models import PricingRule, PricingRole, UserRole
+    pricing_role = PricingRole.RESELLER if user.role == UserRole.RESELLER else PricingRole.USER
+    all_rules = db.query(PricingRule).filter(PricingRule.role == pricing_role).all()
+    rule_map = {str(r.network or "").strip().lower(): r for r in all_rules}
+    
     priced = []
     for plan in plans:
         try:
-            price = get_price_for_user(db, plan, user.role)
-            if price is None:
-                continue
+            display = getattr(plan, "display_price", None)
+            if display is not None:
+                price = Decimal(str(display))
+            else:
+                rule = rule_map.get(str(plan.network or "").strip().lower())
+                margin = Decimal(str(rule.margin)) if rule else Decimal("0")
+                margin_type = str(getattr(rule, "margin_type", None) or "fixed").strip().lower()
+                if margin_type not in ("fixed", "percentage"):
+                    margin_type = "fixed"
+                
+                base = Decimal(str(plan.base_price or "0"))
+                if margin_type == "percentage":
+                    price = base + (base * margin / Decimal("100"))
+                else:
+                    price = base + margin
             
             # Promo logic
             promo_active = False
