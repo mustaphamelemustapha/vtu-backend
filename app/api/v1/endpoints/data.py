@@ -1042,6 +1042,13 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
     except Exception as exc:
         logger.warning("SMEPlug Airtel sync failed: %s", exc)
 
+    # Log network breakdown
+    breakdown = {}
+    for p in plans:
+        nw = str(p.network or "unknown").lower()
+        breakdown[nw] = breakdown.get(nw, 0) + 1
+    logger.info("Active plans breakdown: %s", breakdown)
+
     # Final enforcement of Airtel source policy: only SMEPlug Airtel plans are exposed.
     final_plans = [
         p for p in plans
@@ -1193,7 +1200,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 user_id=user.id,
                 service="smeplug",
                 endpoint="/data/purchase",
-                status_code=200,
+                status_code=int(result.get("http_status") or 200),
                 duration_ms=duration_ms,
                 reference=reference,
                 success=1 if result.get("status") != "failed" else 0,
@@ -1208,34 +1215,38 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 transaction.failure_reason = result.get("error") or "Airtel service is temporarily unavailable"
                 credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed Airtel data purchase")
                 transaction.status = TransactionStatus.REFUNDED
+            elif result.get("status") == "success":
+                transaction.status = TransactionStatus.SUCCESS
+                transaction.failure_reason = None
             else:
                 transaction.status = TransactionStatus.PENDING
                 transaction.failure_reason = None
 
-            # Immediate requery by customer reference to reduce false pending/failed states.
-            # If provider has already finalized the request, settle transaction right away.
-            query_result = smeplug.query_transaction(reference)
-            transaction.external_reference = (
-                query_result.get("provider_reference")
-                or transaction.external_reference
-                or None
-            )
-            if query_result.get("status") == "success":
-                transaction.status = TransactionStatus.SUCCESS
-                transaction.failure_reason = None
-            elif query_result.get("status") == "failed":
-                if transaction.status != TransactionStatus.REFUNDED:
-                    transaction.status = TransactionStatus.FAILED
-                    transaction.failure_reason = query_result.get("error") or result.get("error") or "Provider reported failure"
-                    credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed Airtel data purchase")
-                    transaction.status = TransactionStatus.REFUNDED
-            elif transaction.status == TransactionStatus.PENDING:
-                # Keep pending with actionable message for later webhook/reconcile.
-                transaction.failure_reason = (
-                    query_result.get("error")
-                    or result.get("error")
-                    or "Awaiting provider confirmation"
+            # Requery only when SMEPlug did not already finalize the transaction.
+            if transaction.status == TransactionStatus.PENDING:
+                query_reference = transaction.external_reference or reference
+                query_result = smeplug.query_transaction(query_reference)
+                transaction.external_reference = (
+                    query_result.get("provider_reference")
+                    or transaction.external_reference
+                    or None
                 )
+                if query_result.get("status") == "success":
+                    transaction.status = TransactionStatus.SUCCESS
+                    transaction.failure_reason = None
+                elif query_result.get("status") == "failed":
+                    if transaction.status != TransactionStatus.REFUNDED:
+                        transaction.status = TransactionStatus.FAILED
+                        transaction.failure_reason = query_result.get("error") or result.get("error") or "Provider reported failure"
+                        credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed Airtel data purchase")
+                        transaction.status = TransactionStatus.REFUNDED
+                else:
+                    # Keep pending with actionable message for later webhook/reconcile.
+                    transaction.failure_reason = (
+                        query_result.get("error")
+                        or result.get("error")
+                        or "Awaiting provider confirmation"
+                    )
 
             db.commit()
             return {
