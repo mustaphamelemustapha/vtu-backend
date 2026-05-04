@@ -974,39 +974,47 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
     #     return cached
 
     plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
-    should_sync = not plans
-    if should_sync:
-        # Auto-seed/refresh from provider when DB is empty.
-        client = AmigoClient()
-        response = client.fetch_data_plans()
-        items = response.get("data", [])
-        touched = 0
-        for item in items:
-            touched += 1 if _upsert_plan_from_provider(db, item) else 0
-        if touched:
-            db.commit()
-            plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+    logger.info("Initial active plans count: %d", len(plans))
 
-    # Pull 9mobile plans from configured non-Amigo provider and keep them in sync.
-    touched = 0
-    network_providers = {
-        "9mobile": get_bills_provider(),
-    }
-    for network, provider in network_providers.items():
-        if not hasattr(provider, "fetch_data_variations"):
-            continue
+    # Check which networks are represented
+    active_networks = {p.network.lower() for p in plans if p.network}
+    
+    # If major networks (MTN, Glo) are missing, trigger Amigo sync
+    if "mtn" not in active_networks or "glo" not in active_networks:
+        logger.info("Major networks (MTN/Glo) missing or inactive. Triggering Amigo sync.")
         try:
-            updated, _ = _refresh_provider_network_plans(db, provider, network)
-            touched += updated
+            client = AmigoClient()
+            response = client.fetch_data_plans()
+            items = response.get("data", [])
+            logger.info("Amigo sync found %d items", len(items))
+            touched = 0
+            for item in items:
+                touched += 1 if _upsert_plan_from_provider(db, item) else 0
+            if touched:
+                db.commit()
+                plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+                active_networks = {p.network.lower() for p in plans if p.network}
+                logger.info("After Amigo sync, active plans: %d", len(plans))
         except Exception as exc:
-            logger.warning("Provider variations fetch failed for %s: %s", network, exc)
-    if touched:
-        db.commit()
-        # _invalidate_plans_cache()
-        plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+            logger.warning("Amigo sync failed: %s", exc)
 
-    # SMEPlug sync for Airtel
+    # 9mobile sync from configured bills provider
+    if "9mobile" not in active_networks:
+        logger.info("9mobile plans missing. Triggering provider sync.")
+        try:
+            provider = get_bills_provider()
+            if hasattr(provider, "fetch_data_variations"):
+                updated, _ = _refresh_provider_network_plans(db, provider, "9mobile")
+                if updated:
+                    db.commit()
+                    plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+                    logger.info("After 9mobile sync, active plans: %d", len(plans))
+        except Exception as exc:
+            logger.warning("9mobile sync failed: %s", exc)
+
+    # SMEPlug sync for Airtel (Always run to keep live plans synced)
     try:
+        logger.info("Triggering SMEPlug Airtel sync.")
         smeplug = SMEPlugProvider()
         airtel_plans = smeplug.get_airtel_plans()
         if airtel_plans:
@@ -1018,7 +1026,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                     active_codes.add(canonical_code)
                 airtel_touched += 1 if _upsert_plan_from_provider(db, p) else 0
             
-            # Deactivate stale Airtel plans
+            # Deactivate stale Airtel plans (those no longer in SMEPlug's live list)
             stale_rows = db.query(DataPlan).filter(func.lower(DataPlan.network) == "airtel", DataPlan.is_active == True).all()
             for row in stale_rows:
                 if str(row.plan_code or "").strip() not in active_codes:
@@ -1027,15 +1035,20 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
             
             if airtel_touched:
                 db.commit()
-                # _invalidate_plans_cache()
                 plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+                logger.info("After SMEPlug sync, active plans: %d", len(plans))
+        else:
+            logger.warning("SMEPlug returned no Airtel plans.")
     except Exception as exc:
         logger.warning("SMEPlug Airtel sync failed: %s", exc)
-    # Enforce Airtel source policy: only SMEPlug Airtel plans are exposed.
-    plans = [
+
+    # Final enforcement of Airtel source policy: only SMEPlug Airtel plans are exposed.
+    final_plans = [
         p for p in plans
         if not _is_airtel_row(p) or _is_smeplug_airtel_row(p)
     ]
+    logger.info("Final plans count after Airtel filtering: %d", len(final_plans))
+    plans = final_plans
 
     promo_snapshot = _mtn_1gb_promo_snapshot(db)
     user_promo_used = _user_has_used_mtn_1gb_promo(db, user.id)
