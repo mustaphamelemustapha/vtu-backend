@@ -284,6 +284,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
         )
     
     priced.sort(key=lambda p: (str(p.network or "").lower(), p.price or 0, _parse_size_gb(p.data_size or p.plan_name) or 0))
+    logger.info("Returning %d active data plans for user %s", len(priced), user.email)
     return priced
 
 

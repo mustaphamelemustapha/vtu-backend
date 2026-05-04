@@ -107,7 +107,7 @@ class AmigoClient:
     def fetch_data_plans(self) -> dict:
         # Default to efficiency plans
         try:
-            res = self._request("GET", "/plans/efficiency")
+            res = self._request("GET", settings.amigo_plans_path)
             # Convert efficiency format to list of items
             items = []
             for nw, plans in res.items():
