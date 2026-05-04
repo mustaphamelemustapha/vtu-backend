@@ -395,14 +395,16 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
     
     start_time = time.time()
     try:
-        # AIRTEL -> SMEPlug
-        if network_key == "airtel":
+        provider_name = str(plan.provider or "").strip().lower()
+
+        if provider_name == "smeplug":
             sme = SMEPlugProvider()
-            provider_res = sme.purchase_airtel_data(phone, plan.provider_plan_id or plan.plan_code, reference)
+            sme_network_map = {"mtn": 1, "airtel": 2, "9mobile": 3, "glo": 4}
+            net_id = sme_network_map.get(network_key, 2)
+            provider_res = sme.purchase_data(net_id, plan.provider_plan_id or plan.plan_code, phone, reference)
             transaction.provider = "smeplug"
-            
-        # MTN/GLO -> Amigo
-        elif network_key in {"mtn", "glo"}:
+
+        elif provider_name == "amigo" or (not provider_name and network_key in {"mtn", "glo"}):
             amigo = AmigoClient()
             amigo_network_id = 1 if network_key == "mtn" else 3
             amigo_payload = {
@@ -423,8 +425,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             except AmigoApiError as e:
                 provider_res = {"status": "failed", "error": str(e)}
 
-        # 9MOBILE -> ClubKonnect/Bills
-        elif network_key == "9mobile":
+        elif provider_name == "clubkonnect" or (not provider_name and network_key == "9mobile"):
             bills = get_bills_provider()
             transaction.provider = "clubkonnect"
             res = bills.purchase_data(network_key, phone, plan.provider_plan_id or plan.plan_code, amount=float(price), request_id=reference)
@@ -434,7 +435,13 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
                 provider_res = {"status": "pending", "provider_reference": res.external_reference}
             else:
                 provider_res = {"status": "failed", "error": res.message}
-        
+                
+        # Legacy fallback for Airtel if no provider was specified
+        elif network_key == "airtel":
+            sme = SMEPlugProvider()
+            provider_res = sme.purchase_airtel_data(phone, plan.provider_plan_id or plan.plan_code, reference)
+            transaction.provider = "smeplug"
+
         else:
             provider_res = {"status": "failed", "error": f"No provider configured for network: {network_key}"}
 
