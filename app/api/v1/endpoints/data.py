@@ -310,6 +310,25 @@ def debug_data_plans(db: Session = Depends(get_db)):
         "base_price": str(p.base_price),
         "display_price": str(p.display_price) if p.display_price is not None else None
     } for p in plans]
+
+@router.get("/user-plan-check")
+def user_plan_check(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    all_active = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+    results = []
+    for p in all_active:
+        try:
+            from app.services.pricing import get_price_for_user
+            price = get_price_for_user(db, p, user.role)
+            results.append({"id": p.id, "ok": True, "price": str(price)})
+        except Exception as e:
+            results.append({"id": p.id, "ok": False, "error": str(e)})
+    return {
+        "user_email": user.email,
+        "user_role": user.role,
+        "active_plans_in_db": len(all_active),
+        "successfully_priced_plans": len([r for r in results if r["ok"]]),
+        "errors": [r for r in results if not r["ok"]]
+    }
 @limiter.limit("5/minute")
 def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     plan_code_input = str(payload.plan_code or "").strip()
