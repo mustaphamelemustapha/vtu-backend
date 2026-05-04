@@ -27,27 +27,39 @@ class SMEPlugProvider:
                 response.raise_for_status()
                 data = response.json()
                 
-                # SMEPlug returns plans for all networks. Filter for Airtel (network_id=2).
-                # Expected format based on typical SMEPlug response:
-                # { "status": "success", "data": [ { "id": 1, "network_id": 2, "name": "...", "price": ... }, ... ] }
-                plans = data.get("data", [])
-                if not isinstance(plans, list):
-                    logger.warning("SMEPlug plans response 'data' is not a list: %s", data)
-                    return []
+                # SMEPlug returns plans grouped by network ID in a dictionary.
+                # '1' = MTN, '2' = Airtel, '3' = 9mobile, '4' = Glo
+                plans_data = data.get("data", {})
+                
+                # If it's a dictionary, get the specific list for Airtel ('2')
+                if isinstance(plans_data, dict):
+                    raw_plans = plans_data.get("2", [])
+                elif isinstance(plans_data, list):
+                    # Fallback for flat list format
+                    raw_plans = [p for p in plans_data if str(p.get("network_id")) == "2"]
+                else:
+                    logger.warning("Unexpected SMEPlug plans data format: %s", type(plans_data))
+                    raw_plans = []
 
-                airtel_network_id = int(settings.smeplug_network_airtel)
-                airtel_plans = []
-                for p in plans:
-                    if int(p.get("network_id", 0)) == airtel_network_id:
-                        airtel_plans.append({
-                            "plan_code": str(p.get("id")),
-                            "provider_plan_id": str(p.get("id")),
-                            "name": p.get("name"),
-                            "cost_price": float(p.get("price", 0)),
-                            "network": "airtel",
-                            "provider": "smeplug"
-                        })
-                return airtel_plans
+                results = []
+                for p in raw_plans:
+                    results.append({
+                        "network": "airtel",
+                        "plan_name": p.get("name"),
+                        "plan_code": f"airtel:{p.get('id')}",
+                        "data_size": p.get("name"), # SMEPlug doesn't provide explicit size field
+                        "validity": "30 Days", # Defaulting as SMEPlug doesn't provide this in a standard field
+                        "price": p.get("price") or p.get("telco_price") or 0,
+                        "provider": "smeplug",
+                        "provider_plan_id": str(p.get("id"))
+                    })
+                return results
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 403:
+                logger.error("Failed to fetch plans from SMEPlug: 403 Forbidden. Hint: Check if your server IP is whitelisted on the SMEPlug dashboard and your API key is correct.")
+            else:
+                logger.error("Failed to fetch plans from SMEPlug: %s", exc)
+            return []
         except Exception as exc:
             logger.error("Failed to fetch plans from SMEPlug: %s", exc)
             return []

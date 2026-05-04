@@ -1644,6 +1644,8 @@ def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(
                 continue
 
     # SMEPlug sync for Airtel
+    smeplug_updated = 0
+    smeplug_error = None
     try:
         smeplug = SMEPlugProvider()
         airtel_plans = smeplug.get_airtel_plans()
@@ -1653,17 +1655,26 @@ def sync_data_plans(admin: User = Depends(require_admin), db: Session = Depends(
                 canonical_code = canonical_plan_code("airtel", p["provider_plan_id"])
                 if canonical_code:
                     active_codes.add(canonical_code)
-                updated += 1 if _upsert_plan_from_provider(db, p) else 0
+                smeplug_updated += 1 if _upsert_plan_from_provider(db, p) else 0
             
             # Deactivate stale Airtel plans
             stale_rows = db.query(DataPlan).filter(func.lower(DataPlan.network) == "airtel", DataPlan.is_active == True).all()
             for row in stale_rows:
                 if str(row.plan_code or "").strip() not in active_codes:
                     row.is_active = False
-                    updated += 1
+                    smeplug_updated += 1
+        else:
+            smeplug_error = "SMEPlug returned no plans. Check API Key and network_id."
     except Exception as exc:
+        smeplug_error = str(exc)
         logger.warning("SMEPlug Airtel sync failed: %s", exc)
 
     db.commit()
     _invalidate_plans_cache()
-    return {"updated": updated}
+    return {
+        "updated": updated + smeplug_updated,
+        "smeplug_airtel": {
+            "updated": smeplug_updated,
+            "error": smeplug_error
+        }
+    }
