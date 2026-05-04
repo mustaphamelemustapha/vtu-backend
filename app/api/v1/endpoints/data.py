@@ -254,48 +254,55 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
 
     promo_snapshot = _mtn_1gb_promo_snapshot(db)
     user_promo_used = _user_has_used_mtn_1gb_promo(db, user.id)
-    
     priced = []
     for plan in plans:
-        price = get_price_for_user(db, plan, user.role)
-        promo_active = False
-        promo_old_price = None
-        promo_label = None
-        promo_remaining = None
-        promo_limit = None
-        
-        if _is_mtn_1gb_promo_plan(plan):
-            promo_limit = int(promo_snapshot["limit"])
-            promo_remaining = int(promo_snapshot["remaining"])
-            promo_active = bool(promo_snapshot["active"]) and not user_promo_used
-            if promo_active:
-                promo_price = Decimal(str(promo_snapshot["price"]))
-                if promo_price < price:
-                    promo_old_price = price
-                    price = promo_price
-                    promo_label = "First 50 promo"
-
-        priced.append(
-            DataPlanOut(
-                id=plan.id,
-                network=plan.network,
-                plan_code=plan.plan_code,
-                plan_name=_clean_plan_label(plan.plan_name),
-                data_size=plan.data_size,
-                validity=plan.validity,
-                price=price,
-                base_price=plan.base_price,
-                promo_active=promo_active,
-                promo_old_price=promo_old_price,
-                promo_label=promo_label,
-                promo_remaining=promo_remaining,
-                promo_limit=promo_limit,
-                provider=plan.provider,
-                provider_plan_id=plan.provider_plan_id,
+        try:
+            price = get_price_for_user(db, plan, user.role)
+            if price is None:
+                continue
+            
+            # Promo logic
+            promo_active = False
+            promo_old_price = None
+            promo_label = None
+            promo_remaining = None
+            promo_limit = None
+            
+            if plan.network == "mtn" and _is_mtn_1gb_promo_plan(plan):
+                promo_active = True
+                promo_old_price = price
+                price = settings.promo_mtn_1gb_price
+                promo_label = "PROMO"
+                promo_limit = settings.promo_mtn_1gb_limit
+                
+            priced.append(
+                DataPlanOut(
+                    id=plan.id,
+                    network=plan.network,
+                    plan_code=plan.plan_code,
+                    plan_name=_clean_plan_label(plan.plan_name),
+                    data_size=plan.data_size,
+                    validity=plan.validity,
+                    price=price,
+                    base_price=plan.base_price,
+                    promo_active=promo_active,
+                    promo_old_price=promo_old_price,
+                    promo_label=promo_label,
+                    promo_remaining=promo_remaining,
+                    promo_limit=promo_limit,
+                    provider=plan.provider,
+                    provider_plan_id=plan.provider_plan_id,
+                )
             )
-        )
+        except Exception as e:
+            logger.warning("Failed to price plan %s: %s", plan.id, e)
+            continue
     
-    priced.sort(key=lambda p: (str(p.network or "").lower(), p.price or 0, _parse_size_gb(p.data_size or p.plan_name) or 0))
+    try:
+        priced.sort(key=lambda p: (str(p.network or "").lower(), p.price or 0, _parse_size_gb(p.data_size or p.plan_name) or 0))
+    except Exception as e:
+        logger.warning("Failed to sort plans: %s", e)
+        
     logger.info("Returning %d active data plans for user %s", len(priced), user.email)
     return priced
 
