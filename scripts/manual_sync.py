@@ -60,9 +60,17 @@ def run_sync():
                 logger.info(f"Found {len(items)} plans for 9mobile")
                 touched = 0
                 for item in items:
-                    item["network"] = "9mobile"
-                    item["provider"] = "clubkonnect"
-                    if _upsert_plan_from_provider(db, item):
+                    # Map ClubKonnect keys to standard keys
+                    mapped_item = {
+                        "network": "9mobile",
+                        "plan_code": str(item.get("DataPlan") or item.get("PRODUCT_ID") or ""),
+                        "plan_name": str(item.get("DataType") or item.get("PRODUCT_NAME") or "9mobile Data"),
+                        "data_size": str(item.get("DataType") or item.get("PRODUCT_NAME") or ""),
+                        "price": item.get("Amount") or item.get("PRODUCT_AMOUNT") or 0,
+                        "provider": "clubkonnect",
+                        "provider_plan_id": str(item.get("PRODUCT_ID") or item.get("PRODUCT_SNO") or ""),
+                    }
+                    if _upsert_plan_from_provider(db, mapped_item):
                         touched += 1
                 db.commit()
                 logger.info(f"9mobile sync done. Touched {touched} plans.")
