@@ -383,14 +383,27 @@ class AmigoClient:
     def fetch_data_plans(self) -> dict:
         if settings.amigo_test_mode:
             return {"data": PLAN_CATALOG}
-        try:
-            response = self._request("GET", self.plans_path)
-            parsed = parse_efficiency_plans(response)
-            if parsed:
-                return {"data": parsed}
-            logger.warning("Amigo plans response parsed to 0 items. Falling back to local catalog.")
-        except Exception as exc:
-            logger.warning("Failed to fetch Amigo plans dynamically: %s", exc)
+        
+        # Try primary plans path first
+        paths_to_try = [self.plans_path]
+        if self.plans_path != "/plans":
+            paths_to_try.append("/plans")
+            
+        for path in paths_to_try:
+            try:
+                response = self._request("GET", path)
+                parsed = parse_efficiency_plans(response)
+                if parsed:
+                    return {"data": parsed}
+                logger.warning("Amigo plans response from %s parsed to 0 items.", path)
+            except AmigoApiError as exc:
+                if exc.status_code == 404:
+                    logger.warning("Amigo plans path %s returned 404. Trying next...", path)
+                    continue
+                logger.warning("Amigo fetch error on %s: %s", path, exc)
+            except Exception as exc:
+                logger.warning("Failed to fetch Amigo plans from %s: %s", path, exc)
+                
         return {"data": PLAN_CATALOG}
 
     def purchase_data(self, payload: dict, idempotency_key: str | None = None) -> dict:
