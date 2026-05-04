@@ -31,6 +31,7 @@ def run_sync():
             db.commit()
             logger.info(f"SMEPlug sync done. Touched {touched} plans.")
         except Exception as e:
+            db.rollback()
             logger.error(f"SMEPlug sync failed: {e}")
 
         # 2. MTN/Glo (Amigo)
@@ -47,6 +48,7 @@ def run_sync():
             db.commit()
             logger.info(f"Amigo sync done. Touched {touched} plans.")
         except Exception as e:
+            db.rollback()
             logger.error(f"Amigo sync failed: {e}")
 
         # 3. 9mobile
@@ -65,6 +67,7 @@ def run_sync():
                 db.commit()
                 logger.info(f"9mobile sync done. Touched {touched} plans.")
         except Exception as e:
+            db.rollback()
             logger.error(f"9mobile sync failed: {e}")
 
         # 4. Final Verification

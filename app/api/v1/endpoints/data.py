@@ -153,9 +153,9 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
         plan = DataPlan(
             network=network,
             plan_code=canonical_code,
-            plan_name=clean_plan_name,
-            data_size=clean_data_size,
-            validity=clean_validity,
+            plan_name=clean_plan_name or "Data Bundle",
+            data_size=clean_data_size or "—",
+            validity=clean_validity or "30 Days",
             base_price=Decimal(str(item.get("price") or "0")),
             provider=clean_provider,
             provider_plan_id=clean_provider_plan_id,
@@ -165,9 +165,9 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
         return True
 
     plan.network = network
-    plan.plan_name = clean_plan_name or plan.plan_name
-    plan.data_size = clean_data_size or plan.data_size
-    plan.validity = clean_validity or plan.validity
+    plan.plan_name = clean_plan_name or plan.plan_name or "Data Bundle"
+    plan.data_size = clean_data_size or plan.data_size or "—"
+    plan.validity = clean_validity or plan.validity or "30 Days"
     plan.base_price = Decimal(str(item.get("price") or plan.base_price))
     plan.provider = clean_provider or plan.provider
     plan.provider_plan_id = clean_provider_plan_id or plan.provider_plan_id
