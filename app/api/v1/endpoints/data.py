@@ -982,78 +982,59 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
     for p in plans:
         nw = str(p.network or "unknown").lower()
         breakdown[nw] = breakdown.get(nw, 0) + 1
-    
-    # If major networks (MTN, Glo) are missing or very low, trigger Amigo sync
+       # If major networks (MTN, Glo) are missing or very low, trigger Amigo sync with fallback to SMEPlug
     if breakdown.get("mtn", 0) < 25 or breakdown.get("glo", 0) < 15:
         logger.info("Major networks (MTN: %d, Glo: %d) appear incomplete. Triggering Amigo sync.", 
                     breakdown.get("mtn", 0), breakdown.get("glo", 0))
+        amigo_success = False
         try:
             from app.services.amigo import AmigoClient
             client = AmigoClient()
             response = client.fetch_data_plans()
             items = response.get("data", [])
-            if items:
+            # Fallback check: if Amigo returns exactly 18 items, it's probably the hardcoded catalog (11 MTN + 7 Glo)
+            # and it means the live fetch failed.
+            if items and len(items) > 18:
                 touched = 0
                 for item in items:
                     touched += 1 if _upsert_plan_from_provider(db, item) else 0
                 if touched:
-                    db.commit()
-                    plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
-                    # Update breakdown after sync
-                    breakdown = {}
-                    for p in plans:
-                        nw = str(p.network or "unknown").lower()
-                        breakdown[nw] = breakdown.get(nw, 0) + 1
-                    logger.info("After Amigo sync, breakdown: %s", breakdown)
+                    amigo_success = True
+                    logger.info("Amigo sync successful. Touched %d plans.", touched)
             else:
-                logger.warning("Amigo sync returned no items.")
+                logger.warning("Amigo sync returned only fallback items or nothing. Trying SMEPlug fallback.")
         except Exception as exc:
-            logger.warning("Amigo sync failed: %s", exc)
+            logger.warning("Amigo sync failed: %s. Trying SMEPlug fallback.", exc)
 
-    # 9mobile sync from configured bills provider
-    if breakdown.get("9mobile", 0) == 0:
-        logger.info("9mobile plans missing. Triggering provider sync.")
-        try:
-            provider = get_bills_provider()
-            if hasattr(provider, "fetch_data_variations"):
-                updated, _ = _refresh_provider_network_plans(db, provider, "9mobile")
-                if updated:
-                    db.commit()
-                    plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
-                    logger.info("After 9mobile sync, active plans: %d", len(plans))
-        except Exception as exc:
-            logger.warning("9mobile sync failed: %s", exc)
+        if not amigo_success:
+            logger.info("Triggering SMEPlug fallback for all networks.")
+            try:
+                smeplug = SMEPlugProvider()
+                all_sme_plans = smeplug.get_all_plans()
+                if all_sme_plans:
+                    touched = 0
+                    for item in all_sme_plans:
+                        touched += 1 if _upsert_plan_from_provider(db, item) else 0
+                    if touched:
+                        db.commit()
+                        logger.info("SMEPlug fallback sync successful. Touched %d plans.", touched)
+            except Exception as exc:
+                logger.warning("SMEPlug fallback sync failed: %s", exc)
 
-    # SMEPlug sync for Airtel (Always run to keep live plans synced)
+    # Refresh plans after potential syncs
+    db.commit()
+    plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+    
+    # Trigger SMEPlug Airtel sync specifically to ensure we have latest Airtel
+    logger.info("Triggering specific SMEPlug Airtel sync.")
     try:
-        logger.info("Triggering SMEPlug Airtel sync.")
         smeplug = SMEPlugProvider()
-        airtel_plans = smeplug.get_airtel_plans()
-        if airtel_plans:
-            airtel_touched = 0
-            active_codes = set()
-            for p in airtel_plans:
-                canonical_code = canonical_plan_code("airtel", p["provider_plan_id"])
-                if canonical_code:
-                    active_codes.add(canonical_code)
-                airtel_touched += 1 if _upsert_plan_from_provider(db, p) else 0
-            
-            # Deactivate stale Airtel plans (those no longer in SMEPlug's live list)
-            stale_rows = db.query(DataPlan).filter(func.lower(DataPlan.network) == "airtel", DataPlan.is_active == True).all()
-            for row in stale_rows:
-                if str(row.plan_code or "").strip() not in active_codes:
-                    row.is_active = False
-                    airtel_touched += 1
-            
-            if airtel_touched:
-                db.commit()
-                plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
-                # Final breakdown update
-                breakdown = {}
-                for p in plans:
-                    nw = str(p.network or "unknown").lower()
-                    breakdown[nw] = breakdown.get(nw, 0) + 1
-                logger.info("After SMEPlug sync, breakdown: %s", breakdown)
+        airtel_items = smeplug.get_airtel_plans()
+        if airtel_items:
+            for item in airtel_items:
+                _upsert_plan_from_provider(db, item)
+            db.commit()
+            plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
         else:
             logger.warning("SMEPlug returned no Airtel plans.")
     except Exception as exc:

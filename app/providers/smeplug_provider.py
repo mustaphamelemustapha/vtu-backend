@@ -39,7 +39,7 @@ class SMEPlugProvider:
             or ""
         ).strip()
 
-    def get_airtel_plans(self) -> List[Dict[str, Any]]:
+    def get_all_plans(self) -> List[Dict[str, Any]]:
         url = f"{self.base_url}/data/plans"
         try:
             with httpx.Client(timeout=self.timeout) as client:
@@ -47,37 +47,46 @@ class SMEPlugProvider:
                 response.raise_for_status()
                 payload = response.json()
                 
-                # Handle grouping by network ID
                 data = payload.get("data")
-                if isinstance(data, dict):
-                    # Airtel is typically network ID 2
-                    airtel_plans = data.get("2") or data.get(str(settings.smeplug_network_airtel)) or []
-                elif isinstance(data, list):
-                    airtel_plans = [p for p in data if str(p.get("network_id")) == str(settings.smeplug_network_airtel)]
-                else:
-                    logger.warning("SMEPlug plans response 'data' is not a list or dict: %s", data)
+                if not isinstance(data, dict):
+                    logger.warning("SMEPlug plans response 'data' is not a dict: %s", data)
                     return []
 
+                # SMEPlug Network IDs: 1=MTN, 2=Airtel, 3=Glo, 4=9mobile (usually)
                 results = []
-                for p in airtel_plans:
-                    results.append({
-                        "plan_code": f"airtel:{p.get('id')}",
-                        "name": p.get("name"),
-                        "size": p.get("name"),
-                        "price": p.get("price") or p.get("telco_price") or 0,
-                        "provider": "smeplug",
-                        "provider_plan_id": str(p.get("id"))
-                    })
+                # Map SMEPlug network IDs to our internal names
+                id_map = {
+                    "1": "mtn",
+                    "2": "airtel",
+                    "3": "glo",
+                    "4": "9mobile"
+                }
+                # Also allow overrides from settings for the primary airtel ID
+                id_map[str(settings.smeplug_network_airtel)] = "airtel"
+
+                for nw_id, plans in data.items():
+                    nw_name = id_map.get(str(nw_id))
+                    if not nw_name or not isinstance(plans, list):
+                        continue
+                    
+                    for p in plans:
+                        results.append({
+                            "network": nw_name,
+                            "plan_code": f"{nw_name}:{p.get('id')}",
+                            "name": p.get("name"),
+                            "size": p.get("name"),
+                            "price": p.get("price") or p.get("telco_price") or 0,
+                            "provider": "smeplug",
+                            "provider_plan_id": str(p.get("id"))
+                        })
                 return results
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 403:
-                logger.error("Failed to fetch plans from SMEPlug: 403 Forbidden. Hint: Check if your server IP is whitelisted on the SMEPlug dashboard and your API key is correct.")
-            else:
-                logger.error("Failed to fetch plans from SMEPlug: %s", exc)
-            return []
         except Exception as exc:
-            logger.error("Failed to fetch plans from SMEPlug: %s", exc)
+            logger.error("Failed to fetch all plans from SMEPlug: %s", exc)
             return []
+
+    def get_airtel_plans(self) -> List[Dict[str, Any]]:
+        all_plans = self.get_all_plans()
+        return [p for p in all_plans if p.get("network") == "airtel"]
 
     def purchase_airtel_data(self, phone: str, plan_id: str, client_request_id: str) -> Dict[str, Any]:
         # Normalize phone: ensure it's digits and starts with 0 (11 digits)
