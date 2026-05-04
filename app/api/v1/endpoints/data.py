@@ -880,6 +880,7 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
 
 def _invalidate_plans_cache() -> None:
     for role in (UserRole.USER.value, UserRole.RESELLER.value, UserRole.ADMIN.value):
+        pass
         # set_cached(f"plans:{_PLAN_CACHE_VERSION}:{role}", None, ttl_seconds=1)
 
 
