@@ -1575,7 +1575,16 @@ def get_audit_logs(
 ):
     query = db.query(AdminAuditLog)
     total = query.count()
-    items = query.order_by(AdminAuditLog.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    items = []
+    for log in query.order_by(AdminAuditLog.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all():
+        items.append({
+            "id": log.id,
+            "admin_email": log.admin_email,
+            "action": log.action,
+            "target": log.target,
+            "details": log.details,
+            "created_at": log.created_at,
+        })
     return {
         "items": items,
         "total": total,
