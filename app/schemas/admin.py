@@ -31,6 +31,8 @@ class PricingRuleOut(BaseModel):
     margin: Decimal
     margin_type: str = "fixed"
     kind: str
+    class Config:
+        orm_mode = True
 
 
 class PricingRulesResponse(BaseModel):
@@ -50,6 +52,8 @@ class AdminTransactionOut(BaseModel):
     data_plan_code: Optional[str] = None
     external_reference: Optional[str] = None
     failure_reason: Optional[str] = None
+    class Config:
+        orm_mode = True
 
 
 class AdminTransactionsResponse(BaseModel):
@@ -68,6 +72,8 @@ class AdminUserOut(BaseModel):
     role: UserRole
     is_active: bool
     is_verified: bool
+    class Config:
+        orm_mode = True
 
 
 class AdminUsersResponse(BaseModel):
@@ -89,6 +95,8 @@ class AdminReportOut(BaseModel):
     status: str
     admin_note: Optional[str] = None
     resolved_at: Optional[datetime] = None
+    class Config:
+        orm_mode = True
 
 
 class AdminReportsResponse(BaseModel):
@@ -130,6 +138,8 @@ class ServiceToggleOut(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    class Config:
+        orm_mode = True
 
 
 class DataPlanUpdate(BaseModel):
@@ -151,6 +161,8 @@ class AdminDataPlanOut(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    class Config:
+        orm_mode = True
 
 
 class AdminAuditLogOut(BaseModel):
@@ -160,6 +172,8 @@ class AdminAuditLogOut(BaseModel):
     target: Optional[str] = None
     details: Optional[dict] = None
     created_at: datetime
+    class Config:
+        orm_mode = True
 
 
 class AdminAuditLogsResponse(BaseModel):
@@ -179,6 +193,8 @@ class AdminReferralOut(BaseModel):
     reward_amount: Decimal
     first_deposit_amount: Optional[Decimal] = None
     created_at: datetime
+    class Config:
+        orm_mode = True
 
 
 class AdminReferralsResponse(BaseModel):

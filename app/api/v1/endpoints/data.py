@@ -317,7 +317,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
     if not phone:
         raise HTTPException(status_code=400, detail="Recipient phone number is required.")
 
-    enforce_purchase_limits(db, user, "data")
+    enforce_purchase_limits(db, user_id=user.id, amount=Decimal(str(plan.base_price)), tx_type="data")
     
     price = get_price_for_user(db, plan, user.role)
     if _is_mtn_1gb_promo_plan(plan):
