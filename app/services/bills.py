@@ -769,6 +769,7 @@ class ClubKonnectBillsProvider:
             }
         }
 
+        print(f"DEBUG: ClubKonnect parse_result meta: {meta}")
         if pending and not failed:
             return ProviderResult(False, external_reference=external_reference, message="Transaction pending", meta=meta)
         if success and not failed:
