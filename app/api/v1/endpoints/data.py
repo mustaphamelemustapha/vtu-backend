@@ -1054,13 +1054,9 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
 
     logger.info("Final active plans breakdown: %s", breakdown)
 
-    # Final enforcement of Airtel source policy: only SMEPlug Airtel plans are exposed.
-    final_plans = [
-        p for p in plans
-        if not _is_airtel_row(p) or _is_smeplug_airtel_row(p)
-    ]
-    logger.info("Final plans count after Airtel filtering: %d", len(final_plans))
-    plans = final_plans
+    # The Admin dashboard's 'is_active' flag is now the absolute source of truth.
+    # No more hardcoded filters or provider-specific exclusions.
+    # If a plan is active in the DB, it is displayed.
 
     promo_snapshot = _mtn_1gb_promo_snapshot(db)
     user_promo_used = _user_has_used_mtn_1gb_promo(db, user.id)

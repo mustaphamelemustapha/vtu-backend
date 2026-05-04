@@ -384,12 +384,16 @@ class AmigoClient:
         if settings.amigo_test_mode:
             return {"data": PLAN_CATALOG}
         
-        # Try primary plans path first
+        # Try common Amigo paths
         paths_to_try = [self.plans_path]
+        if "/v1/" not in self.plans_path:
+            paths_to_try.append(f"/v1{self.plans_path}")
         if self.plans_path != "/plans":
             paths_to_try.append("/plans")
+            paths_to_try.append("/v1/plans")
             
-        for path in paths_to_try:
+        # Deduplicate paths
+        paths_to_try = list(dict.fromkeys([p for p in paths_to_try if p]))
             try:
                 response = self._request("GET", path)
                 parsed = parse_efficiency_plans(response)
