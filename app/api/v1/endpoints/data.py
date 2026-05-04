@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 
 # --- HELPERS ---
 
+def _invalidate_plans_cache():
+    """Placeholder for legacy cache invalidation."""
+    pass
+
 def _parse_size_gb(size_str: str | None) -> float:
     if not size_str:
         return 0.0
