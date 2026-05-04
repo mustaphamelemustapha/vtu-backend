@@ -985,20 +985,28 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
     
     # If major networks (MTN, Glo) are missing or very low, trigger Amigo sync
     if breakdown.get("mtn", 0) < 25 or breakdown.get("glo", 0) < 15:
-        logger.info("Major networks (MTN/Glo) missing or incomplete. Triggering Amigo sync.")
+        logger.info("Major networks (MTN: %d, Glo: %d) appear incomplete. Triggering Amigo sync.", 
+                    breakdown.get("mtn", 0), breakdown.get("glo", 0))
         try:
-            from app.providers.amigo_provider import AmigoProvider
-            amigo = AmigoProvider()
-            for nw in _AMIGO_DATA_NETWORKS:
-                _refresh_provider_network_plans(db, amigo, nw)
-            db.commit()
-            plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
-            # Update breakdown after sync
-            breakdown = {}
-            for p in plans:
-                nw = str(p.network or "unknown").lower()
-                breakdown[nw] = breakdown.get(nw, 0) + 1
-            logger.info("After Amigo sync, breakdown: %s", breakdown)
+            from app.services.amigo import AmigoClient
+            client = AmigoClient()
+            response = client.fetch_data_plans()
+            items = response.get("data", [])
+            if items:
+                touched = 0
+                for item in items:
+                    touched += 1 if _upsert_plan_from_provider(db, item) else 0
+                if touched:
+                    db.commit()
+                    plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+                    # Update breakdown after sync
+                    breakdown = {}
+                    for p in plans:
+                        nw = str(p.network or "unknown").lower()
+                        breakdown[nw] = breakdown.get(nw, 0) + 1
+                    logger.info("After Amigo sync, breakdown: %s", breakdown)
+            else:
+                logger.warning("Amigo sync returned no items.")
         except Exception as exc:
             logger.warning("Amigo sync failed: %s", exc)
 
