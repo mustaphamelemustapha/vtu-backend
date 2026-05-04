@@ -105,9 +105,8 @@ class SMEPlugProvider:
             logger.error(f"SMEPlug purchase_data error: {e}")
             return {"status": False, "msg": str(e)}
 
-    def purchase_airtel_data(self, phone: str, plan_id: str, client_request_id: str) -> Dict[str, Any]:
-        # Documentation: Airtel network_id = 2
-        res = self.purchase_data(network_id=2, plan_id=plan_id, phone=phone, reference=client_request_id)
+    def purchase_network_data(self, network_id: int, phone: str, plan_id: str, client_request_id: str) -> Dict[str, Any]:
+        res = self.purchase_data(network_id=network_id, plan_id=plan_id, phone=phone, reference=client_request_id)
         
         status_value = res.get("status")
         message = str(res.get("msg") or res.get("message") or "")

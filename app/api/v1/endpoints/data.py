@@ -398,7 +398,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             sme = SMEPlugProvider()
             sme_network_map = {"mtn": 1, "airtel": 2, "9mobile": 3, "glo": 4}
             net_id = sme_network_map.get(network_key, 2)
-            provider_res = sme.purchase_data(net_id, plan.provider_plan_id or plan.plan_code, phone, reference)
+            provider_res = sme.purchase_network_data(net_id, phone, plan.provider_plan_id or plan.plan_code, reference)
             transaction.provider = "smeplug"
 
         elif provider_name == "amigo" or (not provider_name and network_key in {"mtn", "glo"}):
@@ -436,7 +436,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
         # Legacy fallback for Airtel if no provider was specified
         elif network_key == "airtel":
             sme = SMEPlugProvider()
-            provider_res = sme.purchase_airtel_data(phone, plan.provider_plan_id or plan.plan_code, reference)
+            provider_res = sme.purchase_network_data(2, phone, plan.provider_plan_id or plan.plan_code, reference)
             transaction.provider = "smeplug"
 
         else:
