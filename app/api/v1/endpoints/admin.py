@@ -138,6 +138,13 @@ def _normalize_type_value(value) -> str:
     return raw.lower()
 
 
+def _safe_reason(message: Optional[str], limit: int = 240) -> str:
+    text = str(message or "").strip()
+    if not text:
+        return "Admin marked transaction as failed and refunded."
+    return text[:limit]
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -831,6 +838,20 @@ def reconcile_transaction_delivered(
     )
 
 
+@router.post("/transactions/fail-and-refund")
+def fail_and_refund_pending_transaction(
+    payload: ReconcileTransactionRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    return _fail_refund_single_reference(
+        db=db,
+        admin_email=admin.email,
+        reference=(payload.reference or "").strip(),
+        note=(payload.note or "").strip() or "Admin marked pending transaction as failed and refunded.",
+    )
+
+
 def _reconcile_single_reference(*, db: Session, admin_email: str, reference: str, note: str):
     reference = str(reference or "").strip()
     if not reference:
@@ -967,6 +988,114 @@ def _reconcile_single_reference(*, db: Session, admin_email: str, reference: str
     }
 
 
+def _fail_refund_single_reference(*, db: Session, admin_email: str, reference: str, note: str):
+    reference = str(reference or "").strip()
+    if not reference:
+        raise HTTPException(status_code=400, detail="reference is required")
+
+    tx = db.query(Transaction).filter(Transaction.reference == reference).first()
+    service_tx = None
+    source = "transaction"
+    if not tx:
+        try:
+            if inspect(db.bind).has_table("service_transactions"):
+                service_tx = db.query(ServiceTransaction).filter(ServiceTransaction.reference == reference).first()
+        except Exception:
+            service_tx = None
+        if not service_tx:
+            raise HTTPException(status_code=404, detail="Transaction reference not found")
+        source = "service_transaction"
+
+    can_write_audit = True
+    try:
+        can_write_audit = bool(inspect(db.bind).has_table("admin_audit_logs"))
+    except Exception:
+        can_write_audit = False
+
+    if tx:
+        previous_status = _normalize_status_value(tx.status)
+        if previous_status != TransactionStatus.PENDING.value:
+            raise HTTPException(status_code=409, detail="Only pending transactions can be failed and refunded.")
+        wallet = get_or_create_wallet(db, tx.user_id)
+        refund_ref = f"ADMIN_REFUND_{reference}"
+        credit_wallet(
+            db,
+            wallet,
+            Decimal(tx.amount),
+            refund_ref,
+            f"Admin refund for pending transaction {reference}",
+            commit=False,
+        )
+        tx.status = TransactionStatus.REFUNDED
+        tx.failure_reason = _safe_reason(note)
+        if can_write_audit:
+            db.add(
+                AdminAuditLog(
+                    admin_email=admin_email,
+                    action="fail_refund_pending",
+                    target=reference,
+                    details={
+                        "source": source,
+                        "previous_status": previous_status,
+                        "new_status": TransactionStatus.REFUNDED.value,
+                        "wallet_action": "manual_refund_credit",
+                        "refund_reference": refund_ref,
+                        "note": note,
+                    },
+                )
+            )
+        db.commit()
+        return {
+            "status": "ok",
+            "reference": reference,
+            "source": source,
+            "previous_status": previous_status,
+            "new_status": TransactionStatus.REFUNDED.value,
+            "wallet_action": "manual_refund_credit",
+        }
+
+    previous_status = _normalize_status_value(service_tx.status)
+    if previous_status != TransactionStatus.PENDING.value:
+        raise HTTPException(status_code=409, detail="Only pending transactions can be failed and refunded.")
+    wallet = get_or_create_wallet(db, service_tx.user_id)
+    refund_ref = f"ADMIN_REFUND_{reference}"
+    credit_wallet(
+        db,
+        wallet,
+        Decimal(service_tx.amount),
+        refund_ref,
+        f"Admin refund for pending transaction {reference}",
+        commit=False,
+    )
+    service_tx.status = TransactionStatus.REFUNDED.value
+    service_tx.failure_reason = _safe_reason(note)
+    if can_write_audit:
+        db.add(
+            AdminAuditLog(
+                admin_email=admin_email,
+                action="fail_refund_pending",
+                target=reference,
+                details={
+                    "source": source,
+                    "previous_status": previous_status,
+                    "new_status": TransactionStatus.REFUNDED.value,
+                    "wallet_action": "manual_refund_credit",
+                    "refund_reference": refund_ref,
+                    "note": note,
+                },
+            )
+        )
+    db.commit()
+    return {
+        "status": "ok",
+        "reference": reference,
+        "source": source,
+        "previous_status": previous_status,
+        "new_status": TransactionStatus.REFUNDED.value,
+        "wallet_action": "manual_refund_credit",
+    }
+
+
 @router.post("/transactions/reconcile-delivered-bulk")
 def reconcile_transactions_delivered_bulk(
     payload: ReconcileTransactionsBulkRequest,
@@ -994,6 +1123,56 @@ def reconcile_transactions_delivered_bulk(
     for ref in refs:
         try:
             item_result = _reconcile_single_reference(
+                db=db,
+                admin_email=admin.email,
+                reference=ref,
+                note=note,
+            )
+            ok += 1
+            results.append({"reference": ref, "ok": True, "result": item_result})
+        except HTTPException as exc:
+            failed += 1
+            results.append({"reference": ref, "ok": False, "detail": exc.detail, "status_code": exc.status_code})
+        except Exception as exc:
+            failed += 1
+            results.append({"reference": ref, "ok": False, "detail": str(exc), "status_code": 500})
+
+    return {
+        "status": "ok",
+        "processed": len(refs),
+        "succeeded": ok,
+        "failed": failed,
+        "results": results,
+    }
+
+
+@router.post("/transactions/fail-and-refund-bulk")
+def fail_and_refund_pending_transactions_bulk(
+    payload: ReconcileTransactionsBulkRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    refs: list[str] = []
+    seen = set()
+    for item in payload.references or []:
+        ref = str(item or "").strip()
+        if not ref or ref in seen:
+            continue
+        refs.append(ref)
+        seen.add(ref)
+
+    if not refs:
+        raise HTTPException(status_code=400, detail="references must contain at least one reference")
+    if len(refs) > 200:
+        raise HTTPException(status_code=400, detail="maximum 200 references per request")
+
+    note = (payload.note or "").strip() or "Bulk admin fail+refund after provider-confirmed failure."
+    results = []
+    ok = 0
+    failed = 0
+    for ref in refs:
+        try:
+            item_result = _fail_refund_single_reference(
                 db=db,
                 admin_email=admin.email,
                 reference=ref,

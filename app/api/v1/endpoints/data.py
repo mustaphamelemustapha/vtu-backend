@@ -20,6 +20,7 @@ from app.services.amigo import (
     resolve_network_id,
     split_plan_code,
 )
+from app.providers.smeplug_provider import SMEPlugProvider
 from app.services.bills import get_bills_provider
 from app.services.fraud import enforce_purchase_limits
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
@@ -65,7 +66,8 @@ _DEFINITIVE_FAILURE_HINTS = (
     "transaction failed",
 )
 _VTPASS_DATA_NETWORKS = {"9mobile", "etisalat", "t2"}
-_AMIGO_DATA_NETWORKS = {"mtn", "glo", "airtel"}
+_AMIGO_DATA_NETWORKS = {"mtn", "glo"}
+_SMEPLUG_DATA_NETWORKS = {"airtel"}
 _CURATED_SIZE_TARGETS_GB = (0.2, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0, 15.0, 20.0)
 _CURATED_MAX_PER_NETWORK = 8
 _CURATED_FILTER_KEYWORDS = (
@@ -773,6 +775,11 @@ def _confirm_pending_amigo_purchase(
     return TransactionStatus.PENDING, last_response, last_message
 
 
+def _is_smeplug_network(network: str | None) -> bool:
+    key = str(network or "").strip().lower()
+    return key in _SMEPLUG_DATA_NETWORKS
+
+
 def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
     network = str(item.get("network") or "").strip().lower()
     if not network:
@@ -806,20 +813,24 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
         plan = DataPlan(
             network=network,
             plan_code=canonical_code,
-            plan_name=_clean_plan_label(str(item.get("plan_name") or "").strip()) or f"{network.upper()} {provider_code}",
-            data_size=str(item.get("data_size") or "").strip() or "—",
+            plan_name=_clean_plan_label(str(item.get("plan_name") or item.get("name") or "").strip()) or f"{network.upper()} {provider_code}",
+            data_size=str(item.get("data_size") or item.get("size") or "").strip() or "—",
             validity=str(item.get("validity") or "").strip(),
-            base_price=Decimal(str(item.get("price", 0))),
+            base_price=Decimal(str(item.get("price") or item.get("cost_price") or "0")),
+            provider=str(item.get("provider") or ""),
+            provider_plan_id=str(item.get("provider_plan_id") or ""),
             is_active=True,
         )
         db.add(plan)
         return True
 
     plan.network = network
-    plan.plan_name = _clean_plan_label(str(item.get("plan_name") or plan.plan_name).strip()) or plan.plan_name
-    plan.data_size = str(item.get("data_size") or plan.data_size).strip() or plan.data_size
+    plan.plan_name = _clean_plan_label(str(item.get("plan_name") or item.get("name") or plan.plan_name).strip()) or plan.plan_name
+    plan.data_size = str(item.get("data_size") or item.get("size") or plan.data_size).strip() or plan.data_size
     plan.validity = str(item.get("validity") or plan.validity).strip() or plan.validity
-    plan.base_price = Decimal(str(item.get("price", plan.base_price)))
+    plan.base_price = Decimal(str(item.get("price") or item.get("cost_price") or plan.base_price))
+    plan.provider = str(item.get("provider") or plan.provider or "")
+    plan.provider_plan_id = str(item.get("provider_plan_id") or plan.provider_plan_id or "")
     # Note: We NO LONGER force is_active=True for existing plans.
     # This preserves manual Admin toggles during provider syncs.
     # NOTE: display_price is intentionally NOT overwritten here.
@@ -973,11 +984,32 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
         _invalidate_plans_cache()
         plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
 
-    airtel_touched = _enforce_airtel_amigo_catalog(db)
-    if airtel_touched:
-        db.commit()
-        _invalidate_plans_cache()
-        plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+    # SMEPlug sync for Airtel
+    try:
+        smeplug = SMEPlugProvider()
+        airtel_plans = smeplug.get_airtel_plans()
+        if airtel_plans:
+            airtel_touched = 0
+            active_codes = set()
+            for p in airtel_plans:
+                canonical_code = canonical_plan_code("airtel", p["provider_plan_id"])
+                if canonical_code:
+                    active_codes.add(canonical_code)
+                airtel_touched += 1 if _upsert_plan_from_provider(db, p) else 0
+            
+            # Deactivate stale Airtel plans
+            stale_rows = db.query(DataPlan).filter(func.lower(DataPlan.network) == "airtel", DataPlan.is_active == True).all()
+            for row in stale_rows:
+                if str(row.plan_code or "").strip() not in active_codes:
+                    row.is_active = False
+                    airtel_touched += 1
+            
+            if airtel_touched:
+                db.commit()
+                _invalidate_plans_cache()
+                plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+    except Exception as exc:
+        logger.warning("SMEPlug Airtel sync failed: %s", exc)
     promo_snapshot = _mtn_1gb_promo_snapshot(db)
     user_promo_used = _user_has_used_mtn_1gb_promo(db, user.id)
     priced = []
@@ -1013,6 +1045,8 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                 promo_label=promo_label,
                 promo_remaining=promo_remaining,
                 promo_limit=promo_limit,
+                provider=plan.provider,
+                provider_plan_id=plan.provider_plan_id,
             )
         )
     curated = _curate_sharp_plans(priced)
@@ -1096,6 +1130,73 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
     )
 
     network_key = str(plan.network or "").strip().lower()
+    
+    # SMEPlug Integration for Airtel
+    if _is_smeplug_network(network_key):
+        smeplug = SMEPlugProvider()
+        start = time.time()
+        try:
+            # Prefer plan.provider_plan_id if available, else extract from plan_code
+            _, raw_code = split_plan_code(plan.plan_code)
+            provider_plan_id = plan.provider_plan_id or raw_code
+            
+            result = smeplug.purchase_airtel_data(
+                phone=str(payload.phone_number).strip(),
+                plan_id=provider_plan_id,
+                client_request_id=reference
+            )
+            
+            duration_ms = round((time.time() - start) * 1000, 2)
+            db.add(ApiLog(
+                user_id=user.id,
+                service="smeplug",
+                endpoint="/data/purchase",
+                status_code=200,
+                duration_ms=duration_ms,
+                reference=reference,
+                success=1 if result.get("status") != "failed" else 0,
+            ))
+            
+            transaction.provider = "smeplug"
+            transaction.provider_plan_id = provider_plan_id
+            transaction.external_reference = result.get("provider_reference")
+            
+            if result.get("status") == "failed":
+                transaction.status = TransactionStatus.FAILED
+                transaction.failure_reason = result.get("error") or "Airtel service is temporarily unavailable"
+                credit_wallet(db, wallet, Decimal(price), reference, "Auto refund for failed Airtel data purchase")
+                transaction.status = TransactionStatus.REFUNDED
+            else:
+                transaction.status = TransactionStatus.PENDING
+                transaction.failure_reason = None
+            
+            db.commit()
+            return {
+                "reference": reference,
+                "status": transaction.status,
+                "message": result.get("error") or "Transaction pending confirmation",
+                "provider": "smeplug",
+                "network": plan.network,
+                "plan_code": plan.plan_code,
+                "failure_reason": transaction.failure_reason or "",
+                "test_mode": False,
+            }
+        except Exception as exc:
+            logger.error("SMEPlug purchase exception: %s", exc)
+            transaction.status = TransactionStatus.PENDING
+            transaction.failure_reason = "Transaction pending confirmation"
+            db.commit()
+            return {
+                "reference": reference,
+                "status": transaction.status,
+                "message": "Transaction pending confirmation",
+                "provider": "smeplug",
+                "network": plan.network,
+                "plan_code": plan.plan_code,
+                "failure_reason": "",
+                "test_mode": False,
+            }
+
     use_bills_provider = not _is_amigo_data_network(network_key)
 
     if use_bills_provider:

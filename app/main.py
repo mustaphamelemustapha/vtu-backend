@@ -130,6 +130,8 @@ def ensure_tables():
         _ensure_user_phone_column()
         _ensure_user_security_pin_columns()
         _ensure_transaction_recipient_column()
+        _ensure_data_plan_provider_columns()
+        _ensure_transaction_provider_columns()
         return
 
     # Optional local fallback for fresh environments.
@@ -144,6 +146,8 @@ def ensure_tables():
     _ensure_user_phone_column()
     _ensure_user_security_pin_columns()
     _ensure_transaction_recipient_column()
+    _ensure_data_plan_provider_columns()
+    _ensure_transaction_provider_columns()
 
 
 @app.on_event("shutdown")
@@ -223,6 +227,62 @@ def _ensure_transaction_recipient_column() -> None:
         logging.getLogger(__name__).info("Added transactions.recipient_phone for safer reconciliation.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure recipient_phone column: %s", exc)
+    finally:
+        SessionLocal().close()
+
+
+def _ensure_data_plan_provider_columns() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("data_plans"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("data_plans")}
+        statements: list[str] = []
+        if "provider" not in cols:
+            statements.append("ALTER TABLE data_plans ADD COLUMN provider VARCHAR(64)")
+        if "provider_plan_id" not in cols:
+            statements.append("ALTER TABLE data_plans ADD COLUMN provider_plan_id VARCHAR(64)")
+
+        if not statements:
+            return
+
+        with engine.begin() as conn:
+            for statement in statements:
+                conn.execute(text(statement))
+            if "provider" not in cols:
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_data_plans_provider ON data_plans (provider)"))
+            if "provider_plan_id" not in cols:
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_data_plans_provider_plan_id ON data_plans (provider_plan_id)"))
+        logging.getLogger(__name__).info("Added data_plans provider columns.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure data_plans provider columns: %s", exc)
+
+
+def _ensure_transaction_provider_columns() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("transactions"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("transactions")}
+        statements: list[str] = []
+        if "provider" not in cols:
+            statements.append("ALTER TABLE transactions ADD COLUMN provider VARCHAR(64)")
+        if "provider_plan_id" not in cols:
+            statements.append("ALTER TABLE transactions ADD COLUMN provider_plan_id VARCHAR(64)")
+
+        if not statements:
+            return
+
+        with engine.begin() as conn:
+            for statement in statements:
+                conn.execute(text(statement))
+            if "provider" not in cols:
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_transactions_provider ON transactions (provider)"))
+            if "provider_plan_id" not in cols:
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_transactions_provider_plan_id ON transactions (provider_plan_id)"))
+        logging.getLogger(__name__).info("Added transactions provider columns.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure transactions provider columns: %s", exc)
 
 
 @app.get("/healthz")

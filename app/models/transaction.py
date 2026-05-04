@@ -34,6 +34,8 @@ class Transaction(Base, TimestampMixin):
     status = Column(Enum(TransactionStatus), nullable=False, default=TransactionStatus.PENDING)
     tx_type = Column(Enum(TransactionType), nullable=False)
     external_reference = Column(String(64), nullable=True)
+    provider = Column(String(64), nullable=True, index=True)
+    provider_plan_id = Column(String(64), nullable=True, index=True)
     failure_reason = Column(String(255), nullable=True)
 
     user = relationship("User", back_populates="transactions")

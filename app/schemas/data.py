@@ -17,6 +17,8 @@ class DataPlanOut(BaseModel):
     promo_label: Optional[str] = None
     promo_remaining: Optional[int] = None
     promo_limit: Optional[int] = None
+    provider: Optional[str] = None
+    provider_plan_id: Optional[str] = None
 
     class Config:
         orm_mode = True

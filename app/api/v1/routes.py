@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import auth, wallet, data, transactions, admin, services, notifications, dashboard, security, referrals
+from app.api.v1.endpoints import auth, wallet, data, transactions, admin, services, notifications, dashboard, security, referrals, webhooks
 
 router = APIRouter()
 
@@ -13,3 +13,4 @@ router.include_router(notifications.router, prefix="/notifications", tags=["noti
 router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 router.include_router(security.router, prefix="/security", tags=["security"])
 router.include_router(referrals.router, prefix="/referrals", tags=["referrals"])
+router.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])

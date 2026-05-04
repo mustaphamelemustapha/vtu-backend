@@ -115,6 +115,12 @@ class Settings(BaseSettings):
     clubkonnect_enabled: bool = False
     clubkonnect_callback_url: Optional[str] = None
 
+    # SMEPlug API
+    smeplug_base_url: AnyHttpUrl = "https://smeplug.ng/api/v1"
+    smeplug_api_key: str = ""
+    smeplug_network_airtel: int = 2
+    smeplug_webhook_secret: Optional[str] = None
+
     # Fraud / abuse guardrails for purchases
     fraud_guard_enabled: bool = True
     fraud_single_tx_limit_ngn: Decimal = Decimal("50000")

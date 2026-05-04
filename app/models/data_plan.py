@@ -16,6 +16,8 @@ class DataPlan(Base, TimestampMixin):
     # Admin-set override: when set, this price is used instead of base_price + margin.
     display_price = Column(Numeric(12, 2), nullable=True, default=None)
     is_active = Column(Boolean, default=True, nullable=False)
+    provider = Column(String(64), nullable=True, index=True)
+    provider_plan_id = Column(String(64), nullable=True, index=True)
 
 
 Index("ix_data_plans_network_active", DataPlan.network, DataPlan.is_active)
