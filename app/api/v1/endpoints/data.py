@@ -177,12 +177,24 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
 
 @router.get("/plans", response_model=list[DataPlanOut])
 def list_data_plans(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    all_count = db.query(DataPlan).count()
     plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+    
+    if all_count > 0 and not plans:
+        logger.warning("DB has %d plans but none are active. Auto-activating all.", all_count)
+        db.query(DataPlan).update({DataPlan.is_active: True})
+        db.commit()
+        plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
     
     breakdown = {}
     for p in plans:
         nw = str(p.network or "").lower()
         breakdown[nw] = breakdown.get(nw, 0) + 1
+
+    logger.info(
+        "User %s requested plans. Total in DB: %d, Active: %d, Breakdown: %s",
+        user.email, all_count, len(plans), breakdown
+    )
 
     # 1. AIRTEL -> SMEPlug Sync (If low)
     if breakdown.get("airtel", 0) < 5:
