@@ -1074,12 +1074,13 @@ class ClubKonnectBillsProvider:
                 "MeterNo": str(meter_number),
                 "Amount": int(float(amount)),
                 "MeterType": self._meter_code(meter_type),
+                "PhoneNo": str(phone_number or "").strip(),
                 "RequestID": request_id,
                 "CallBackURL": self._callback_url(),
             },
         )
         result = self._settle_pending(self._parse_result(data, action="electricity"), "electricity", request_id=request_id)
-        token = str(data.get("token") or data.get("Token") or "").strip()
+        token = str(data.get("token") or data.get("Token") or data.get("metertoken") or "").strip()
         if token:
             result.meta = {**(result.meta or {}), "token": token}
         return result
