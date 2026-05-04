@@ -32,18 +32,27 @@ class SMEPlugProvider:
             with httpx.Client(timeout=self.timeout) as client:
                 response = client.get(url, headers=self._get_headers())
                 logger.info("SMEPlug GET /data/plans status=%d", response.status_code)
-                return response.json()
+                data = self._json_or_none(response)
+                if isinstance(data, dict):
+                    return data
+                if isinstance(data, list):
+                    return {"status": True, "data": data}
+                return {"status": False, "msg": "Invalid response format"}
         except Exception as e:
             logger.error(f"SMEPlug fetch_plans error: {e}")
-            return {}
+            return {"status": False, "msg": str(e)}
 
     def get_all_plans(self) -> List[Dict[str, Any]]:
         payload = self.fetch_plans()
-        if not payload.get("status"):
-            return []
-        
+        # SMEPlug usually returns {"status": true, "data": { "1": [...], "2": [...] }}
+        # or sometimes "status" is missing but "data" is present.
         data = payload.get("data")
+        if not data:
+            # Fallback if the whole payload is the dictionary of networks
+            data = payload if isinstance(payload, dict) and any(k in payload for k in ["1", "2", "3", "4"]) else None
+
         if not isinstance(data, dict):
+            logger.warning("SMEPlug plans data is not a dict: %s", type(data))
             return []
 
         results = []
@@ -64,8 +73,8 @@ class SMEPlugProvider:
                 results.append({
                     "network": nw_name,
                     "plan_code": f"{nw_name}:{p.get('id')}",
-                    "name": p.get("name"),
-                    "size": p.get("name"),
+                    "plan_name": p.get("name"),
+                    "data_size": p.get("name"),
                     "price": float(p.get("price") or p.get("telco_price") or 0),
                     "provider": "smeplug",
                     "provider_plan_id": str(p.get("id"))
@@ -73,11 +82,9 @@ class SMEPlugProvider:
         return results
 
     def get_airtel_plans(self) -> list:
-        # Strictly used by data sync
         return [p for p in self.get_all_plans() if p.get("network") == "airtel"]
 
     def purchase_data(self, network_id: int, plan_id: str, phone: str, reference: str) -> dict:
-        # Used by bills.py or generic purchase logic
         url = f"{self.base_url}/data/purchase"
         payload = {
             "network_id": int(network_id),
@@ -93,17 +100,12 @@ class SMEPlugProvider:
                             network_id, plan_id, phone, response.status_code)
                 
                 res_data = self._json_or_none(response) or {}
-                if not res_data.get("status"):
-                    logger.warning("SMEPlug Purchase Failed: provider=SMEPlug, endpoint=/data/purchase, "
-                                   "network_id=%s, plan_id=%s, phone=%s, status=%d, body=%s",
-                                   network_id, plan_id, phone, response.status_code, response.text)
                 return res_data
         except Exception as e:
             logger.error(f"SMEPlug purchase_data error: {e}")
             return {"status": False, "msg": str(e)}
 
     def purchase_airtel_data(self, phone: str, plan_id: str, client_request_id: str) -> Dict[str, Any]:
-        # Specifically used by purchase endpoints for Airtel partition
         # Documentation: Airtel network_id = 2
         res = self.purchase_data(network_id=2, plan_id=plan_id, phone=phone, reference=client_request_id)
         
@@ -118,7 +120,6 @@ class SMEPlugProvider:
                 "error": message
             }
         
-        # Determine if it's a definitive failure or should be pending
         lowered = message.lower()
         if "processing" in lowered or "pending" in lowered:
             return {

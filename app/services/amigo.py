@@ -39,6 +39,9 @@ NETWORK_ID_MAP = {
     "9mobile": 4,
 }
 
+def resolve_network_id(network: str) -> int:
+    return NETWORK_ID_MAP.get(str(network).lower(), 1)
+
 def split_plan_code(plan_code: str | None) -> tuple[str | None, str]:
     raw = str(plan_code or "").strip()
     if ":" in raw:
