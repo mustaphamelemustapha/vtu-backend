@@ -977,29 +977,33 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
     logger.info("Initial active plans count: %d", len(plans))
 
     # Check which networks are represented
-    active_networks = {p.network.lower() for p in plans if p.network}
+    # Calculate initial breakdown to decide if sync is needed
+    breakdown = {}
+    for p in plans:
+        nw = str(p.network or "unknown").lower()
+        breakdown[nw] = breakdown.get(nw, 0) + 1
     
-    # If major networks (MTN, Glo) are missing, trigger Amigo sync
-    if "mtn" not in active_networks or "glo" not in active_networks:
-        logger.info("Major networks (MTN/Glo) missing or inactive. Triggering Amigo sync.")
+    # If major networks (MTN, Glo) are missing or very low, trigger Amigo sync
+    if breakdown.get("mtn", 0) < 25 or breakdown.get("glo", 0) < 15:
+        logger.info("Major networks (MTN/Glo) missing or incomplete. Triggering Amigo sync.")
         try:
-            client = AmigoClient()
-            response = client.fetch_data_plans()
-            items = response.get("data", [])
-            logger.info("Amigo sync found %d items", len(items))
-            touched = 0
-            for item in items:
-                touched += 1 if _upsert_plan_from_provider(db, item) else 0
-            if touched:
-                db.commit()
-                plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
-                active_networks = {p.network.lower() for p in plans if p.network}
-                logger.info("After Amigo sync, active plans: %d", len(plans))
+            from app.providers.amigo_provider import AmigoProvider
+            amigo = AmigoProvider()
+            for nw in _AMIGO_DATA_NETWORKS:
+                _refresh_provider_network_plans(db, amigo, nw)
+            db.commit()
+            plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+            # Update breakdown after sync
+            breakdown = {}
+            for p in plans:
+                nw = str(p.network or "unknown").lower()
+                breakdown[nw] = breakdown.get(nw, 0) + 1
+            logger.info("After Amigo sync, breakdown: %s", breakdown)
         except Exception as exc:
             logger.warning("Amigo sync failed: %s", exc)
 
     # 9mobile sync from configured bills provider
-    if "9mobile" not in active_networks:
+    if breakdown.get("9mobile", 0) == 0:
         logger.info("9mobile plans missing. Triggering provider sync.")
         try:
             provider = get_bills_provider()
@@ -1036,18 +1040,18 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
             if airtel_touched:
                 db.commit()
                 plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
-                logger.info("After SMEPlug sync, active plans: %d", len(plans))
+                # Final breakdown update
+                breakdown = {}
+                for p in plans:
+                    nw = str(p.network or "unknown").lower()
+                    breakdown[nw] = breakdown.get(nw, 0) + 1
+                logger.info("After SMEPlug sync, breakdown: %s", breakdown)
         else:
             logger.warning("SMEPlug returned no Airtel plans.")
     except Exception as exc:
         logger.warning("SMEPlug Airtel sync failed: %s", exc)
 
-    # Log network breakdown
-    breakdown = {}
-    for p in plans:
-        nw = str(p.network or "unknown").lower()
-        breakdown[nw] = breakdown.get(nw, 0) + 1
-    logger.info("Active plans breakdown: %s", breakdown)
+    logger.info("Final active plans breakdown: %s", breakdown)
 
     # Final enforcement of Airtel source policy: only SMEPlug Airtel plans are exposed.
     final_plans = [
