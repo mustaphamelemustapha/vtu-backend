@@ -1499,6 +1499,8 @@ def get_all_data_plans(admin=Depends(require_admin), db: Session = Depends(get_d
             "base_price": float(p.base_price),
             "display_price": float(p.display_price) if p.display_price is not None else None,
             "is_active": p.is_active,
+            "provider": p.provider,
+            "provider_plan_id": p.provider_plan_id,
             "created_at": p.created_at,
             "updated_at": p.updated_at,
         })
