@@ -880,7 +880,7 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
 
 def _invalidate_plans_cache() -> None:
     for role in (UserRole.USER.value, UserRole.RESELLER.value, UserRole.ADMIN.value):
-        set_cached(f"plans:{_PLAN_CACHE_VERSION}:{role}", None, ttl_seconds=1)
+        # set_cached(f"plans:{_PLAN_CACHE_VERSION}:{role}", None, ttl_seconds=1)
 
 
 def _refresh_provider_network_plans(db: Session, provider, network: str) -> tuple[int, set[str]]:
@@ -1077,7 +1077,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
         )
     curated = _curate_sharp_plans(priced)
     # Keep plans warm longer to reduce repeated DB/provider work on frequent page refreshes.
-    set_cached(cache_key, curated, ttl_seconds=120)
+    # set_cached(cache_key, curated, ttl_seconds=120)
     return curated
 
 
