@@ -325,52 +325,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
     logger.info("Returning %d active data plans for user %s", len(priced), user.email)
     return priced
 
-@router.get("/debug-plans")
-def debug_data_plans(db: Session = Depends(get_db)):
-    plans = db.query(DataPlan).all()
-    return [{
-        "id": p.id,
-        "network": p.network,
-        "plan_code": p.plan_code,
-        "is_active": p.is_active,
-        "base_price": str(p.base_price),
-        "display_price": str(p.display_price) if p.display_price is not None else None
-    } for p in plans]
 
-@router.get("/debug-plans-diagnostics")
-def debug_plans_diagnostics(db: Session = Depends(get_db)):
-    """PUBLIC DIAGNOSTIC ENDPOINT - NO AUTH REQUIRED"""
-    all_count = db.query(DataPlan).count()
-    active_plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
-    
-    results = {
-        "total_in_db": all_count,
-        "active_in_db": len(active_plans),
-        "pricing_check_user": [],
-        "pricing_check_reseller": [],
-    }
-    
-    # Check first 5 active plans for pricing errors
-    from app.services.pricing import get_price_for_user
-    from app.models import UserRole
-    
-    for p in active_plans[:5]:
-        user_price = "error"
-        try:
-            user_price = str(get_price_for_user(db, p, UserRole.USER))
-        except Exception as e:
-            user_price = f"ERR: {e}"
-            
-        reseller_price = "error"
-        try:
-            reseller_price = str(get_price_for_user(db, p, UserRole.RESELLER))
-        except Exception as e:
-            reseller_price = f"ERR: {e}"
-            
-        results["pricing_check_user"].append({"id": p.id, "price": user_price})
-        results["pricing_check_reseller"].append({"id": p.id, "price": reseller_price})
-        
-    return results
 @limiter.limit("5/minute")
 def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     plan_code_input = str(payload.plan_code or "").strip()
