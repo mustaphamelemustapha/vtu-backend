@@ -504,50 +504,51 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
 @router.post("/sync", dependencies=[Depends(require_admin)])
 def sync_data_plans(db: Session = Depends(get_db)):
     """
-    Manually trigger a sync from all providers.
+    Manually trigger a sync from all providers in an unambiguous way.
+    MTN/GLO -> Amigo
+    AIRTEL -> SMEPlug
+    9MOBILE -> ClubKonnect
     """
-    logger.info("Manual data plan sync triggered.")
+    logger.info("Unambiguous manual data plan sync triggered.")
     
-    # 1. SMEPlug (Airtel)
+    # 1. SMEPlug (Strictly AIRTEL)
     try:
         sme = SMEPlugProvider()
         items = sme.get_airtel_plans()
         for item in items:
             item["provider"] = "smeplug"
+            item["network"] = "airtel"
             _upsert_plan_from_provider(db, item)
         db.commit()
+        logger.info("SMEPlug sync finished (Airtel).")
     except Exception as e:
         logger.error("SMEPlug sync failed: %s", e)
 
-    # 2. Amigo (MTN/Glo)
+    # 2. Amigo (Strictly MTN/GLO)
     try:
         amigo = AmigoClient()
         res = amigo.fetch_data_plans()
         items = res.get("data", [])
         for item in items:
+            # Amigo usually sends MTN and GLO
             _upsert_plan_from_provider(db, item)
         db.commit()
+        logger.info("Amigo sync finished (MTN/Glo).")
     except Exception as e:
         logger.error("Amigo sync failed: %s", e)
 
-    # 3. Bills Provider (ClubKonnect/VTPass) - All Networks
+    # 3. ClubKonnect (Strictly 9MOBILE)
     try:
         provider = get_bills_provider()
         if hasattr(provider, "fetch_data_variations"):
-            for nw in ["mtn", "airtel", "glo", "9mobile"]:
-                try:
-                    items = provider.fetch_data_variations(nw)
-                    if not items:
-                        continue
-                    for item in items:
-                        item["network"] = nw
-                        item["provider"] = str(getattr(provider, "name", "clubkonnect")).lower()
-                        _upsert_plan_from_provider(db, item)
-                    db.commit()
-                    logger.info("Bills provider sync finished for %s. Touched %d plans.", nw, len(items))
-                except Exception as nw_exc:
-                    logger.warning("Bills provider sync failed for %s: %s", nw, nw_exc)
+            items = provider.fetch_data_variations("9mobile")
+            for item in items:
+                item["network"] = "9mobile"
+                item["provider"] = "clubkonnect"
+                _upsert_plan_from_provider(db, item)
+            db.commit()
+            logger.info("ClubKonnect sync finished (9mobile).")
     except Exception as e:
-        logger.error("Bills provider general sync failed: %s", e)
+        logger.error("ClubKonnect sync failed: %s", e)
 
-    return {"message": "Data plan sync completed."}
+    return {"message": "Data plan sync completed successfully."}
