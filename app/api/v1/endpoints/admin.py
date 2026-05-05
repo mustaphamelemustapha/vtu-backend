@@ -1522,6 +1522,22 @@ def update_data_plan(
 
     changes: dict = {}
 
+    if payload.plan_name is not None:
+        plan.plan_name = payload.plan_name
+        changes["plan_name"] = payload.plan_name
+
+    if payload.data_size is not None:
+        plan.data_size = payload.data_size
+        changes["data_size"] = payload.data_size
+
+    if payload.validity is not None:
+        plan.validity = payload.validity
+        changes["validity"] = payload.validity
+
+    if payload.base_price is not None:
+        plan.base_price = payload.base_price
+        changes["base_price"] = float(payload.base_price)
+
     if payload.is_active is not None and payload.is_active != plan.is_active:
         plan.is_active = payload.is_active
         changes["is_active"] = payload.is_active
@@ -1542,6 +1558,7 @@ def update_data_plan(
             "id": plan.id,
             "is_active": plan.is_active,
             "display_price": float(plan.display_price) if plan.display_price is not None else None,
+            "plan_name": plan.plan_name
         }
 
     audit_log = AdminAuditLog(
