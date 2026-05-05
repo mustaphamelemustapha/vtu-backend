@@ -45,16 +45,20 @@ def resolve_network_id(network: str) -> int:
 def split_plan_code(plan_code: str | None) -> tuple[str | None, str]:
     raw = str(plan_code or "").strip()
     if ":" in raw:
-        parts = raw.split(":", 1)
-        return parts[0].strip().lower(), parts[1].strip()
+        parts = raw.split(":")
+        return parts[0].strip().lower(), parts[-1].strip()
     return None, raw
 
-def canonical_plan_code(network: str, plan_code: str | None) -> str:
+def canonical_plan_code(provider: str, network: str, plan_code: str | None) -> str:
+    provider_key = str(provider or "").strip().lower()
     network_key = str(network or "").strip().lower()
-    _, provider_code = split_plan_code(plan_code)
-    if network_key and provider_code:
-        return f"{network_key}:{provider_code}"
-    return provider_code
+    _, raw = split_plan_code(plan_code)
+    
+    if provider_key and network_key and raw:
+        return f"{provider_key}:{network_key}:{raw}"
+    if network_key and raw:
+        return f"{network_key}:{raw}"
+    return raw
 
 def normalize_plan_code(plan_code: str) -> int | str:
     _, raw = split_plan_code(plan_code)

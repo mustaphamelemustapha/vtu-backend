@@ -140,12 +140,13 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
     if not network or not plan_code:
         return False
 
-    canonical_code = canonical_plan_code(network, plan_code)
     clean_plan_name = _clean_plan_label(item.get("plan_name"))
     clean_data_size = item.get("data_size")
     clean_validity = item.get("validity")
     clean_provider = str(item.get("provider") or "").lower()
     clean_provider_plan_id = str(item.get("provider_plan_id") or "")
+    
+    canonical_code = canonical_plan_code(clean_provider, network, plan_code)
 
     plan = db.query(DataPlan).filter(DataPlan.plan_code == canonical_code).first()
 
