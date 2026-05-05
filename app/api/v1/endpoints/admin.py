@@ -1622,3 +1622,40 @@ def clean_legacy_data_plans(admin: User = Depends(require_admin), db: Session = 
     except Exception:
         pass
     return {"status": "ok", "message": f"Successfully deleted {deleted} legacy/unknown data plans!"}
+
+@router.post("/data-plans/")
+def create_data_plan(payload: DataPlanUpdate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """
+    Manually create a new data plan.
+    """
+    # Reuse DataPlanUpdate but we need to ensure required fields for creation are present
+    if not payload.network or not payload.plan_code or not payload.plan_name:
+        raise HTTPException(status_code=400, detail="Network, plan_code, and plan_name are required.")
+    
+    # Check if plan_code already exists
+    existing = db.query(DataPlan).filter(DataPlan.plan_code == payload.plan_code).first()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Plan code {payload.plan_code} already exists.")
+
+    plan = DataPlan(
+        network=payload.network,
+        plan_code=payload.plan_code,
+        plan_name=payload.plan_name,
+        data_size=payload.data_size or "—",
+        validity=payload.validity or "30 Days",
+        base_price=payload.base_price or Decimal("0"),
+        display_price=payload.display_price,
+        is_active=payload.is_active if payload.is_active is not None else True,
+        provider=payload.provider,
+        provider_plan_id=payload.provider_plan_id,
+    )
+    db.add(plan)
+    db.commit()
+    db.refresh(plan)
+    
+    try:
+        _invalidate_plans_cache()
+    except Exception:
+        pass
+        
+    return plan
