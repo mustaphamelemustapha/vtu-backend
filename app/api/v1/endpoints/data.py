@@ -361,13 +361,17 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
             if promo_price < price:
                 price = promo_price
 
-    if user.balance < price:
+    wallet = get_or_create_wallet(db, user.id)
+    if wallet.balance < price:
         raise HTTPException(status_code=400, detail="Insufficient wallet balance.")
 
     reference = f"DATA-{int(time.time())}-{secrets.token_hex(4)}".upper()
     
     # 1. DEBIT WALLET
-    if not debit_wallet(db, user.id, price, f"Data Purchase: {plan.plan_name} ({phone})", reference):
+    try:
+        debit_wallet(db, wallet, price, reference, f"Data Purchase: {plan.plan_name} ({phone})")
+    except Exception as e:
+        logger.error(f"Wallet debit failed: {e}")
         raise HTTPException(status_code=400, detail="Wallet debit failed.")
 
     # 2. CREATE PENDING TRANSACTION
@@ -458,7 +462,7 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
     
     if final_status == "failed":
         transaction.failure_reason = _safe_reason(provider_res.get("error"))
-        credit_wallet(db, user.id, price, f"Refund: {plan.plan_name} purchase failed", reference)
+        credit_wallet(db, wallet, price, reference, f"Refund: {plan.plan_name} purchase failed")
         transaction.status = TransactionStatus.REFUNDED
 
     db.commit()
