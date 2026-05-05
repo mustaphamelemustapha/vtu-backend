@@ -1,5 +1,6 @@
 from datetime import date, datetime, time, timezone, timedelta
 from typing import Optional
+from decimal import Decimal
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query
