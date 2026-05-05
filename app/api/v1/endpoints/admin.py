@@ -1018,6 +1018,8 @@ def _fail_refund_single_reference(*, db: Session, admin_email: str, reference: s
             raise HTTPException(status_code=409, detail="Only pending transactions can be failed and refunded.")
         wallet = get_or_create_wallet(db, tx.user_id)
         refund_ref = f"ADMIN_REFUND_{reference}"
+        if len(refund_ref) > 64:
+            refund_ref = refund_ref[:64]
         credit_wallet(
             db,
             wallet,
@@ -1059,6 +1061,8 @@ def _fail_refund_single_reference(*, db: Session, admin_email: str, reference: s
         raise HTTPException(status_code=409, detail="Only pending transactions can be failed and refunded.")
     wallet = get_or_create_wallet(db, service_tx.user_id)
     refund_ref = f"ADMIN_REFUND_{reference}"
+    if len(refund_ref) > 64:
+        refund_ref = refund_ref[:64]
     credit_wallet(
         db,
         wallet,
