@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     amigo_test_mode: bool = False
     # Provider endpoint paths (Amigo deployments differ; keep these configurable).
     amigo_data_purchase_path: str = "/data/"
-    amigo_plans_path: str = "/plans/efficiency"
+    amigo_plans_path: str = "/plans/"
     pending_reconcile_enabled: bool = True
     pending_reconcile_interval_seconds: int = 25
     pending_reconcile_batch_size: int = 30

@@ -88,7 +88,7 @@ class SMEPlugProvider:
         url = f"{self.base_url}/data/purchase"
         payload = {
             "network_id": int(network_id),
-            "plan_id": str(plan_id),
+            "plan_id": int(plan_id) if str(plan_id).isdigit() else str(plan_id),
             "phone": str(phone),
             "customer_reference": str(reference)
         }
@@ -98,6 +98,9 @@ class SMEPlugProvider:
                 response = client.post(url, json=payload, headers=self._get_headers())
                 logger.info("SMEPlug POST /data/purchase network=%s plan=%s phone=%s status=%d", 
                             network_id, plan_id, phone, response.status_code)
+                
+                if response.status_code != 200:
+                    logger.error("SMEPlug purchase error: status=%d response=%s", response.status_code, response.text)
                 
                 res_data = self._json_or_none(response) or {}
                 return res_data

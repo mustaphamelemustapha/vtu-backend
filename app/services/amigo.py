@@ -30,6 +30,9 @@ PLAN_CATALOG = [
     {"network": "glo", "network_id": 3, "plan_code": "196", "plan_name": "Glo 3GB", "data_size": "3GB", "validity": "30d", "price": 1199.00, "provider": "amigo"},
     {"network": "glo", "network_id": 3, "plan_code": "222", "plan_name": "Glo 5GB", "data_size": "5GB", "validity": "30d", "price": 1999.00, "provider": "amigo"},
     {"network": "glo", "network_id": 3, "plan_code": "512", "plan_name": "Glo 10GB", "data_size": "10GB", "validity": "30d", "price": 3990.00, "provider": "amigo"},
+    # Airtel (network_id = 2)
+    {"network": "airtel", "network_id": 2, "plan_code": "150", "plan_name": "Airtel 10GB", "data_size": "10GB", "validity": "30d", "price": 3100.00, "provider": "amigo"},
+    {"network": "airtel", "network_id": 2, "plan_code": "151", "plan_name": "Airtel 20GB", "data_size": "20GB", "validity": "30d", "price": 5100.00, "provider": "amigo"},
 ]
 
 NETWORK_ID_MAP = {
