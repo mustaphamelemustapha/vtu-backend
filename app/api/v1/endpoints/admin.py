@@ -1623,7 +1623,7 @@ def clean_legacy_data_plans(admin: User = Depends(require_admin), db: Session = 
         pass
     return {"status": "ok", "message": f"Successfully deleted {deleted} legacy/unknown data plans!"}
 
-@router.post("/data-plans/")
+@router.post("/data-plans")
 def create_data_plan(payload: DataPlanUpdate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     """
     Manually create a new data plan.
