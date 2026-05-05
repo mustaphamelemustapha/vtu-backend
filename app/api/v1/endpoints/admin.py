@@ -1598,3 +1598,27 @@ def get_audit_logs(
         "page": page,
         "page_size": page_size
     }
+
+@router.post("/data-plans/clean-legacy")
+def clean_legacy_data_plans(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """
+    Deletes legacy data plans that do not follow the new provider:network:id canonical format,
+    which usually show up as 'unknown' provider.
+    """
+    plans = db.query(DataPlan).all()
+    deleted = 0
+    for plan in plans:
+        code = str(plan.plan_code or "")
+        colons = code.count(":")
+        provider = str(plan.provider or "").strip()
+        
+        if colons < 2 or not provider or provider.lower() == "unknown":
+            db.delete(plan)
+            deleted += 1
+            
+    db.commit()
+    try:
+        _invalidate_plans_cache()
+    except Exception:
+        pass
+    return {"status": "ok", "message": f"Successfully deleted {deleted} legacy/unknown data plans!"}
