@@ -323,8 +323,20 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
     return priced
 
 
+@router.post("/purchase")
 @limiter.limit("5/minute")
 def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        return _buy_data_impl(request, payload, user, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        err_detail = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+        logger.error(f"FATAL BUY_DATA CRASH: {err_detail}")
+        raise HTTPException(status_code=500, detail=f"FATAL: {str(e)}\n\n{err_detail}")
+
+def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Session):
     plan_code_input = str(payload.plan_code or "").strip()
     payload_network = str(payload.network or "").strip().lower()
     
