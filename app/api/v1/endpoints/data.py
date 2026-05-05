@@ -530,17 +530,24 @@ def sync_data_plans(db: Session = Depends(get_db)):
     except Exception as e:
         logger.error("Amigo sync failed: %s", e)
 
-    # 3. 9mobile (Bills)
+    # 3. Bills Provider (ClubKonnect/VTPass) - All Networks
     try:
         provider = get_bills_provider()
         if hasattr(provider, "fetch_data_variations"):
-            items = provider.fetch_data_variations("9mobile")
-            for item in items:
-                item["network"] = "9mobile"
-                item["provider"] = str(getattr(provider, "name", "clubkonnect")).lower()
-                _upsert_plan_from_provider(db, item)
-            db.commit()
+            for nw in ["mtn", "airtel", "glo", "9mobile"]:
+                try:
+                    items = provider.fetch_data_variations(nw)
+                    if not items:
+                        continue
+                    for item in items:
+                        item["network"] = nw
+                        item["provider"] = str(getattr(provider, "name", "clubkonnect")).lower()
+                        _upsert_plan_from_provider(db, item)
+                    db.commit()
+                    logger.info("Bills provider sync finished for %s. Touched %d plans.", nw, len(items))
+                except Exception as nw_exc:
+                    logger.warning("Bills provider sync failed for %s: %s", nw, nw_exc)
     except Exception as e:
-        logger.error("9mobile sync failed: %s", e)
+        logger.error("Bills provider general sync failed: %s", e)
 
     return {"message": "Data plan sync completed."}
