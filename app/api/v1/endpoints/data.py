@@ -418,9 +418,9 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
             provider_res = sme.purchase_network_data(net_id, phone, plan.provider_plan_id or plan.plan_code, reference)
             transaction.provider = "smeplug"
 
-        elif provider_name == "amigo" or (not provider_name and network_key in {"mtn", "glo"}):
+        elif provider_name == "amigo" or (not provider_name and network_key in {"mtn", "glo", "airtel", "9mobile"}):
             amigo = AmigoClient()
-            amigo_network_id = 1 if network_key == "mtn" else 3
+            amigo_network_id = resolve_network_id(network_key)
             amigo_payload = {
                 "network": amigo_network_id,
                 "mobile_number": phone,
@@ -524,7 +524,7 @@ def sync_data_plans(db: Session = Depends(get_db)):
     except Exception as e:
         logger.error("SMEPlug sync failed: %s", e)
 
-    # 2. Amigo (Strictly MTN/GLO)
+    # 2. Amigo (All Networks - MTN/GLO/AIRTEL/9MOBILE)
     try:
         amigo = AmigoClient()
         res = amigo.fetch_data_plans()

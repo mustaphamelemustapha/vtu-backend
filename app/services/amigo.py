@@ -37,9 +37,9 @@ PLAN_CATALOG = [
 
 NETWORK_ID_MAP = {
     "mtn": 1,
-    "airtel": 2,
-    "glo": 3,
-    "9mobile": 4,
+    "glo": 2,
+    "airtel": 4,
+    "9mobile": 9,
 }
 
 def resolve_network_id(network: str) -> int:
