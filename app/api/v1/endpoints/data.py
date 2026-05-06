@@ -437,7 +437,14 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                 else:
                     provider_res = {"status": "failed", "error": res.get("message") or "Amigo reported failure"}
             except AmigoApiError as e:
-                provider_res = {"status": "failed", "error": str(e)}
+                err_msg = str(e)
+                # CRITICAL: If Amigo says "coming soon" but user reports they received data,
+                # we must NOT mark as failed (to prevent automatic refund).
+                if "coming soon" in err_msg.lower() or "network must be" in err_msg.lower():
+                    logger.warning("Amigo reported 'coming soon' error for reference %s. Marking as pending for safety.", reference)
+                    provider_res = {"status": "pending", "error": err_msg}
+                else:
+                    provider_res = {"status": "failed", "error": err_msg}
 
         elif provider_name == "clubkonnect" or (not provider_name and network_key == "9mobile"):
             bills = get_bills_provider()
