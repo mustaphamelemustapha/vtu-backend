@@ -316,9 +316,17 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
             continue
     
     try:
-        priced.sort(key=lambda p: (str(p.network or "").lower(), p.price or 0, _parse_size_gb(p.data_size or p.plan_name) or 0))
+        # Sort criteria: 
+        # 1. Network (alphabetical: 9mobile, airtel, glo, mtn)
+        # 2. Price (lowest to highest)
+        # 3. Data size (fallback for same-price bundles)
+        priced.sort(key=lambda p: (
+            str(p.network or "").lower(),
+            float(p.price or 0),
+            _parse_size_gb(p.data_size or p.plan_name) or 0
+        ))
     except Exception as e:
-        logger.warning("Failed to sort plans: %s", e)
+        logger.warning("Failed to sort data plans: %s", e)
         
     logger.info("Returning %d active data plans for user %s", len(priced), user.email)
     return priced
