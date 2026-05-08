@@ -19,6 +19,22 @@ class ProviderResult:
     message: str | None = None
     meta: dict | None = None
 
+    @property
+    def ok(self) -> bool:
+        return self.success
+
+    @property
+    def is_pending(self) -> bool:
+        # Check if explicitly pending via message or meta
+        if self.message and "pending" in self.message.lower():
+            return True
+        if self.meta:
+            # Check for provider-specific pending status
+            for provider in ("vtpass", "clubkonnect", "hollatags"):
+                if (self.meta.get(provider, {}).get("status") or "").lower() == "pending":
+                    return True
+        return False
+
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
