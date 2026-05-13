@@ -279,6 +279,14 @@ def delete_me(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    # Suffix email and phone to allow the user to register again with same credentials
+    suffix = f"_deleted_{int(datetime.now(timezone.utc).timestamp())}"
+    
+    if user.email:
+        user.email = f"{user.email}{suffix}"
+    if user.phone_number:
+        user.phone_number = f"{user.phone_number}{suffix}"
+        
     user.is_active = False
     user.reset_token = None
     user.reset_token_expires_at = None
@@ -286,3 +294,4 @@ def delete_me(
     user.verification_token_expires_at = None
     db.commit()
     return Message(message="Account deleted successfully")
+

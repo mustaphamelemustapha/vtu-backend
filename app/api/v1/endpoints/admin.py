@@ -1419,7 +1419,6 @@ def suspend_user(user_id: int, admin=Depends(require_admin), db: Session = Depen
 
 
 @router.post("/users/{user_id}/activate")
-
 def activate_user(user_id: int, admin=Depends(require_admin), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -1427,6 +1426,36 @@ def activate_user(user_id: int, admin=Depends(require_admin), db: Session = Depe
     user.is_active = True
     db.commit()
     return {"status": "active"}
+
+
+@router.delete("/users/{user_id}")
+def delete_user(user_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Suffix email and phone to allow future registration with same credentials
+    suffix = f"_deleted_{int(datetime.now(timezone.utc).timestamp())}"
+    
+    if user.email:
+        user.email = f"{user.email}{suffix}"
+    if user.phone_number:
+        user.phone_number = f"{user.phone_number}{suffix}"
+
+    user.is_active = False
+    user.reset_token = None
+    user.verification_token = None
+    
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action="user_delete",
+        target=str(user_id),
+        details={"email_before": user.email.replace(suffix, ""), "id": user_id},
+    )
+    db.add(audit_log)
+    db.commit()
+    return {"status": "ok", "message": "User deleted successfully"}
+
 
 
 @router.post("/wallets/adjust")
