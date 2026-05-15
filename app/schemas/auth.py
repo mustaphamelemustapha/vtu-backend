@@ -72,3 +72,7 @@ class Message(BaseModel):
 
 class EmailVerification(BaseModel):
     token: str
+
+
+class FCMTokenRequest(BaseModel):
+    fcm_token: str

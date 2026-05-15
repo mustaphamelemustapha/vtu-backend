@@ -9,7 +9,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.middlewares.rate_limit import limiter
 from app.models import User, UserRole
-from app.schemas.auth import RegisterRequest, LoginRequest, TokenPair, RefreshRequest, Message, ForgotPasswordRequest, ForgotPasswordResponse, ResetPasswordRequest, ChangePasswordRequest, UpdateMeRequest, EmailVerification, LookupRequest
+from app.schemas.auth import RegisterRequest, LoginRequest, TokenPair, RefreshRequest, Message, ForgotPasswordRequest, ForgotPasswordResponse, ResetPasswordRequest, ChangePasswordRequest, UpdateMeRequest, EmailVerification, LookupRequest, FCMTokenRequest
 from app.schemas.user import UserOut
 from app.dependencies import get_current_user
 from app.services.wallet import get_or_create_wallet
@@ -303,3 +303,14 @@ def app_config():
         "play_store_url": settings.play_store_url,
         "app_store_url": settings.app_store_url,
     }
+
+
+@router.post("/fcm-token", response_model=Message)
+def update_fcm_token(
+    payload: FCMTokenRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    user.fcm_token = payload.fcm_token
+    db.commit()
+    return Message(message="FCM token updated successfully")
