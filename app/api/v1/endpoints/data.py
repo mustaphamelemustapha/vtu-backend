@@ -495,6 +495,22 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
 
     db.commit()
 
+    from app.services.push_notification import PushNotificationService
+    if final_status == "success" and user.fcm_token:
+        PushNotificationService.send_to_token(
+            token=user.fcm_token,
+            title="Data Purchase Successful",
+            body=f"Your purchase of {plan.plan_name} for {phone} was successful.",
+            data={"type": "transaction", "reference": reference, "status": "success"}
+        )
+    elif final_status == "failed" and user.fcm_token:
+        PushNotificationService.send_to_token(
+            token=user.fcm_token,
+            title="Data Purchase Failed",
+            body=f"Your purchase of {plan.plan_name} for {phone} failed and you have been refunded.",
+            data={"type": "transaction", "reference": reference, "status": "failed"}
+        )
+
     # Log API call (Using correct ApiLog fields: user_id, service, endpoint, status_code, duration_ms, reference, success)
     api_log = ApiLog(
         user_id=user.id,
