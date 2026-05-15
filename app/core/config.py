@@ -130,6 +130,11 @@ class Settings(BaseSettings):
     # Frontend URLs (used for email links)
     frontend_base_url: str = "http://localhost:5173"
 
+    # App Update Config
+    min_app_version: str = "1.0.0"
+    play_store_url: str = "https://play.google.com/store/apps/details?id=com.axisvtu.app"
+    app_store_url: str = "https://apps.apple.com/us/app/axisvtu/id6400000000"
+
     # Email (password reset)
     email_provider: str = "console"  # console|resend|smtp|brevo
     email_from: str = "AxisVTU <no-reply@axisvtu.local>"

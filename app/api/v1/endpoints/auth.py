@@ -295,3 +295,11 @@ def delete_me(
     db.commit()
     return Message(message="Account deleted successfully")
 
+
+@router.get("/app-config")
+def app_config():
+    return {
+        "min_app_version": settings.min_app_version,
+        "play_store_url": settings.play_store_url,
+        "app_store_url": settings.app_store_url,
+    }
