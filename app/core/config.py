@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     pin_reset_token_minutes: int = 30
 
     # Database
-    database_url: PostgresDsn
+    database_url: str
     db_pool_size: int = 5
     db_max_overflow: int = 5
     db_pool_timeout: int = 15
