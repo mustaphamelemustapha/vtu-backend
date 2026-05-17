@@ -39,10 +39,12 @@ def upgrade():
             {"code": code, "id": int(row.id)},
         )
 
-    op.alter_column("users", "referral_code", nullable=False)
+    if bind.dialect.name != "sqlite":
+        op.alter_column("users", "referral_code", nullable=False)
     op.create_index("ix_users_referral_code", "users", ["referral_code"], unique=True)
     op.create_index("ix_users_referred_by_id", "users", ["referred_by_id"], unique=False)
-    op.create_foreign_key("fk_users_referred_by_id_users", "users", "users", ["referred_by_id"], ["id"])
+    if bind.dialect.name != "sqlite":
+        op.create_foreign_key("fk_users_referred_by_id_users", "users", "users", ["referred_by_id"], ["id"])
 
     referral_status = postgresql.ENUM(
         "pending",

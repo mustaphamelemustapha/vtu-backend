@@ -15,7 +15,9 @@ depends_on = None
 
 
 def upgrade():
-    op.execute("ALTER TABLE referrals ALTER COLUMN reward_amount SET DEFAULT 0")
+    bind = op.get_bind()
+    if bind.dialect.name != "sqlite":
+        op.execute("ALTER TABLE referrals ALTER COLUMN reward_amount SET DEFAULT 0")
     op.execute(
         """
         UPDATE referrals
@@ -27,7 +29,9 @@ def upgrade():
 
 
 def downgrade():
-    op.execute("ALTER TABLE referrals ALTER COLUMN reward_amount SET DEFAULT 2000")
+    bind = op.get_bind()
+    if bind.dialect.name != "sqlite":
+        op.execute("ALTER TABLE referrals ALTER COLUMN reward_amount SET DEFAULT 2000")
     op.execute(
         """
         UPDATE referrals
