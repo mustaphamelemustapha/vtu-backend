@@ -64,7 +64,7 @@ def upgrade():
         "data_plans",
         sa.Column("id", sa.Integer, primary_key=True),
         sa.Column("network", sa.String(32), nullable=False),
-        sa.Column("plan_code", sa.String(64), nullable=False),
+        sa.Column("plan_code", sa.String(64), nullable=False, unique=True),
         sa.Column("plan_name", sa.String(128), nullable=False),
         sa.Column("data_size", sa.String(32), nullable=False),
         sa.Column("validity", sa.String(32), nullable=False),
@@ -74,7 +74,6 @@ def upgrade():
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
     )
     op.create_index("ix_data_plans_network_active", "data_plans", ["network", "is_active"], unique=False)
-    op.create_unique_constraint("uq_data_plans_plan_code", "data_plans", ["plan_code"])
 
     op.create_table(
         "pricing_rules",
