@@ -78,6 +78,7 @@ def _maybe_reward_first_deposit(db: Session, *, user: User, reference: str, amou
             transaction_status=status.value if hasattr(status, "value") else str(status),
         )
     except Exception as exc:
+        db.rollback()
         logger.warning("Referral first deposit reward failed for %s: %s", reference, exc)
 
 
