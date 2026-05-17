@@ -128,11 +128,23 @@ def get_reserved_account_details(*, account_reference: str) -> dict:
 
 
 def verify_monnify_signature(body: bytes, signature: str) -> bool:
-    secret = settings.monnify_webhook_secret or settings.monnify_secret_key
     sig = (signature or "").strip()
     if not sig:
         return False
-    # Monnify docs often specify SHA512(secret + body), but some integrations use HMAC-SHA512.
-    computed_concat = hashlib.sha512(secret.encode() + body).hexdigest()
-    computed_hmac = hmac.new(secret.encode(), body, hashlib.sha512).hexdigest()
-    return hmac.compare_digest(computed_concat, sig) or hmac.compare_digest(computed_hmac, sig)
+    
+    # Try all possible secret keys configured in the environment
+    keys = []
+    if settings.monnify_webhook_secret:
+        keys.append(settings.monnify_webhook_secret)
+    if settings.monnify_secret_key:
+        keys.append(settings.monnify_secret_key)
+        
+    for secret in keys:
+        # Monnify docs specify HMAC-SHA512 of request body using client secret key
+        computed_concat = hashlib.sha512(secret.encode() + body).hexdigest()
+        computed_hmac = hmac.new(secret.encode(), body, hashlib.sha512).hexdigest()
+        
+        if hmac.compare_digest(computed_concat, sig) or hmac.compare_digest(computed_hmac, sig):
+            return True
+            
+    return False
