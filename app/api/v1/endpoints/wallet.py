@@ -300,7 +300,7 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
         "provider": "combined",
         "account_reference": account_reference,
         "accounts": all_accounts,
-        "requires_kyc": requires_kyc if not all_accounts else False,
+        "requires_kyc": requires_kyc,
         "requires_phone": requires_phone if not all_accounts else False,
         "message": " | ".join(messages) if messages else None,
     }
@@ -419,7 +419,7 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
         "provider": "combined",
         "account_reference": account_reference,
         "accounts": all_accounts,
-        "requires_kyc": False if all_accounts else True,
+        "requires_kyc": requires_kyc,
         "requires_phone": requires_phone if not all_accounts else False,
         "message": " | ".join(messages) if messages else None,
     }
