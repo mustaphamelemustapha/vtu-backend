@@ -296,6 +296,9 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
                 "account_name": db_acc.account_name,
             })
 
+    # Sort accounts: Moniepoint first
+    all_accounts.sort(key=lambda acc: 0 if "moniepoint" in str(acc.get("bank_name", "")).lower() or "monnify" in str(acc.get("bank_name", "")).lower() else 1)
+
     return {
         "provider": "combined",
         "account_reference": account_reference,
@@ -414,6 +417,9 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
 
     if not all_accounts and messages:
         raise HTTPException(status_code=502, detail=" | ".join(messages))
+
+    # Sort accounts: Moniepoint first
+    all_accounts.sort(key=lambda acc: 0 if "moniepoint" in str(acc.get("bank_name", "")).lower() or "monnify" in str(acc.get("bank_name", "")).lower() else 1)
 
     return {
         "provider": "combined",
