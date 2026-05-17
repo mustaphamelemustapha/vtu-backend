@@ -11,6 +11,7 @@ from app.models.pricing_rule import PricingRule, PricingRole, MarginType
 from app.models.api_log import ApiLog
 from app.models.service_toggle import ServiceToggle
 from app.models.admin_audit_log import AdminAuditLog
+from app.models.virtual_account import VirtualAccount, VirtualAccountProvider, VirtualAccountStatus
 
 __all__ = [
     "User",
@@ -36,4 +37,7 @@ __all__ = [
     "ApiLog",
     "ServiceToggle",
     "AdminAuditLog",
+    "VirtualAccount",
+    "VirtualAccountProvider",
+    "VirtualAccountStatus",
 ]

@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import httpx
+import time
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -12,7 +13,14 @@ def _basic_auth() -> str:
     return base64.b64encode(token.encode()).decode()
 
 
+_token_cache: str | None = None
+_token_expiry: float = 0.0
+
 def get_monnify_token() -> str:
+    global _token_cache, _token_expiry
+    if _token_cache and time.time() < _token_expiry:
+        return _token_cache
+
     headers = {
         "Authorization": f"Basic {_basic_auth()}",
         "Content-Type": "application/json",
@@ -21,7 +29,16 @@ def get_monnify_token() -> str:
         resp = client.post(f"{settings.monnify_base_url}/api/v1/auth/login", headers=headers)
         resp.raise_for_status()
         data = resp.json()
-        return data.get("responseBody", {}).get("accessToken")
+        body = data.get("responseBody", {})
+        token = body.get("accessToken")
+        expires_in = body.get("expiresIn", 3600)
+        
+        if token:
+            _token_cache = token
+            # Cache it, subtracting 60 seconds as a buffer
+            _token_expiry = time.time() + float(expires_in) - 60
+            return token
+        raise ValueError("Failed to get Monnify access token")
 
 
 def init_monnify_transaction(email: str, name: str, amount: float, reference: str, callback_url: str) -> dict:
