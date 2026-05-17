@@ -44,6 +44,7 @@ def _parse_reserved_accounts(payload: dict) -> list[dict]:
                 "bank_name": a.get("bankName") or a.get("bank") or a.get("bank_name") or "Bank",
                 "account_number": a.get("accountNumber") or a.get("account_number") or "",
                 "account_name": a.get("accountName") or a.get("account_name"),
+                "bank_code": a.get("bankCode") or a.get("bank_code") or "000",
             }
         )
     return [a for a in out if a.get("account_number")]
