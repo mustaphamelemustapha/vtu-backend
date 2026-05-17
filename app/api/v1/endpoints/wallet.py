@@ -253,7 +253,7 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
         try:
             resp = reserve_monnify_account(
                 account_reference=account_reference,
-                account_name=f"AxisVTU/{user.full_name}",
+                account_name=f"MMTECHGLOBE/{user.full_name}",
                 customer_email=user.email,
                 customer_name=user.full_name,
                 get_all_available_banks=True,
@@ -372,7 +372,7 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
         try:
             resp = reserve_monnify_account(
                 account_reference=account_reference,
-                account_name=f"AxisVTU/{user.full_name}",
+                account_name=f"MMTECHGLOBE/{user.full_name}",
                 customer_email=user.email,
                 customer_name=user.full_name,
                 bvn=bvn or None,
