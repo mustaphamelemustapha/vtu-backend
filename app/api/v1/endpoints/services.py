@@ -272,6 +272,17 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
         if result.meta:
             tx.meta = {**(tx.meta or {}), **result.meta}
         db.commit()
+        if user.fcm_token:
+            try:
+                from app.services.push_notification import PushNotificationService
+                PushNotificationService.send_to_token(
+                    token=user.fcm_token,
+                    title="Airtime Purchase Successful",
+                    body=f"Your purchase of ₦{float(base_amount)} {payload.network.upper()} airtime for {payload.phone_number} was successful.",
+                    data={"type": "transaction", "reference": reference, "status": "success"}
+                )
+            except Exception as e:
+                logger.warning("Failed to send push notification: %s", e)
         return {"reference": reference, "status": tx.status}
 
     tx.failure_reason = result.message or "Provider failed"
@@ -280,6 +291,17 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
     credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed airtime purchase")
     tx.status = TransactionStatus.REFUNDED.value
     db.commit()
+    if user.fcm_token:
+        try:
+            from app.services.push_notification import PushNotificationService
+            PushNotificationService.send_to_token(
+                token=user.fcm_token,
+                title="Airtime Purchase Failed",
+                body=f"Your purchase of ₦{float(base_amount)} {payload.network.upper()} airtime for {payload.phone_number} failed. A refund of ₦{float(charge_amount)} has been credited to your wallet.",
+                data={"type": "transaction", "reference": reference, "status": "refunded"}
+            )
+        except Exception as e:
+            logger.warning("Failed to send push notification: %s", e)
     raise HTTPException(status_code=502, detail=tx.failure_reason)
 
 
@@ -366,6 +388,17 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
         if result.meta:
             tx.meta = {**(tx.meta or {}), **result.meta}
         db.commit()
+        if user.fcm_token:
+            try:
+                from app.services.push_notification import PushNotificationService
+                PushNotificationService.send_to_token(
+                    token=user.fcm_token,
+                    title="Cable Subscription Successful",
+                    body=f"Your subscription of {payload.package_code} for {payload.provider.upper()} ({payload.smartcard_number}) was successful.",
+                    data={"type": "transaction", "reference": reference, "status": "success"}
+                )
+            except Exception as e:
+                logger.warning("Failed to send push notification: %s", e)
         return {"reference": reference, "status": tx.status}
 
     tx.failure_reason = result.message or "Provider failed"
@@ -374,6 +407,17 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
     credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed cable purchase")
     tx.status = TransactionStatus.REFUNDED.value
     db.commit()
+    if user.fcm_token:
+        try:
+            from app.services.push_notification import PushNotificationService
+            PushNotificationService.send_to_token(
+                token=user.fcm_token,
+                title="Cable Subscription Failed",
+                body=f"Your subscription of {payload.package_code} for {payload.provider.upper()} failed. A refund of ₦{float(charge_amount)} has been credited to your wallet.",
+                data={"type": "transaction", "reference": reference, "status": "refunded"}
+            )
+        except Exception as e:
+            logger.warning("Failed to send push notification: %s", e)
     raise HTTPException(status_code=502, detail=tx.failure_reason)
 
 
@@ -526,6 +570,21 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
         if result.meta:
             tx.meta = {**(tx.meta or {}), **result.meta}
         db.commit()
+        if user.fcm_token:
+            try:
+                from app.services.push_notification import PushNotificationService
+                token_str = (tx.meta or {}).get("token") or ""
+                body_msg = f"Your purchase of ₦{float(base_amount)} electricity for meter {payload.meter_number} was successful."
+                if token_str:
+                    body_msg += f" Token: {token_str}"
+                PushNotificationService.send_to_token(
+                    token=user.fcm_token,
+                    title="Electricity Purchase Successful",
+                    body=body_msg,
+                    data={"type": "transaction", "reference": reference, "status": "success"}
+                )
+            except Exception as e:
+                logger.warning("Failed to send push notification: %s", e)
         return {"reference": reference, "status": tx.status, "token": (tx.meta or {}).get("token")}
 
     tx.failure_reason = result.message or "Provider failed"
@@ -534,6 +593,17 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
     credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed electricity purchase")
     tx.status = TransactionStatus.REFUNDED.value
     db.commit()
+    if user.fcm_token:
+        try:
+            from app.services.push_notification import PushNotificationService
+            PushNotificationService.send_to_token(
+                token=user.fcm_token,
+                title="Electricity Purchase Failed",
+                body=f"Your purchase of ₦{float(base_amount)} electricity for meter {payload.meter_number} failed. A refund of ₦{float(charge_amount)} has been credited to your wallet.",
+                data={"type": "transaction", "reference": reference, "status": "refunded"}
+            )
+        except Exception as e:
+            logger.warning("Failed to send push notification: %s", e)
     raise HTTPException(status_code=502, detail=tx.failure_reason)
 
 
@@ -722,6 +792,21 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
         if result.meta:
             tx.meta = {**(tx.meta or {}), **result.meta}
         db.commit()
+        if user.fcm_token:
+            try:
+                from app.services.push_notification import PushNotificationService
+                pins = (tx.meta or {}).get("pins") or []
+                body_msg = f"Your purchase of {payload.quantity} {payload.exam.upper()} PIN(s) was successful."
+                if pins:
+                    body_msg += f" PINs: {', '.join(pins)}"
+                PushNotificationService.send_to_token(
+                    token=user.fcm_token,
+                    title="Exam PIN Purchase Successful",
+                    body=body_msg,
+                    data={"type": "transaction", "reference": reference, "status": "success"}
+                )
+            except Exception as e:
+                logger.warning("Failed to send push notification: %s", e)
         return {"reference": reference, "status": tx.status, "pins": (tx.meta or {}).get("pins", [])}
 
     tx.failure_reason = result.message or "Provider failed"
@@ -730,4 +815,15 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
     credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed exam pin purchase")
     tx.status = TransactionStatus.REFUNDED.value
     db.commit()
+    if user.fcm_token:
+        try:
+            from app.services.push_notification import PushNotificationService
+            PushNotificationService.send_to_token(
+                token=user.fcm_token,
+                title="Exam PIN Purchase Failed",
+                body=f"Your purchase of {payload.quantity} {payload.exam.upper()} PIN(s) failed. A refund of ₦{float(charge_amount)} has been credited to your wallet.",
+                data={"type": "transaction", "reference": reference, "status": "refunded"}
+            )
+        except Exception as e:
+            logger.warning("Failed to send push notification: %s", e)
     raise HTTPException(status_code=502, detail=tx.failure_reason)
