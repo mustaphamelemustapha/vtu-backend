@@ -32,7 +32,7 @@ class Settings(BaseSettings):
 
     # Security
     secret_key: str
-    access_token_expire_minutes: int = 30
+    access_token_expire_minutes: int = 144000
     refresh_token_expire_days: int = 7
     password_bcrypt_rounds: int = 12
     pin_bcrypt_rounds: int = 12
