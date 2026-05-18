@@ -445,6 +445,20 @@ def delete_bank_transfer_accounts(user: User = Depends(get_current_user), db: Se
     return {"status": "success", "message": "Virtual accounts cache successfully deleted."}
 
 
+@router.get("/temp-reset")
+def temp_reset_virtual_accounts(email: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == email.strip().lower()).first()
+    if not user:
+        return {"status": "error", "message": "User not found"}
+    deleted = db.query(VirtualAccount).filter(
+        VirtualAccount.user_id == user.id,
+        VirtualAccount.provider == VirtualAccountProvider.MONNIFY
+    ).delete()
+    db.commit()
+    return {"status": "success", "message": f"Successfully deleted {deleted} cached accounts for {email}."}
+
+
+
 @router.post("/monnify/reserved-account", response_model=BankTransferAccountsResponse)
 @limiter.limit("5/minute")
 def create_monnify_reserved_account(request: Request, payload: CreateBankTransferAccountsRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
