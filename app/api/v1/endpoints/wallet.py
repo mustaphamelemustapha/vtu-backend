@@ -359,62 +359,65 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
                 requires_kyc = True
             messages.append(f"Paystack: {detail}")
 
-    # 2. Create/Update Monnify Reserved Account
+    # 2. Clear Database Monnify Cache & Re-generate (Hard Refresh)
     bvn = (payload.bvn or "").strip()
     nin = (payload.nin or "").strip()
 
-    v_account = db.query(VirtualAccount).filter(
+    # Flush any existing Monnify virtual accounts for this user first
+    db.query(VirtualAccount).filter(
         VirtualAccount.user_id == user.id,
         VirtualAccount.provider == VirtualAccountProvider.MONNIFY
-    ).first()
+    ).delete()
+    db.commit()
 
-    if not v_account:
-        try:
-            resp = reserve_monnify_account(
-                account_reference=account_reference,
-                account_name=f"MMTECHGLOBE/{user.full_name}",
-                customer_email=user.email,
-                customer_name=user.full_name,
-                bvn=bvn or None,
-                nin=nin or None,
-                get_all_available_banks=True,
-            )
-            accounts_data = _parse_reserved_accounts(resp)
-            if accounts_data:
-                body = resp.get("responseBody") or resp.get("data") or resp.get("response") or {}
-                for acc in accounts_data:
-                    db_acc = VirtualAccount(
-                        user_id=user.id,
-                        provider=VirtualAccountProvider.MONNIFY,
-                        account_number=acc["account_number"],
-                        account_name=acc["account_name"],
-                        bank_name=acc["bank_name"],
-                        bank_code=acc.get("bank_code", "000"),
-                        customer_reference=account_reference,
-                        reservation_reference=body.get("reservationReference", secrets.token_hex(8)),
-                        status=VirtualAccountStatus.ACTIVE,
+    try:
+        resp = reserve_monnify_account(
+            account_reference=account_reference,
+            account_name=f"MMTECHGLOBE/{user.full_name}",
+            customer_email=user.email,
+            customer_name=user.full_name,
+            bvn=bvn or None,
+            nin=nin or None,
+            get_all_available_banks=True,
+        )
+        accounts_data = _parse_reserved_accounts(resp)
+        if accounts_data:
+            # Uniqueness check: Prevent duplicate KYC mapping across users
+            for acc in accounts_data:
+                dup = db.query(VirtualAccount).filter(
+                    VirtualAccount.account_number == acc["account_number"],
+                    VirtualAccount.user_id != user.id
+                ).first()
+                if dup:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="This KYC document (BVN/NIN) is already linked to another account on our platform. Please use a unique BVN/NIN."
                     )
-                    db.add(db_acc)
-                db.commit()
-                all_accounts.extend(accounts_data)
-            else:
-                requires_kyc = True
-                messages.append("Failed to reserve Monnify account.")
-        except Exception as exc:
+
+            body = resp.get("responseBody") or resp.get("data") or resp.get("response") or {}
+            for acc in accounts_data:
+                db_acc = VirtualAccount(
+                    user_id=user.id,
+                    provider=VirtualAccountProvider.MONNIFY,
+                    account_number=acc["account_number"],
+                    account_name=acc["account_name"],
+                    bank_name=acc["bank_name"],
+                    bank_code=acc.get("bank_code", "000"),
+                    customer_reference=account_reference,
+                    reservation_reference=body.get("reservationReference", secrets.token_hex(8)),
+                    status=VirtualAccountStatus.ACTIVE,
+                )
+                db.add(db_acc)
+            db.commit()
+            all_accounts.extend(accounts_data)
+        else:
             requires_kyc = True
-            messages.append(f"Monnify: {exc}")
-    else:
-        # Fetch all existing
-        db_accounts = db.query(VirtualAccount).filter(
-            VirtualAccount.user_id == user.id,
-            VirtualAccount.provider == VirtualAccountProvider.MONNIFY
-        ).all()
-        for db_acc in db_accounts:
-            all_accounts.append({
-                "bank_name": db_acc.bank_name,
-                "account_number": db_acc.account_number,
-                "account_name": db_acc.account_name,
-            })
+            messages.append("Failed to reserve Monnify account.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        requires_kyc = True
+        messages.append(f"Monnify: {exc}")
 
     if not all_accounts and messages:
         raise HTTPException(status_code=502, detail=" | ".join(messages))
@@ -430,6 +433,16 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
         "requires_phone": requires_phone if not all_accounts else False,
         "message": " | ".join(messages) if messages else None,
     }
+
+
+@router.delete("/bank-transfer-accounts")
+def delete_bank_transfer_accounts(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    db.query(VirtualAccount).filter(
+        VirtualAccount.user_id == user.id,
+        VirtualAccount.provider == VirtualAccountProvider.MONNIFY
+    ).delete()
+    db.commit()
+    return {"status": "success", "message": "Virtual accounts cache successfully deleted."}
 
 
 @router.post("/monnify/reserved-account", response_model=BankTransferAccountsResponse)

@@ -1705,3 +1705,24 @@ def create_data_plan(payload: DataPlanUpdate, admin: User = Depends(require_admi
         pass
         
     return plan
+
+
+@router.post("/users/reset-virtual-accounts")
+def admin_reset_virtual_accounts(
+    email: str = Query(..., description="Email address of the user to reset accounts for"),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    from app.models.virtual_account import VirtualAccount, VirtualAccountProvider
+    user = db.query(User).filter(User.email == email.strip().lower()).first()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User with email {email} not found.")
+        
+    deleted = db.query(VirtualAccount).filter(
+        VirtualAccount.user_id == user.id,
+        VirtualAccount.provider == VirtualAccountProvider.MONNIFY
+    ).delete()
+    db.commit()
+    
+    return {"status": "ok", "message": f"Successfully deleted {deleted} cached virtual accounts for {email}."}
+
