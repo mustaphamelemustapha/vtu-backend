@@ -1663,9 +1663,15 @@ def get_all_referrals(
 
 @router.get("/audit-logs", response_model=AdminAuditLogsResponse)
 def get_audit_logs(
-    page: int = 1, page_size: int = 50, admin=Depends(require_admin), db: Session = Depends(get_db)
+    page: int = 1,
+    page_size: int = 50,
+    reference: Optional[str] = None,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db),
 ):
     query = db.query(AdminAuditLog)
+    if reference:
+        query = query.filter(AdminAuditLog.target == reference.strip())
     total = query.count()
     items = []
     for log in query.order_by(AdminAuditLog.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all():

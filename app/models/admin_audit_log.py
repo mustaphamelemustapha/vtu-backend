@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, JSON
+from sqlalchemy import Column, Integer, String, JSON, Index
 from app.core.database import Base
 from app.models.base import TimestampMixin
 
@@ -8,5 +8,5 @@ class AdminAuditLog(Base, TimestampMixin):
     id = Column(Integer, primary_key=True, index=True)
     admin_email = Column(String(255), index=True, nullable=False)
     action = Column(String(100), nullable=False)
-    target = Column(String(100), nullable=True)
+    target = Column(String(100), nullable=True, index=True)
     details = Column(JSON, nullable=True)

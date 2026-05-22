@@ -13,7 +13,7 @@ class ApiLog(Base, TimestampMixin):
     endpoint = Column(String(255), nullable=False)
     status_code = Column(Integer, nullable=False)
     duration_ms = Column(Numeric(10, 2), nullable=False)
-    reference = Column(String(64), nullable=True)
+    reference = Column(String(64), nullable=True, index=True)
     success = Column(Integer, nullable=False)
 
     user = relationship("User", back_populates="api_logs")
