@@ -161,6 +161,11 @@ def _ensure_utc(value: Optional[datetime]) -> Optional[datetime]:
 @router.get("/analytics")
 
 def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
+    now_utc = _utcnow()
+    day_start_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start_utc = day_start_utc - timedelta(days=day_start_utc.weekday())
+    month_start_utc = day_start_utc.replace(day=1)
+
     total_revenue = db.query(func.sum(Transaction.amount)).filter(Transaction.status == TransactionStatus.SUCCESS).scalar() or 0
     data_revenue = (
         db.query(func.sum(Transaction.amount))
@@ -173,9 +178,9 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
     )
     # Estimate cost from the current plan catalog base_price (not historical).
     data_cost_estimate = (
-        db.query(func.sum(DataPlan.base_price))
+        db.query(func.sum(func.coalesce(DataPlan.base_price, Transaction.amount)))
         .select_from(Transaction)
-        .join(DataPlan, Transaction.data_plan_code == DataPlan.plan_code)
+        .outerjoin(DataPlan, Transaction.data_plan_code == DataPlan.plan_code)
         .filter(
             Transaction.status == TransactionStatus.SUCCESS,
             Transaction.tx_type == TransactionType.DATA,
@@ -186,7 +191,41 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
     gross_profit_estimate = data_revenue - data_cost_estimate
     gross_margin_pct = (float(gross_profit_estimate) / float(data_revenue) * 100.0) if float(data_revenue) else 0.0
     total_users = db.query(func.count(User.id)).scalar() or 0
-    daily_tx = db.query(func.count(Transaction.id)).filter(Transaction.status == TransactionStatus.SUCCESS).scalar() or 0
+    active_users = db.query(func.count(User.id)).filter(User.is_active == True).scalar() or 0
+
+    today_successful_tx = db.query(func.count(Transaction.id)).filter(
+        Transaction.status == TransactionStatus.SUCCESS,
+        Transaction.created_at >= day_start_utc
+    ).scalar() or 0
+    today_failed_tx = db.query(func.count(Transaction.id)).filter(
+        Transaction.status == TransactionStatus.FAILED,
+        Transaction.created_at >= day_start_utc
+    ).scalar() or 0
+    today_pending_tx = db.query(func.count(Transaction.id)).filter(
+        Transaction.status == TransactionStatus.PENDING,
+        Transaction.created_at >= day_start_utc
+    ).scalar() or 0
+
+    if inspect(db.bind).has_table("service_transactions"):
+        today_successful_st = db.query(func.count(ServiceTransaction.id)).filter(
+            ServiceTransaction.status == TransactionStatus.SUCCESS.value,
+            ServiceTransaction.created_at >= day_start_utc
+        ).scalar() or 0
+        today_failed_st = db.query(func.count(ServiceTransaction.id)).filter(
+            ServiceTransaction.status == TransactionStatus.FAILED.value,
+            ServiceTransaction.created_at >= day_start_utc
+        ).scalar() or 0
+        today_pending_st = db.query(func.count(ServiceTransaction.id)).filter(
+            ServiceTransaction.status == TransactionStatus.PENDING.value,
+            ServiceTransaction.created_at >= day_start_utc
+        ).scalar() or 0
+        
+        today_successful_tx += today_successful_st
+        today_failed_tx += today_failed_st
+        today_pending_tx += today_pending_st
+
+    daily_tx = today_successful_tx + today_failed_tx + today_pending_tx
+
     api_success = db.query(func.count(ApiLog.id)).filter(ApiLog.success == 1).scalar() or 0
     api_failed = db.query(func.count(ApiLog.id)).filter(ApiLog.success == 0).scalar() or 0
     service_revenue = 0
@@ -204,10 +243,6 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
         "weekly": {"revenue": 0.0, "cost_estimate": 0.0, "profit_estimate": 0.0, "tx_count": 0},
         "monthly": {"revenue": 0.0, "cost_estimate": 0.0, "profit_estimate": 0.0, "tx_count": 0},
     }
-    now_utc = _utcnow()
-    day_start_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
-    week_start_utc = day_start_utc - timedelta(days=day_start_utc.weekday())
-    month_start_utc = day_start_utc.replace(day=1)
     period_starts["daily"] = day_start_utc
     period_starts["weekly"] = week_start_utc
     period_starts["monthly"] = month_start_utc
@@ -330,7 +365,11 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
         "service_cost_estimate": round(float(service_cost_estimate), 2),
         "service_profit_estimate": round(float(service_profit_estimate), 2),
         "total_users": total_users,
+        "active_users": active_users,
         "daily_transactions": daily_tx,
+        "today_successful_tx": today_successful_tx,
+        "today_failed_tx": today_failed_tx,
+        "today_pending_tx": today_pending_tx,
         "api_success": api_success,
         "api_failed": api_failed,
         "reports_open": int(reports_open),
