@@ -20,7 +20,13 @@ from app.services.paystack import (
     get_paystack_customer,
     PaystackError,
 )
-from app.services.monnify import init_monnify_transaction, verify_monnify_signature, reserve_monnify_account, get_reserved_account_details
+from app.services.monnify import (
+    init_monnify_transaction,
+    verify_monnify_signature,
+    reserve_monnify_account,
+    get_reserved_account_details,
+    update_monnify_kyc_info,
+)
 from app.middlewares.rate_limit import limiter
 from app.models import WalletLedger
 from app.models.virtual_account import VirtualAccount, VirtualAccountProvider, VirtualAccountStatus
@@ -371,15 +377,28 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
     db.commit()
 
     try:
-        resp = reserve_monnify_account(
-            account_reference=account_reference,
-            account_name=f"MMTECHGLOBE/{user.full_name}",
-            customer_email=user.email,
-            customer_name=user.full_name,
-            bvn=bvn or None,
-            nin=nin or None,
-            get_all_available_banks=True,
-        )
+        try:
+            resp = reserve_monnify_account(
+                account_reference=account_reference,
+                account_name=f"MMTECHGLOBE/{user.full_name}",
+                customer_email=user.email,
+                customer_name=user.full_name,
+                bvn=bvn or None,
+                nin=nin or None,
+                get_all_available_banks=True,
+            )
+        except ValueError as exc:
+            if "already exists" in str(exc).lower() or "duplicate" in str(exc).lower() or "exists" in str(exc).lower():
+                # Account already exists, try to update KYC and fetch it
+                if bvn or nin:
+                    update_monnify_kyc_info(
+                        account_reference=account_reference,
+                        bvn=bvn or None,
+                        nin=nin or None,
+                    )
+                resp = get_reserved_account_details(account_reference=account_reference)
+            else:
+                raise
         accounts_data = _parse_reserved_accounts(resp)
         if accounts_data:
             # Uniqueness check: Prevent duplicate KYC mapping across users

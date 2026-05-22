@@ -111,6 +111,29 @@ def reserve_monnify_account(
         return resp.json()
 
 
+def update_monnify_kyc_info(*, account_reference: str, bvn: str | None = None, nin: str | None = None) -> dict:
+    token = get_monnify_token()
+    payload = {}
+    if bvn:
+        payload["bvn"] = bvn
+    if nin:
+        payload["nin"] = nin
+
+    if not payload:
+        return {}
+
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    with httpx.Client(timeout=20) as client:
+        resp = client.put(f"{settings.monnify_base_url}/api/v1/bank-transfer/reserved-accounts/{account_reference}/kyc-info", json=payload, headers=headers)
+        if resp.status_code >= 400:
+            try:
+                detail = resp.json()
+            except Exception:
+                detail = {"message": resp.text}
+            raise ValueError(f"Monnify update KYC info failed: {detail}")
+        return resp.json()
+
+
 def get_reserved_account_details(*, account_reference: str) -> dict:
     token = get_monnify_token()
     headers = {"Authorization": f"Bearer {token}"}
