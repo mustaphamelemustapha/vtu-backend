@@ -22,10 +22,15 @@ class PushNotificationService:
                 cred = credentials.Certificate(cred_dict)
             else:
                 cred_path = os.getenv("FIREBASE_CREDENTIALS_PATH", "firebase-adminsdk.json")
-                if not os.path.exists(cred_path):
-                    logger.warning(f"Firebase config not found at {cred_path} and FIREBASE_CREDENTIALS_JSON not set. Push disabled.")
+                render_secret_path = "/etc/secrets/firebase-adminsdk.json"
+                
+                if os.path.exists(cred_path):
+                    cred = credentials.Certificate(cred_path)
+                elif os.path.exists(render_secret_path):
+                    cred = credentials.Certificate(render_secret_path)
+                else:
+                    logger.warning(f"Firebase config not found at {cred_path} or {render_secret_path}, and FIREBASE_CREDENTIALS_JSON env var not set. Push disabled.")
                     return
-                cred = credentials.Certificate(cred_path)
 
             firebase_admin.initialize_app(cred)
             cls._initialized = True
