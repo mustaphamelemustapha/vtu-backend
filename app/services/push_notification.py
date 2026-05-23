@@ -13,15 +13,20 @@ class PushNotificationService:
         if cls._initialized:
             return
         
-        # In a real setup, place your firebase-adminsdk.json file in the root
-        # of the backend directory (or configure FIREBASE_CREDENTIALS_PATH).
-        cred_path = os.getenv("FIREBASE_CREDENTIALS_PATH", "firebase-adminsdk.json")
-        if not os.path.exists(cred_path):
-            logger.warning(f"Firebase config not found at {cred_path}. Push disabled.")
-            return
-
         try:
-            cred = credentials.Certificate(cred_path)
+            import json
+            cred = None
+            json_creds = os.getenv("FIREBASE_CREDENTIALS_JSON")
+            if json_creds:
+                cred_dict = json.loads(json_creds)
+                cred = credentials.Certificate(cred_dict)
+            else:
+                cred_path = os.getenv("FIREBASE_CREDENTIALS_PATH", "firebase-adminsdk.json")
+                if not os.path.exists(cred_path):
+                    logger.warning(f"Firebase config not found at {cred_path} and FIREBASE_CREDENTIALS_JSON not set. Push disabled.")
+                    return
+                cred = credentials.Certificate(cred_path)
+
             firebase_admin.initialize_app(cred)
             cls._initialized = True
             logger.info("Firebase Admin initialized successfully.")
