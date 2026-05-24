@@ -124,13 +124,16 @@ def list_transactions(user: User = Depends(get_current_user), db: Session = Depe
             ledger_description = ledger_description_by_ref.get(str(tx.reference))
             if ledger_description:
                 meta = {"ledger_description": ledger_description}
-                
-                # Check if this was an admin adjustment to override the display type
-                if str(tx.failure_reason) == "Admin Debit" or "Admin debit:" in ledger_description:
-                    tx_type_val = "admin_debit"
-                elif str(tx.failure_reason) == "Admin Credit" or "Admin credit:" in ledger_description:
-                    tx_type_val = "admin_credit"
-
+            
+            # Check if this was an admin adjustment to override the display type
+            if str(tx.failure_reason) == "Admin Debit" or (ledger_description and "Admin debit:" in ledger_description):
+                tx_type_val = "admin_debit"
+            elif str(tx.failure_reason) == "Admin Credit" or (ledger_description and "Admin credit:" in ledger_description):
+                tx_type_val = "admin_credit"
+            
+            # Ensure meta exists so frontend can use failure_reason as fallback reason
+            if not meta and tx_type_val in ("admin_credit", "admin_debit"):
+                meta = {"ledger_description": str(tx.failure_reason)}
         items.append(
             {
                 "id": tx.id,
