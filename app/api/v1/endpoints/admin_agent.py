@@ -187,7 +187,7 @@ def list_agent_stats(
     if page_size < 1 or page_size > 200:
         raise HTTPException(status_code=400, detail="page_size must be between 1 and 200")
 
-    query = db.query(AgentStat).join(User, AgentStat.agent_id == User.id)
+    query = db.query(User, AgentStat).outerjoin(AgentStat, User.id == AgentStat.agent_id).filter(User.role == UserRole.RESELLER)
     if q:
         needle = f"%{q.strip()}%"
         query = query.filter(
@@ -198,21 +198,21 @@ def list_agent_stats(
         )
 
     total = query.count()
-    stats = query.order_by(AgentStat.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    results = query.order_by(User.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
 
     items = []
-    for s in stats:
+    for u, s in results:
         items.append(
             {
-                "id": s.id,
-                "agent_id": s.agent_id,
-                "agent_email": s.agent.email,
-                "agent_full_name": s.agent.full_name,
-                "total_data_mb": s.total_data_mb,
-                "total_airtime_amount": s.total_airtime_amount,
-                "total_transactions": s.total_transactions,
-                "created_at": s.created_at,
-                "updated_at": s.updated_at,
+                "id": s.id if s else u.id,
+                "agent_id": u.id,
+                "agent_email": u.email,
+                "agent_full_name": u.full_name,
+                "total_data_mb": s.total_data_mb if s else 0,
+                "total_airtime_amount": s.total_airtime_amount if s else Decimal("0.00"),
+                "total_transactions": s.total_transactions if s else 0,
+                "created_at": s.created_at if s else u.created_at,
+                "updated_at": s.updated_at if s else u.created_at,
             }
         )
     return {"items": items, "total": total, "page": page, "page_size": page_size}
