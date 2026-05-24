@@ -1468,7 +1468,7 @@ def activate_user(user_id: int, admin=Depends(require_admin), db: Session = Depe
     return {"status": "active"}
 
 
-@router.delete("/users/{user_id}")
+@router.delete("/users/{user_id:int}")
 def delete_user(user_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
