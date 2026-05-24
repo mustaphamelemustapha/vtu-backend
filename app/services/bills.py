@@ -108,10 +108,10 @@ _CLUBKONNECT_NETWORK_MAP = {
 }
 
 _CLUBKONNECT_CABLE_MAP = {
-    "dstv": "DStv",
-    "gotv": "GOtv",
-    "startimes": "Startimes",
-    "showmax": "Showmax",
+    "dstv":      "dstv",
+    "gotv":      "gotv",
+    "startimes": "startimes",
+    "showmax":   "showmax",
 }
 
 _CLUBKONNECT_DISCO_CODE_MAP = {
@@ -1073,14 +1073,18 @@ class ClubKonnectBillsProvider:
         return list(dedup.values())
 
     def verify_cable_customer(self, provider: str, smartcard_number: str) -> dict:
+        cable_code = self._cable_code(provider)
+        logger.debug("ClubKonnect cable verify: provider=%s cable_code=%s smartcard=%s", provider, cable_code, smartcard_number[-4:] if smartcard_number else "")
         data = self._request(
             "APIVerifyCableTVV1.asp",
-            {"CableTV": self._cable_code(provider), "SmartCardNo": str(smartcard_number).strip()},
+            {"CableTV": cable_code, "SmartCardNo": str(smartcard_number).strip()},
         )
-        customer_name = str(data.get("customer_name") or data.get("CustomerName") or "").strip()
-        if customer_name and customer_name.upper() not in {"INVALID_SMARTCARDNO", "INVALID"}:
+        logger.info("ClubKonnect cable verify raw response: %s", data)
+        customer_name = str(data.get("customer_name") or data.get("CustomerName") or data.get("status") or "").strip()
+        if customer_name and customer_name.upper() not in {"INVALID_SMARTCARDNO", "INVALID", "INVALID_CREDENTIALS", "MISSING_CREDENTIALS", "MISSING_CABLETV"}:
             return {"ok": True, "customer_name": customer_name}
-        return {"ok": False, "message": customer_name or "Unable to verify smartcard number."}
+        error_msg = customer_name or "Unable to verify smartcard number."
+        return {"ok": False, "message": error_msg}
 
     def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str | None = None) -> ProviderResult:
         request_id = _clubkonnect_request_id("ELEC")
