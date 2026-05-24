@@ -9,7 +9,7 @@ from sqlalchemy import func, or_, select, union_all, String, cast, inspect
 from app.core.database import get_db
 from app.core.config import get_settings
 from app.dependencies import require_admin
-from app.models import User, Wallet, WalletLedger, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, MarginType, ApiLog, DataPlan, TransactionDispute, DisputeStatus, AdminAuditLog, ServiceToggle, Referral
+from app.models import User, UserRole, Wallet, WalletLedger, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, MarginType, ApiLog, DataPlan, TransactionDispute, DisputeStatus, AdminAuditLog, ServiceToggle, Referral
 from app.schemas.admin import (
     FundUserWalletRequest,
     PricingRuleUpdate,
@@ -1770,4 +1770,53 @@ def admin_reset_virtual_accounts(
     db.commit()
     
     return {"status": "ok", "message": f"Successfully deleted {deleted} cached virtual accounts for {email}."}
+
+
+class UpdateUserRoleRequest(BaseModel):
+    email: str
+    role: str
+
+
+@router.post("/users/update-role")
+def update_user_role(
+    payload: UpdateUserRoleRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Manually upgrade or downgrade a user's role (e.g. from 'user' to 'reseller').
+    """
+    email = payload.email.strip().lower()
+    raw_role = payload.role.strip().lower()
+    
+    if raw_role not in {"user", "reseller", "admin"}:
+        raise HTTPException(status_code=400, detail="Invalid role. Must be 'user', 'reseller', or 'admin'.")
+        
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User with email {email} not found.")
+        
+    if raw_role == "reseller":
+        user.role = UserRole.RESELLER
+    elif raw_role == "admin":
+        user.role = UserRole.ADMIN
+    else:
+        user.role = UserRole.USER
+        
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action="user_role_update",
+        target=str(user.id),
+        details={"email": email, "new_role": raw_role},
+    )
+    db.add(audit_log)
+    db.commit()
+    db.refresh(user)
+    
+    return {
+        "status": "ok",
+        "message": f"User {email} role successfully updated to {raw_role}.",
+        "user_id": user.id,
+        "new_role": raw_role
+    }
 
