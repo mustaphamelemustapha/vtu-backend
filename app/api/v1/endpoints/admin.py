@@ -1572,6 +1572,7 @@ def get_all_data_plans(admin=Depends(require_admin), db: Session = Depends(get_d
             "validity": p.validity,
             "base_price": float(p.base_price),
             "display_price": float(p.display_price) if p.display_price is not None else None,
+            "agent_price": float(p.agent_price) if p.agent_price is not None else None,
             "is_active": p.is_active,
             "provider": p.provider,
             "provider_plan_id": p.provider_plan_id,
@@ -1621,12 +1622,23 @@ def update_data_plan(
         plan.display_price = payload.display_price
         changes["display_price"] = float(payload.display_price)
 
+    if payload.clear_agent_price:
+        if plan.agent_price is not None:
+            plan.agent_price = None
+            changes["agent_price"] = None
+    elif payload.agent_price is not None:
+        if payload.agent_price < 0:
+            raise HTTPException(status_code=400, detail="agent_price must be >= 0")
+        plan.agent_price = payload.agent_price
+        changes["agent_price"] = float(payload.agent_price)
+
     if not changes:
         return {
             "status": "no_change",
             "id": plan.id,
             "is_active": plan.is_active,
             "display_price": float(plan.display_price) if plan.display_price is not None else None,
+            "agent_price": float(plan.agent_price) if plan.agent_price is not None else None,
             "plan_name": plan.plan_name
         }
 

@@ -153,6 +153,8 @@ class DataPlanUpdate(BaseModel):
     # Admin can set an explicit display price; set to null to clear (fall back to margin).
     display_price: Optional[Decimal] = None
     clear_display_price: bool = False
+    agent_price: Optional[Decimal] = None
+    clear_agent_price: bool = False
     provider: Optional[str] = None
     provider_plan_id: Optional[str] = None
 
@@ -166,6 +168,7 @@ class AdminDataPlanOut(BaseModel):
     validity: str
     base_price: Decimal
     display_price: Optional[Decimal] = None
+    agent_price: Optional[Decimal] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime

@@ -262,8 +262,13 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
     priced = []
     for plan in plans:
         try:
+            # User role specific price
             display = getattr(plan, "display_price", None)
-            if display is not None:
+            agent_price = getattr(plan, "agent_price", None)
+            
+            if pricing_role == PricingRole.RESELLER and agent_price is not None:
+                price = Decimal(str(agent_price))
+            elif display is not None:
                 price = Decimal(str(display))
             else:
                 rule = rule_map.get(str(plan.network or "").strip().lower())

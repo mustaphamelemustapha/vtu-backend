@@ -15,6 +15,8 @@ class DataPlan(Base, TimestampMixin):
     base_price = Column(Numeric(12, 2), nullable=False)
     # Admin-set override: when set, this price is used instead of base_price + margin.
     display_price = Column(Numeric(12, 2), nullable=True, default=None)
+    # Admin-set override for agents (resellers): when set, this price is used for agents.
+    agent_price = Column(Numeric(12, 2), nullable=True, default=None)
     is_active = Column(Boolean, default=True, nullable=False)
     provider = Column(String(64), nullable=True, index=True)
     provider_plan_id = Column(String(64), nullable=True, index=True)

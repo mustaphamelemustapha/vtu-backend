@@ -50,14 +50,23 @@ def apply_margin(base_price: Decimal, margin: Decimal, margin_type: str) -> Deci
 
 
 def get_price_for_user(db: Session, plan: DataPlan, role: UserRole) -> Decimal:
-    # Admin-set display_price takes absolute priority over margin calculation.
+    pricing_role = pricing_role_for_user(role)
+    
+    if pricing_role == PricingRole.RESELLER:
+        agent_price = getattr(plan, "agent_price", None)
+        if agent_price is not None:
+            try:
+                return Decimal(agent_price)
+            except Exception:
+                pass
+
     display = getattr(plan, "display_price", None)
     if display is not None:
         try:
             return Decimal(display)
         except Exception:
             pass
-    pricing_role = pricing_role_for_user(role)
+
     margin, margin_type = get_margin_for_key(db, plan.network, pricing_role)
     return apply_margin(Decimal(plan.base_price), margin, margin_type)
 
