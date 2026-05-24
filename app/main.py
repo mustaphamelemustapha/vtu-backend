@@ -59,12 +59,15 @@ allow_origins = list(
             "https://axisvtu.vercel.app",
             "https://axisvtu.com",
             "https://www.axisvtu.com",
+            "https://meledata.com",
+            "https://www.meledata.com",
+            "https://meledata.vercel.app",
             *([frontend_origin] if frontend_origin else []),
         ]
     )
 )
 allow_origin_regex = (
-    r"^https:\/\/(?:vtu-frontend|axisvtu)(?:-[A-Za-z0-9-]+)?\.vercel\.app$"
+    r"^https:\/\/(?:vtu-frontend|axisvtu|meledata)(?:-[A-Za-z0-9-]+)?\.vercel\.app$"
     r"|^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$"
 )
 

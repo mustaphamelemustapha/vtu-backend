@@ -1,6 +1,6 @@
 # Operations Monitoring Runbook
 
-This runbook defines the production monitoring setup for AxisVTU backend and the first-response actions when incidents happen.
+This runbook defines the production monitoring setup for MELE DATA backend and the first-response actions when incidents happen.
 
 ## Endpoints to Monitor
 
@@ -19,14 +19,14 @@ Example:
 
 Create two HTTP(s) monitors:
 
-1. `AxisVTU Backend Liveness`
+1. `MELE DATA Backend Liveness`
    - URL: `/healthz`
    - Method: `GET`
    - Interval: `5 minutes`
    - Timeout: `30 seconds`
    - Alert contacts: your email + WhatsApp/Telegram if available
 
-2. `AxisVTU Backend Readiness`
+2. `MELE DATA Backend Readiness`
    - URL: `/readyz`
    - Method: `GET`
    - Interval: `5 minutes`

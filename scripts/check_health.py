@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Production health checks for AxisVTU backend endpoints."""
+"""Production health checks for MELE DATA backend endpoints."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ def normalize_base_url(base_url: str) -> str:
 
 
 def _request_json(url: str, timeout: int) -> tuple[int, dict[str, Any]]:
-    request = Request(url, headers={"User-Agent": "axisvtu-healthcheck/1.0"})
+    request = Request(url, headers={"User-Agent": "meledata-healthcheck/1.0"})
     with urlopen(request, timeout=timeout) as response:
         body_text = response.read().decode("utf-8", "replace")
         status_code = response.getcode()

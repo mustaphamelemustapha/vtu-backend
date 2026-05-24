@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AxisVTU production smoke checks for Day 2 launch readiness."""
+"""MELE DATA production smoke checks for Day 2 launch readiness."""
 
 from __future__ import annotations
 
@@ -117,7 +117,7 @@ def run_smoke(
         raise RuntimeError("If --password is provided, --email must also be provided.")
 
     if not using_existing_user:
-        email = f"axisvtu.smoke+{run_id}@example.com"
+        email = f"meledata.smoke+{run_id}@example.com"
         password = f"SmokePass{_random_suffix(4)}!123"
 
     with httpx.Client(timeout=ctx.timeout_seconds, verify=ctx.verify_tls) as client:
@@ -259,12 +259,12 @@ def run_smoke(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run AxisVTU production smoke checks.")
+    parser = argparse.ArgumentParser(description="Run MELE DATA production smoke checks.")
     parser.add_argument("--base-url", required=True, help="Backend base URL, e.g. https://your-api.onrender.com")
     parser.add_argument("--api-prefix", default="/api/v1", help="API prefix (default: /api/v1)")
     parser.add_argument("--email", default=None, help="Existing user email; if omitted, a throwaway user is created")
     parser.add_argument("--password", default=None, help="Existing user password")
-    parser.add_argument("--full-name", default="AxisVTU Smoke User", help="Name for throwaway user registration")
+    parser.add_argument("--full-name", default="MELE DATA Smoke User", help="Name for throwaway user registration")
     parser.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout in seconds")
     parser.add_argument("--retries", type=int, default=3, help="Retries for transient network/5xx errors")
     parser.add_argument(

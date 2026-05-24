@@ -43,7 +43,7 @@ def _build_reset_email_html(reset_link: str) -> str:
     # Keep HTML minimal and compatible across mail clients.
     return f"""
     <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
-      <h2 style="margin: 0 0 8px;">Reset your AxisVTU password</h2>
+      <h2 style="margin: 0 0 8px;">Reset your MELE DATA password</h2>
       <p style="margin: 0 0 14px;">
         We received a request to reset your password. If you did not request this, you can ignore this email.
       </p>
@@ -65,7 +65,7 @@ def _build_reset_email_html(reset_link: str) -> str:
 def _build_pin_reset_email_html(reset_link: str) -> str:
     return f"""
     <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
-      <h2 style="margin: 0 0 8px;">Reset your AxisVTU transaction PIN</h2>
+      <h2 style="margin: 0 0 8px;">Reset your MELE DATA transaction PIN</h2>
       <p style="margin: 0 0 14px;">
         We received a request to reset your transaction PIN. If you did not request this, you can ignore this email.
       </p>
@@ -102,7 +102,7 @@ def _resolve_frontend_base_url() -> str:
 def send_password_reset_email(to_email: str, reset_token: str) -> None:
     settings = get_settings()
     reset_link = f"{_resolve_frontend_base_url()}/reset-password?token={reset_token}&flow=password"
-    subject = "Reset your AxisVTU password"
+    subject = "Reset your MELE DATA password"
     html = _build_reset_email_html(reset_link)
     to_email = _sanitize_email(to_email)
 
@@ -154,7 +154,7 @@ def send_password_reset_email(to_email: str, reset_token: str) -> None:
 def send_transaction_pin_reset_email(to_email: str, reset_token: str) -> None:
     settings = get_settings()
     reset_link = f"{_resolve_frontend_base_url()}/reset-pin?token={reset_token}&flow=pin"
-    subject = "Reset your AxisVTU transaction PIN"
+    subject = "Reset your MELE DATA transaction PIN"
     html = _build_pin_reset_email_html(reset_link)
     to_email = _sanitize_email(to_email)
 
@@ -240,7 +240,7 @@ def _send_via_brevo(
         raise ValueError("EMAIL_FROM is required when EMAIL_PROVIDER=brevo")
 
     payload = {
-        "sender": {"name": from_name or "AxisVTU", "email": from_email},
+        "sender": {"name": from_name or "MELE DATA", "email": from_email},
         "to": [{"email": to_email}],
         "subject": subject,
         "htmlContent": html,

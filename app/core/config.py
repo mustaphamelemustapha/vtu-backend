@@ -137,7 +137,7 @@ class Settings(BaseSettings):
 
     # Email (password reset)
     email_provider: str = "console"  # console|resend|smtp|brevo
-    email_from: str = "AxisVTU <no-reply@axisvtu.local>"
+    email_from: str = "MELE DATA <no-reply@axisvtu.local>"
 
     # Resend
     resend_api_key: Optional[str] = None
