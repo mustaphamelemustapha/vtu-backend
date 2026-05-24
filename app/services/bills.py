@@ -1074,7 +1074,7 @@ class ClubKonnectBillsProvider:
 
     def verify_cable_customer(self, provider: str, smartcard_number: str) -> dict:
         data = self._request(
-            "APIVerifyCableTVV1.0.asp",
+            "APIVerifyCableTVV1.asp",
             {"CableTV": self._cable_code(provider), "SmartCardNo": str(smartcard_number).strip()},
         )
         customer_name = str(data.get("customer_name") or data.get("CustomerName") or "").strip()
