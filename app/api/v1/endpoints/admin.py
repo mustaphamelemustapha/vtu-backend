@@ -2,6 +2,7 @@ from datetime import date, datetime, time, timezone, timedelta
 from typing import Optional
 from decimal import Decimal
 import json
+from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
