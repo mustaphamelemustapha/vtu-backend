@@ -253,8 +253,49 @@ def record_referral_first_deposit_reward(
     return referral
 
 
-def record_referral_data_activity(*args, **kwargs) -> Referral | None:  # Legacy shim
-    return None
+def record_referral_data_activity(db: Session, *, user: User, tx_type: str, amount: Decimal, data_mb: float = 0.0) -> Referral | None:
+    from app.models.agent import AgentStat
+    from sqlalchemy.orm.attributes import flag_modified
+    
+    # 1. Update Agent Stats
+    stat = db.query(AgentStat).filter(AgentStat.agent_id == user.id).first()
+    if not stat:
+        stat = AgentStat(agent_id=user.id)
+        db.add(stat)
+        
+    if tx_type == TransactionType.DATA or tx_type == "data":
+        # Approximate MB if not provided
+        mb = data_mb if data_mb > 0 else (float(amount) / 250.0 * 1024.0)
+        stat.total_data_mb = Decimal(str(float(stat.total_data_mb) + mb))
+        stat.total_sales_amount = Decimal(str(float(stat.total_sales_amount) + float(amount)))
+    elif tx_type == TransactionType.AIRTIME or tx_type == "airtime":
+        stat.total_airtime_amount = Decimal(str(float(stat.total_airtime_amount) + float(amount)))
+        stat.total_sales_amount = Decimal(str(float(stat.total_sales_amount) + float(amount)))
+        
+    stat.last_active_date = _utcnow()
+    db.flush()
+
+    # 2. Check if this user was referred and is pending qualification
+    referral = db.query(Referral).filter(
+        Referral.referred_user_id == user.id,
+        Referral.status == ReferralStatus.PENDING
+    ).first()
+    
+    if not referral:
+        return None
+
+    # Check qualification criteria: e.g. sold 50GB (51200 MB)
+    target_mb = 51200.0
+    if float(stat.total_data_mb) >= target_mb:
+        # Qualify the referral
+        referral.qualified_at = _utcnow()
+        referral.status = ReferralStatus.QUALIFIED
+        
+        # Grant reward to referrer if needed, or wait for claim endpoint
+        # For this design, we just mark it qualified. The referrer can claim it via campaign or direct reward.
+        db.flush()
+        
+    return referral
 
 
 def get_referral_dashboard(db: Session, *, user: User) -> dict:

@@ -17,6 +17,7 @@ class CablePurchaseRequest(BaseModel):
     phone_number: str = Field(..., min_length=7, max_length=20)
     package_code: str = Field(..., min_length=1, max_length=64)
     amount: Decimal = Field(..., gt=0)
+    customer_name: Optional[str] = Field(default=None, max_length=128)
 
 
 class CableVerifyRequest(BaseModel):

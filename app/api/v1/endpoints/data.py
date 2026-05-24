@@ -500,6 +500,15 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
 
     db.commit()
 
+    if final_status == "success":
+        try:
+            from app.services.referrals import record_referral_data_activity
+            mb_size = _parse_size_gb(plan.data_size) * 1024.0
+            record_referral_data_activity(db, user=user, tx_type="data", amount=price, data_mb=mb_size)
+            db.commit()
+        except Exception as ref_exc:
+            logger.error("Failed to record referral activity: %s", ref_exc)
+
     from app.services.push_notification import PushNotificationService
     if final_status == "success" and user.fcm_token:
         PushNotificationService.send_to_token(

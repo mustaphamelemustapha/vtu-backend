@@ -345,6 +345,7 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
             "base_amount": str(base_amount),
             "margin_applied": str(margin),
             "charge_amount": str(charge_amount),
+            "customer_name": payload.customer_name.strip() if getattr(payload, "customer_name", None) else None,
         },
     )
     db.add(tx)
