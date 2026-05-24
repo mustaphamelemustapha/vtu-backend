@@ -1497,6 +1497,7 @@ def delete_user(user_id: int, admin: User = Depends(require_admin), db: Session 
     return {"status": "ok", "message": "User deleted successfully"}
 
 
+import uuid
 
 @router.post("/wallets/adjust")
 def adjust_user_wallet(
@@ -1509,15 +1510,38 @@ def adjust_user_wallet(
     if not wallet:
         raise HTTPException(status_code=404, detail="User wallet not found")
     
+    tx_ref = f"ADMIN_ADJUST_{uuid.uuid4().hex[:8].upper()}"
+
     if payload.action == "credit":
-        credit_wallet(db, wallet, payload.amount, f"ADMIN_ADJUST_{payload.user_id}_CREDIT", f"Admin credit: {payload.reason}")
+        credit_wallet(db, wallet, payload.amount, tx_ref, f"Admin credit: {payload.reason}")
+        tx = Transaction(
+            user_id=payload.user_id,
+            reference=tx_ref,
+            amount=payload.amount,
+            status=TransactionStatus.SUCCESS,
+            tx_type=TransactionType.WALLET_FUND,
+            provider="Admin",
+            failure_reason="Admin Credit"
+        )
+        db.add(tx)
     elif payload.action == "debit":
         if wallet.balance < payload.amount:
             raise HTTPException(status_code=400, detail="Insufficient balance for debit")
-        debit_wallet(db, wallet, payload.amount, f"ADMIN_ADJUST_{payload.user_id}_DEBIT", f"Admin debit: {payload.reason}")
+        debit_wallet(db, wallet, payload.amount, tx_ref, f"Admin debit: {payload.reason}")
+        tx = Transaction(
+            user_id=payload.user_id,
+            reference=tx_ref,
+            amount=payload.amount,
+            status=TransactionStatus.SUCCESS,
+            tx_type=TransactionType.WALLET_FUND,
+            provider="Admin",
+            failure_reason="Admin Debit"
+        )
+        db.add(tx)
     else:
         raise HTTPException(status_code=400, detail="Invalid action")
     
+    db.commit()
     audit_log = AdminAuditLog(
         admin_email=admin.email,
         action=f"wallet_adjust_{payload.action}",

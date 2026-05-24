@@ -115,14 +115,22 @@ def list_transactions(user: User = Depends(get_current_user), db: Session = Depe
     items: list[dict] = []
     for tx in base:
         meta = None
-        if _normalize_tx_type(tx.tx_type) == "data":
+        tx_type_val = _normalize_tx_type(tx.tx_type)
+        if tx_type_val == "data":
             recipient_phone = recipient_phone_by_ref.get(str(tx.reference))
             if recipient_phone:
                 meta = {"recipient_phone": recipient_phone}
-        if _normalize_tx_type(tx.tx_type) == "wallet_fund":
+        if tx_type_val == "wallet_fund":
             ledger_description = ledger_description_by_ref.get(str(tx.reference))
             if ledger_description:
                 meta = {"ledger_description": ledger_description}
+                
+                # Check if this was an admin adjustment to override the display type
+                if str(tx.failure_reason) == "Admin Debit" or "Admin debit:" in ledger_description:
+                    tx_type_val = "admin_debit"
+                elif str(tx.failure_reason) == "Admin Credit" or "Admin credit:" in ledger_description:
+                    tx_type_val = "admin_credit"
+
         items.append(
             {
                 "id": tx.id,
@@ -132,7 +140,7 @@ def list_transactions(user: User = Depends(get_current_user), db: Session = Depe
                 "data_plan_code": tx.data_plan_code,
                 "amount": tx.amount,
                 "status": tx.status,
-                "tx_type": tx.tx_type,
+                "tx_type": tx_type_val,
                 "external_reference": tx.external_reference,
                 "failure_reason": tx.failure_reason,
                 "meta": meta,
