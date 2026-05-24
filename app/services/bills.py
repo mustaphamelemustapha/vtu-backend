@@ -1173,18 +1173,23 @@ class ClubKonnectBillsProvider:
         return list(dedup.values())
 
     def verify_electricity_customer(self, disco: str, meter_number: str, meter_type: str) -> dict:
+        disco_code = self._disco_code(disco)
+        meter_code = self._meter_code(meter_type)
+        logger.debug("ClubKonnect electricity verify: disco=%s disco_code=%s meter_type=%s meter_code=%s meter_number=%s", disco, disco_code, meter_type, meter_code, meter_number[-4:] if meter_number else "")
         data = self._request(
             "APIVerifyElectricityV1.asp",
             {
-                "ElectricCompany": self._disco_code(disco),
+                "ElectricCompany": disco_code,
                 "MeterNo": str(meter_number).strip(),
-                "MeterType": self._meter_code(meter_type),
+                "MeterType": meter_code,
             },
         )
-        customer_name = str(data.get("customer_name") or data.get("CustomerName") or "").strip()
-        if customer_name and customer_name.upper() not in {"INVALID_METERNO", "INVALID"}:
+        logger.info("ClubKonnect electricity verify raw response: %s", data)
+        customer_name = str(data.get("customer_name") or data.get("CustomerName") or data.get("status") or "").strip()
+        if customer_name and customer_name.upper() not in {"INVALID_METERNO", "INVALID", "INVALID_CREDENTIALS", "MISSING_CREDENTIALS"}:
             return {"ok": True, "customer_name": customer_name}
-        return {"ok": False, "message": customer_name or "Unable to verify meter number."}
+        error_msg = customer_name or "Unable to verify meter number."
+        return {"ok": False, "message": error_msg}
 
     def purchase_exam_pin(
         self,
