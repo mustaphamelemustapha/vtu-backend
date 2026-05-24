@@ -173,7 +173,7 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
     ).first()
     
     if existing_reward:
-        if existing_reward.status == AgentRewardStatus.COMPLETED:
+        if existing_reward.status == AgentRewardStatus.CREDITED:
             return {
                 "success": True, 
                 "message": "Reward already claimed.", 
@@ -220,7 +220,7 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
         agent_id=user.id,
         campaign_id=campaign.id,
         amount=campaign.reward_amount,
-        status=AgentRewardStatus.COMPLETED,
+        status=AgentRewardStatus.CREDITED,
         transaction_reference=tx_ref,
         rewarded_at=_utcnow()
     )
