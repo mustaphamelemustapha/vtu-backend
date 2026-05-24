@@ -59,8 +59,8 @@ allow_origins = list(
             "https://axisvtu.vercel.app",
             "https://axisvtu.com",
             "https://www.axisvtu.com",
-            "https://meledata.com",
-            "https://www.meledata.com",
+            "https://meledata.ng",
+            "https://www.meledata.ng",
             "https://meledata.vercel.app",
             *([frontend_origin] if frontend_origin else []),
         ]
