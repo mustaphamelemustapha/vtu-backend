@@ -1774,7 +1774,7 @@ def admin_reset_virtual_accounts(
 
 
 class UpdateUserRoleRequest(BaseModel):
-    email: str
+    user_id: int
     role: str
 
 
@@ -1787,15 +1787,15 @@ def update_user_role(
     """
     Manually upgrade or downgrade a user's role (e.g. from 'user' to 'reseller').
     """
-    email = payload.email.strip().lower()
+    user_id = payload.user_id
     raw_role = payload.role.strip().lower()
     
     if raw_role not in {"user", "reseller", "admin"}:
         raise HTTPException(status_code=400, detail="Invalid role. Must be 'user', 'reseller', or 'admin'.")
         
-    user = db.query(User).filter(User.email == email).first()
+    user = db.query(User).filter(User.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail=f"User with email {email} not found.")
+        raise HTTPException(status_code=404, detail=f"User with ID {user_id} not found.")
         
     if raw_role == "reseller":
         user.role = UserRole.RESELLER
