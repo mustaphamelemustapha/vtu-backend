@@ -1808,7 +1808,7 @@ def update_user_role(
         admin_email=admin.email,
         action="user_role_update",
         target=str(user.id),
-        details={"email": email, "new_role": raw_role},
+        details={"email": user.email, "new_role": raw_role},
     )
     db.add(audit_log)
     db.commit()
@@ -1816,7 +1816,7 @@ def update_user_role(
     
     return {
         "status": "ok",
-        "message": f"User {email} role successfully updated to {raw_role}.",
+        "message": f"User {user.email} role successfully updated to {raw_role}.",
         "user_id": user.id,
         "new_role": raw_role
     }
