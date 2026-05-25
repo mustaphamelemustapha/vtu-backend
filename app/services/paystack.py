@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import time
 import httpx
 from app.core.config import get_settings
 
@@ -20,8 +21,26 @@ def _headers() -> dict:
 
 def _request(method: str, path: str, payload: dict | None = None, params: dict | None = None) -> dict:
     url = f"https://api.paystack.co{path}"
-    with httpx.Client(timeout=20) as client:
-        res = client.request(method, url, json=payload, params=params, headers=_headers())
+    
+    max_retries = 3
+    last_exception = None
+    res = None
+    
+    for attempt in range(max_retries):
+        try:
+            with httpx.Client(timeout=45) as client:
+                res = client.request(method, url, json=payload, params=params, headers=_headers())
+            break
+        except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.NetworkError) as exc:
+            last_exception = exc
+            if attempt < max_retries - 1:
+                time.sleep(1.0 * (attempt + 1))
+            else:
+                raise httpx.ReadTimeout(f"Paystack request timed out after {max_retries} attempts: {exc}") from exc
+                
+    if res is None:
+        raise last_exception or RuntimeError("Request failed without response")
+        
     data = res.json() if res.content else {}
     if res.status_code >= 400:
         message = data.get("message") or data.get("error") or "Paystack error"
