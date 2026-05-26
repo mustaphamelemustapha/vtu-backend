@@ -19,7 +19,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('data_plans', sa.Column('promo_active', sa.Boolean(), nullable=False, server_default=sa.text('0')))
+    op.add_column('data_plans', sa.Column('promo_active', sa.Boolean(), nullable=False, server_default=sa.false()))
     op.add_column('data_plans', sa.Column('promo_old_price', sa.Numeric(precision=12, scale=2), nullable=True))
     op.add_column('data_plans', sa.Column('promo_label', sa.String(length=255), nullable=True))
     op.add_column('data_plans', sa.Column('cashback_amount', sa.Numeric(precision=12, scale=2), nullable=True))
