@@ -21,5 +21,14 @@ class DataPlan(Base, TimestampMixin):
     provider = Column(String(64), nullable=True, index=True)
     provider_plan_id = Column(String(64), nullable=True, index=True)
 
+    # Marketing/Promotion Fields
+    promo_active = Column(Boolean, default=False, nullable=False)
+    promo_old_price = Column(Numeric(12, 2), nullable=True, default=None)
+    promo_label = Column(String(255), nullable=True, default=None)
+    cashback_amount = Column(Numeric(12, 2), nullable=True, default=None)
+    cashback_label = Column(String(255), nullable=True, default=None)
+
 
 Index("ix_data_plans_network_active", DataPlan.network, DataPlan.is_active)
+Index("ix_data_plans_promo_active", DataPlan.promo_active)
+

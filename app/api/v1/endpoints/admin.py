@@ -1602,6 +1602,11 @@ def get_all_data_plans(admin=Depends(require_admin), db: Session = Depends(get_d
             "provider_plan_id": p.provider_plan_id,
             "created_at": p.created_at,
             "updated_at": p.updated_at,
+            "promo_active": bool(getattr(p, "promo_active", False)),
+            "promo_old_price": float(p.promo_old_price) if getattr(p, "promo_old_price", None) is not None else None,
+            "promo_label": getattr(p, "promo_label", None),
+            "cashback_amount": float(p.cashback_amount) if getattr(p, "cashback_amount", None) is not None else None,
+            "cashback_label": getattr(p, "cashback_label", None),
         })
     return result
 
@@ -1656,6 +1661,43 @@ def update_data_plan(
         plan.agent_price = payload.agent_price
         changes["agent_price"] = float(payload.agent_price)
 
+    # Promo / marketing field updates
+    if payload.promo_active is not None:
+        plan.promo_active = payload.promo_active
+        changes["promo_active"] = payload.promo_active
+
+    if payload.clear_promo_old_price:
+        if plan.promo_old_price is not None:
+            plan.promo_old_price = None
+            changes["promo_old_price"] = None
+    elif payload.promo_old_price is not None:
+        plan.promo_old_price = payload.promo_old_price
+        changes["promo_old_price"] = float(payload.promo_old_price)
+
+    if payload.clear_promo_label:
+        if plan.promo_label is not None:
+            plan.promo_label = None
+            changes["promo_label"] = None
+    elif payload.promo_label is not None:
+        plan.promo_label = payload.promo_label
+        changes["promo_label"] = payload.promo_label
+
+    if payload.clear_cashback_amount:
+        if plan.cashback_amount is not None:
+            plan.cashback_amount = None
+            changes["cashback_amount"] = None
+    elif payload.cashback_amount is not None:
+        plan.cashback_amount = payload.cashback_amount
+        changes["cashback_amount"] = float(payload.cashback_amount)
+
+    if payload.clear_cashback_label:
+        if plan.cashback_label is not None:
+            plan.cashback_label = None
+            changes["cashback_label"] = None
+    elif payload.cashback_label is not None:
+        plan.cashback_label = payload.cashback_label
+        changes["cashback_label"] = payload.cashback_label
+
     if not changes:
         return {
             "status": "no_change",
@@ -1663,7 +1705,8 @@ def update_data_plan(
             "is_active": plan.is_active,
             "display_price": float(plan.display_price) if plan.display_price is not None else None,
             "agent_price": float(plan.agent_price) if plan.agent_price is not None else None,
-            "plan_name": plan.plan_name
+            "plan_name": plan.plan_name,
+            "promo_active": plan.promo_active,
         }
 
     audit_log = AdminAuditLog(
@@ -1680,6 +1723,7 @@ def update_data_plan(
         "id": plan.id,
         "is_active": plan.is_active,
         "display_price": float(plan.display_price) if plan.display_price is not None else None,
+        "promo_active": plan.promo_active,
     }
 
 

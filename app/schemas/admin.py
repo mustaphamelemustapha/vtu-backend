@@ -157,6 +157,17 @@ class DataPlanUpdate(BaseModel):
     clear_agent_price: bool = False
     provider: Optional[str] = None
     provider_plan_id: Optional[str] = None
+    
+    # New promo fields
+    promo_active: Optional[bool] = None
+    promo_old_price: Optional[Decimal] = None
+    clear_promo_old_price: bool = False
+    promo_label: Optional[str] = None
+    clear_promo_label: bool = False
+    cashback_amount: Optional[Decimal] = None
+    clear_cashback_amount: bool = False
+    cashback_label: Optional[str] = None
+    clear_cashback_label: bool = False
 
 
 class AdminDataPlanOut(BaseModel):
@@ -172,6 +183,14 @@ class AdminDataPlanOut(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    
+    # New promo fields
+    promo_active: bool = False
+    promo_old_price: Optional[Decimal] = None
+    promo_label: Optional[str] = None
+    cashback_amount: Optional[Decimal] = None
+    cashback_label: Optional[str] = None
+
     class Config:
         orm_mode = True
 

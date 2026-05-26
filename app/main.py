@@ -134,6 +134,7 @@ def ensure_tables():
         _ensure_user_security_pin_columns()
         _ensure_transaction_recipient_column()
         _ensure_data_plan_provider_columns()
+        _ensure_data_plan_promo_columns()
         _ensure_data_plan_text_lengths()
         _ensure_transaction_provider_columns()
         return
@@ -151,6 +152,7 @@ def ensure_tables():
     _ensure_user_security_pin_columns()
     _ensure_transaction_recipient_column()
     _ensure_data_plan_provider_columns()
+    _ensure_data_plan_promo_columns()
     _ensure_data_plan_text_lengths()
     _ensure_transaction_provider_columns()
 
@@ -261,6 +263,41 @@ def _ensure_data_plan_provider_columns() -> None:
         logging.getLogger(__name__).info("Added data_plans provider columns.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure data_plans provider columns: %s", exc)
+
+
+def _ensure_data_plan_promo_columns() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("data_plans"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("data_plans")}
+        statements: list[str] = []
+        dialect_name = getattr(engine.dialect, "name", "")
+        
+        bool_default_false = "0" if dialect_name == "sqlite" else "false"
+        
+        if "promo_active" not in cols:
+            statements.append(f"ALTER TABLE data_plans ADD COLUMN promo_active BOOLEAN NOT NULL DEFAULT {bool_default_false}")
+        if "promo_old_price" not in cols:
+            statements.append("ALTER TABLE data_plans ADD COLUMN promo_old_price NUMERIC(12, 2)")
+        if "promo_label" not in cols:
+            statements.append("ALTER TABLE data_plans ADD COLUMN promo_label VARCHAR(255)")
+        if "cashback_amount" not in cols:
+            statements.append("ALTER TABLE data_plans ADD COLUMN cashback_amount NUMERIC(12, 2)")
+        if "cashback_label" not in cols:
+            statements.append("ALTER TABLE data_plans ADD COLUMN cashback_label VARCHAR(255)")
+
+        if not statements:
+            return
+
+        with engine.begin() as conn:
+            for statement in statements:
+                conn.execute(text(statement))
+            if "promo_active" not in cols:
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_data_plans_promo_active ON data_plans (promo_active)"))
+        logging.getLogger(__name__).info("Added data_plans promo and cashback columns.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure data_plans promo columns: %s", exc)
 
 
 def _ensure_data_plan_text_lengths() -> None:

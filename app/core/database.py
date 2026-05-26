@@ -85,6 +85,17 @@ engine = create_engine(
     **_pool_kwargs,
     connect_args=_build_connect_args(database_url),
 )
+
+from sqlalchemy.event import listens_for
+import sqlite3
+import datetime
+
+@listens_for(engine, "connect")
+def register_sqlite_now(dbapi_connection, connection_record):
+    if isinstance(dbapi_connection, sqlite3.Connection):
+        # Register standard PostgreSQL-style now() function in SQLite
+        dbapi_connection.create_function("now", 0, lambda: datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'))
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

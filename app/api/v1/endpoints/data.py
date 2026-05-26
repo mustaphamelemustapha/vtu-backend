@@ -283,14 +283,40 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                 else:
                     price = base + margin
             
-            # Promo logic
-            promo_active = False
-            promo_old_price = None
-            promo_label = None
+            # Promo logic from database fields
+            promo_active = bool(getattr(plan, "promo_active", False))
+            promo_old_price = getattr(plan, "promo_old_price", None)
+            promo_label = getattr(plan, "promo_label", None)
+            cashback_amount = getattr(plan, "cashback_amount", None)
+            cashback_label = getattr(plan, "cashback_label", None)
             promo_remaining = None
             promo_limit = None
-            
-            if plan.network == "mtn" and _is_mtn_1gb_promo_plan(plan):
+
+            # Calculate previous price and percent off if not set but promo is active
+            if promo_active:
+                standard_price = price
+                if display is not None:
+                    # price is already display_price. Standard price would be calculated:
+                    rule = rule_map.get(str(plan.network or "").strip().lower())
+                    margin = Decimal(str(rule.margin)) if rule else Decimal("0")
+                    margin_type = str(getattr(rule, "margin_type", None) or "fixed").strip().lower()
+                    base = Decimal(str(plan.base_price or "0"))
+                    if margin_type == "percentage":
+                        standard_price = base + (base * margin / Decimal("100"))
+                    else:
+                        standard_price = base + margin
+                
+                if promo_old_price is None:
+                    promo_old_price = standard_price
+                
+                # If old price is higher than price, calculate percentage off if label is missing
+                if promo_label is None and promo_old_price > price:
+                    discount_pct = int(round((promo_old_price - price) / promo_old_price * Decimal("100")))
+                    if discount_pct > 0:
+                        promo_label = f"{discount_pct}% off"
+
+            # Fallback/Legacy MTN 1GB Promo config settings compatibility
+            if not promo_active and plan.network == "mtn" and _is_mtn_1gb_promo_plan(plan):
                 promo_active = True
                 promo_old_price = price
                 price = settings.promo_mtn_1gb_price
@@ -314,6 +340,8 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                     promo_limit=promo_limit,
                     provider=plan.provider,
                     provider_plan_id=plan.provider_plan_id,
+                    cashback_amount=cashback_amount,
+                    cashback_label=cashback_label,
                 )
             )
         except Exception as e:
