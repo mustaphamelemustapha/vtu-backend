@@ -41,6 +41,10 @@ def credit_wallet(
     *,
     commit: bool = True,
 ) -> WalletLedger:
+    # Lock the wallet row to prevent race conditions and get the latest balance
+    wallet = db.query(Wallet).filter(Wallet.id == wallet.id).with_for_update().first()
+    if not wallet:
+        raise HTTPException(status_code=404, detail="Wallet not found")
     if wallet.is_locked:
         raise HTTPException(status_code=423, detail="Wallet is locked")
     existing = _find_matching_ledger(
@@ -71,6 +75,10 @@ def credit_wallet(
 
 
 def debit_wallet(db: Session, wallet: Wallet, amount: Decimal, reference: str, description: str) -> WalletLedger:
+    # Lock the wallet row to prevent race conditions and get the latest balance
+    wallet = db.query(Wallet).filter(Wallet.id == wallet.id).with_for_update().first()
+    if not wallet:
+        raise HTTPException(status_code=404, detail="Wallet not found")
     if wallet.is_locked:
         raise HTTPException(status_code=423, detail="Wallet is locked")
     existing = _find_matching_ledger(
