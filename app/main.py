@@ -88,14 +88,6 @@ app.add_middleware(
 
 app.include_router(api_router, prefix=settings.api_v1_prefix)
 
-from fastapi import Depends
-from app.core.database import get_db
-from sqlalchemy.orm import Session
-
-@app.get("/db-dialect")
-def get_db_dialect(db: Session = Depends(get_db)):
-    return {"dialect": db.bind.dialect.name}
-
 
 def _bootstrap_admins() -> None:
     raw = (settings.bootstrap_admin_emails or "").strip()
