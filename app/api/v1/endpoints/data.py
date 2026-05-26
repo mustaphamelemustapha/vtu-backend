@@ -310,7 +310,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                     promo_old_price = standard_price
                 
                 # If old price is higher than price, calculate percentage off if label is missing
-                if promo_label is None and promo_old_price > price:
+                if promo_label is None and promo_old_price > price and promo_old_price > 0:
                     discount_pct = int(round((promo_old_price - price) / promo_old_price * Decimal("100")))
                     if discount_pct > 0:
                         promo_label = f"{discount_pct}% off"
