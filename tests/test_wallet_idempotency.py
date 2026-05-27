@@ -7,7 +7,9 @@ from app.services.wallet import credit_wallet, debit_wallet
 
 
 class _DummyQuery:
-    def __init__(self, result=None):
+    def __init__(self, session, model_class, result=None):
+        self.session = session
+        self.model_class = model_class
         self.result = result
         self.called_with_for_update = False
 
@@ -24,6 +26,29 @@ class _DummyQuery:
     def first(self):
         return self.result
 
+    def update(self, values, synchronize_session=False):
+        import operator
+        wallet = self.session.wallet
+        if not wallet:
+            return 0
+        if wallet.is_locked:
+            return 0
+
+        for col, expr in values.items():
+            if col.name == "balance":
+                try:
+                    amount = expr.right.value
+                except AttributeError:
+                    amount = Decimal("0")
+
+                if expr.operator is operator.sub:
+                    if wallet.balance < amount:
+                        return 0
+                    wallet.balance -= amount
+                elif expr.operator is operator.add:
+                    wallet.balance += amount
+        return 1
+
 
 class _DummySession:
     def __init__(self, wallet=None, existing=None):
@@ -35,11 +60,10 @@ class _DummySession:
         self.queries = []
 
     def query(self, model_class, *args, **kwargs):
-        # Return either the wallet or the existing ledger based on the queried model name
         if model_class.__name__ == "Wallet":
-            q = _DummyQuery(self.wallet)
+            q = _DummyQuery(self, model_class, self.wallet)
         else:
-            q = _DummyQuery(self.existing)
+            q = _DummyQuery(self, model_class, self.existing)
         self.queries.append(q)
         return q
 
@@ -57,7 +81,11 @@ class _DummySession:
 
 
 class _Wallet(SimpleNamespace):
-    pass
+    @property
+    def name(self):
+        # Mock Column.name behavior for Wallet.balance inside values mapping
+        return "balance"
+
 
 
 def test_credit_wallet_returns_existing_matching_ledger():
@@ -97,8 +125,8 @@ def test_credit_wallet_success():
     assert session.commits == 1
     assert len(session.added) == 1
     assert session.added[0].amount == Decimal('50.00')
-    # Verify pessimistic locking query was called
-    assert any(q.called_with_for_update for q in session.queries)
+    # Verify pessimistic locking query was not called (we use atomic update)
+    assert not any(q.called_with_for_update for q in session.queries)
 
 
 def test_debit_wallet_success():
@@ -112,7 +140,7 @@ def test_debit_wallet_success():
     assert session.commits == 1
     assert len(session.added) == 1
     assert session.added[0].amount == Decimal('40.00')
-    assert any(q.called_with_for_update for q in session.queries)
+    assert not any(q.called_with_for_update for q in session.queries)
 
 
 def test_debit_wallet_insufficient_balance():

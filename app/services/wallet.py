@@ -41,10 +41,6 @@ def credit_wallet(
     *,
     commit: bool = True,
 ) -> WalletLedger:
-    # Lock the wallet row to prevent race conditions and get the latest balance
-    wallet = db.query(Wallet).filter(Wallet.id == wallet.id).with_for_update().first()
-    if not wallet:
-        raise HTTPException(status_code=404, detail="Wallet not found")
     if wallet.is_locked:
         raise HTTPException(status_code=423, detail="Wallet is locked")
     existing = _find_matching_ledger(
@@ -57,7 +53,21 @@ def credit_wallet(
     )
     if existing:
         return existing
-    wallet.balance = Decimal(wallet.balance) + amount
+
+    # Atomically increment the wallet balance
+    rows_updated = db.query(Wallet).filter(
+        Wallet.id == wallet.id,
+        Wallet.is_locked == False
+    ).update(
+        {Wallet.balance: Wallet.balance + amount},
+        synchronize_session=False
+    )
+    if rows_updated == 0:
+        db.refresh(wallet)
+        if wallet.is_locked:
+            raise HTTPException(status_code=423, detail="Wallet is locked")
+        raise HTTPException(status_code=404, detail="Wallet not found or locked")
+
     entry = WalletLedger(
         wallet_id=wallet.id,
         amount=amount,
@@ -69,16 +79,14 @@ def credit_wallet(
     if commit:
         db.commit()
         db.refresh(entry)
+        db.refresh(wallet)
     else:
         db.flush()
+        db.refresh(wallet)
     return entry
 
 
 def debit_wallet(db: Session, wallet: Wallet, amount: Decimal, reference: str, description: str) -> WalletLedger:
-    # Lock the wallet row to prevent race conditions and get the latest balance
-    wallet = db.query(Wallet).filter(Wallet.id == wallet.id).with_for_update().first()
-    if not wallet:
-        raise HTTPException(status_code=404, detail="Wallet not found")
     if wallet.is_locked:
         raise HTTPException(status_code=423, detail="Wallet is locked")
     existing = _find_matching_ledger(
@@ -91,9 +99,22 @@ def debit_wallet(db: Session, wallet: Wallet, amount: Decimal, reference: str, d
     )
     if existing:
         return existing
-    if Decimal(wallet.balance) < amount:
+
+    # Atomically decrement the wallet balance only if it is sufficient
+    rows_updated = db.query(Wallet).filter(
+        Wallet.id == wallet.id,
+        Wallet.balance >= amount,
+        Wallet.is_locked == False
+    ).update(
+        {Wallet.balance: Wallet.balance - amount},
+        synchronize_session=False
+    )
+    if rows_updated == 0:
+        db.refresh(wallet)
+        if wallet.is_locked:
+            raise HTTPException(status_code=423, detail="Wallet is locked")
         raise HTTPException(status_code=400, detail="Insufficient balance")
-    wallet.balance = Decimal(wallet.balance) - amount
+
     entry = WalletLedger(
         wallet_id=wallet.id,
         amount=amount,
@@ -104,4 +125,5 @@ def debit_wallet(db: Session, wallet: Wallet, amount: Decimal, reference: str, d
     db.add(entry)
     db.commit()
     db.refresh(entry)
+    db.refresh(wallet)
     return entry
