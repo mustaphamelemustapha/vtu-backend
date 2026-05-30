@@ -228,34 +228,67 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
 
     # 1. Fetch/Create Paystack Dedicated Account if Enabled
     if settings.paystack_dedicated_enabled:
-        phone = _to_paystack_phone(user.phone_number)
-        try:
-            first = (user.full_name or "").strip().split(" ")[0] or "Axis"
-            last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
-            dedicated = get_or_create_dedicated_account(
-                email=user.email,
-                first_name=first,
-                last_name=last,
-                phone=phone,
-            )
-            paystack_accs = _parse_paystack_dedicated_account(dedicated)
-            all_accounts.extend(paystack_accs)
-        except PaystackError as exc:
-            detail = str(exc)
-            lower_detail = detail.lower()
-            if (not phone) and ("phone" in lower_detail or "mobile" in lower_detail):
-                requires_phone = True
-            else:
+        db_paystack = db.query(VirtualAccount).filter(
+            VirtualAccount.user_id == user.id,
+            VirtualAccount.provider == VirtualAccountProvider.PAYSTACK
+        ).all()
+        if db_paystack:
+            for db_acc in db_paystack:
+                all_accounts.append({
+                    "bank_name": db_acc.bank_name,
+                    "account_number": db_acc.account_number,
+                    "account_name": db_acc.account_name,
+                })
+        else:
+            phone = _to_paystack_phone(user.phone_number)
+            try:
+                first = (user.full_name or "").strip().split(" ")[0] or "Mele"
+                last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
+                dedicated = get_or_create_dedicated_account(
+                    email=user.email,
+                    first_name=first,
+                    last_name=last,
+                    phone=phone,
+                )
+                paystack_accs = _parse_paystack_dedicated_account(dedicated)
+                if paystack_accs:
+                    for acc in paystack_accs:
+                        bank_slug = acc["bank_name"].lower().replace(" ", "_")
+                        db_acc = VirtualAccount(
+                            user_id=user.id,
+                            provider=VirtualAccountProvider.PAYSTACK,
+                            account_number=acc["account_number"],
+                            account_name=acc["account_name"],
+                            bank_name=acc["bank_name"],
+                            bank_code="000",
+                            customer_reference=f"{account_reference}_paystack_{bank_slug}",
+                            reservation_reference=f"paystack_{user.id}_{bank_slug}_{secrets.token_hex(4)}",
+                            status=VirtualAccountStatus.ACTIVE,
+                        )
+                        db.add(db_acc)
+                    db.commit()
+                    all_accounts.extend(paystack_accs)
+            except PaystackError as exc:
+                detail = str(exc)
+                lower_detail = detail.lower()
+                if (not phone) and ("phone" in lower_detail or "mobile" in lower_detail):
+                    requires_phone = True
+                else:
+                    requires_kyc = True
+                messages.append(f"Paystack: {detail}")
+            except Exception as exc:
+                db.rollback()
+                logger.warning("Auto-generate Paystack account failed: %s", exc)
                 requires_kyc = True
-            messages.append(f"Paystack: {detail}")
+                messages.append(f"Paystack: {exc}")
 
     # 2. Fetch/Create Monnify Reserved Account
-    v_account = db.query(VirtualAccount).filter(
+    db_monnify = db.query(VirtualAccount).filter(
         VirtualAccount.user_id == user.id,
         VirtualAccount.provider == VirtualAccountProvider.MONNIFY
-    ).first()
+    ).all()
 
-    if not v_account:
+    if not db_monnify:
         try:
             resp = reserve_monnify_account(
                 account_reference=account_reference,
@@ -267,8 +300,9 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
             accounts_data = _parse_reserved_accounts(resp)
             if accounts_data:
                 body = resp.get("responseBody") or resp.get("data") or resp.get("response") or {}
+                reservation_ref = body.get("reservationReference") or secrets.token_hex(8)
                 for acc in accounts_data:
-                    # Save each retrieved account in VirtualAccount table
+                    bank_slug = acc["bank_name"].lower().replace(" ", "_")
                     db_acc = VirtualAccount(
                         user_id=user.id,
                         provider=VirtualAccountProvider.MONNIFY,
@@ -276,8 +310,8 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
                         account_name=acc["account_name"],
                         bank_name=acc["bank_name"],
                         bank_code=acc.get("bank_code", "000"),
-                        customer_reference=account_reference,
-                        reservation_reference=body.get("reservationReference", secrets.token_hex(8)),
+                        customer_reference=f"{account_reference}_monnify_{bank_slug}",
+                        reservation_reference=f"{reservation_ref}_{bank_slug}",
                         status=VirtualAccountStatus.ACTIVE,
                     )
                     db.add(db_acc)
@@ -287,16 +321,12 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
                 requires_kyc = True
                 messages.append("Monnify account generation is pending.")
         except Exception as exc:
+            db.rollback()
             logger.warning("Auto-generate Monnify account failed: %s", exc)
             requires_kyc = True
             messages.append(f"Monnify: {exc}")
     else:
-        # Fetch all existing
-        db_accounts = db.query(VirtualAccount).filter(
-            VirtualAccount.user_id == user.id,
-            VirtualAccount.provider == VirtualAccountProvider.MONNIFY
-        ).all()
-        for db_acc in db_accounts:
+        for db_acc in db_monnify:
             all_accounts.append({
                 "bank_name": db_acc.bank_name,
                 "account_number": db_acc.account_number,
@@ -345,9 +375,16 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
             db.commit()
             db.refresh(user)
 
-        first = (user.full_name or "").strip().split(" ")[0] or "Axis"
+        first = (user.full_name or "").strip().split(" ")[0] or "Mele"
         last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
         try:
+            # Flush existing Paystack virtual accounts for this user in DB
+            db.query(VirtualAccount).filter(
+                VirtualAccount.user_id == user.id,
+                VirtualAccount.provider == VirtualAccountProvider.PAYSTACK
+            ).delete()
+            db.commit()
+
             dedicated = get_or_create_dedicated_account(
                 email=user.email,
                 first_name=first,
@@ -355,7 +392,23 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
                 phone=paystack_phone,
             )
             paystack_accs = _parse_paystack_dedicated_account(dedicated)
-            all_accounts.extend(paystack_accs)
+            if paystack_accs:
+                for acc in paystack_accs:
+                    bank_slug = acc["bank_name"].lower().replace(" ", "_")
+                    db_acc = VirtualAccount(
+                        user_id=user.id,
+                        provider=VirtualAccountProvider.PAYSTACK,
+                        account_number=acc["account_number"],
+                        account_name=acc["account_name"],
+                        bank_name=acc["bank_name"],
+                        bank_code="000",
+                        customer_reference=f"{account_reference}_paystack_{bank_slug}",
+                        reservation_reference=f"paystack_{user.id}_{bank_slug}_{secrets.token_hex(4)}",
+                        status=VirtualAccountStatus.ACTIVE,
+                    )
+                    db.add(db_acc)
+                db.commit()
+                all_accounts.extend(paystack_accs)
         except PaystackError as exc:
             detail = str(exc)
             lower_detail = detail.lower()
@@ -364,6 +417,11 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
             else:
                 requires_kyc = True
             messages.append(f"Paystack: {detail}")
+        except Exception as exc:
+            db.rollback()
+            logger.warning("Recreate Paystack account failed: %s", exc)
+            requires_kyc = True
+            messages.append(f"Paystack: {exc}")
 
     # 2. Clear Database Monnify Cache & Re-generate (Hard Refresh)
     bvn = (payload.bvn or "").strip()
@@ -414,7 +472,9 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
                     )
 
             body = resp.get("responseBody") or resp.get("data") or resp.get("response") or {}
+            reservation_ref = body.get("reservationReference") or secrets.token_hex(8)
             for acc in accounts_data:
+                bank_slug = acc["bank_name"].lower().replace(" ", "_")
                 db_acc = VirtualAccount(
                     user_id=user.id,
                     provider=VirtualAccountProvider.MONNIFY,
@@ -422,8 +482,8 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
                     account_name=acc["account_name"],
                     bank_name=acc["bank_name"],
                     bank_code=acc.get("bank_code", "000"),
-                    customer_reference=account_reference,
-                    reservation_reference=body.get("reservationReference", secrets.token_hex(8)),
+                    customer_reference=f"{account_reference}_monnify_{bank_slug}",
+                    reservation_reference=f"{reservation_ref}_{bank_slug}",
                     status=VirtualAccountStatus.ACTIVE,
                 )
                 db.add(db_acc)
@@ -435,6 +495,7 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
     except HTTPException:
         raise
     except Exception as exc:
+        db.rollback()
         requires_kyc = True
         messages.append(f"Monnify: {exc}")
 
