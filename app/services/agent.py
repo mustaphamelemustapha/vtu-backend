@@ -14,6 +14,22 @@ from app.models.referral import Referral, ReferralStatus
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
+import re
+
+def _parse_size_gb(size_str: str | None) -> float:
+    if not size_str:
+        return 0.0
+    try:
+        s = str(size_str).strip().upper()
+        match = re.search(r"(\d+(?:\.\d+)?)\s*(GB|MB)", s)
+        if not match:
+            return 0.0
+        val = float(match.group(1))
+        unit = match.group(2)
+        return val if unit == "GB" else val / 1024.0
+    except Exception:
+        return 0.0
+
 def get_agent_dashboard_stats(db: Session, user: User) -> dict:
     wallet = db.query(Wallet).filter(Wallet.user_id == user.id).first()
     wallet_balance = wallet.balance if wallet else Decimal("0.00")
@@ -107,12 +123,6 @@ def get_agent_dashboard_stats(db: Session, user: User) -> dict:
 
 def get_active_campaigns(db: Session, user: User) -> list[dict]:
     campaigns = db.query(RewardCampaign).filter(RewardCampaign.is_active == True).all()
-    
-    # Calculate progress for volume targets
-    # For now, we simulate progress based on overall volume
-    agent_stat = db.query(AgentStat).filter(AgentStat.agent_id == user.id).first()
-    total_data = agent_stat.total_data_mb / 1024 if agent_stat else 0
-    total_airtime = float(agent_stat.total_airtime_amount) if agent_stat else 0
 
     results = []
     for camp in campaigns:
@@ -120,18 +130,58 @@ def get_active_campaigns(db: Session, user: User) -> list[dict]:
         is_qualified = False
         
         if camp.campaign_type == CampaignType.VOLUME:
+            campaign_start = camp.created_at
+            
+            # Query transactions since campaign activation
+            txs = db.query(Transaction).filter(
+                Transaction.user_id == user.id,
+                Transaction.status == TransactionStatus.SUCCESS,
+                Transaction.created_at >= campaign_start
+            ).all()
+            
+            stxs = db.query(ServiceTransaction).filter(
+                ServiceTransaction.user_id == user.id,
+                ServiceTransaction.status == "success",
+                ServiceTransaction.created_at >= campaign_start
+            ).all()
+            
             if camp.target_metric == "data_volume_gb":
-                progress = total_data
+                # Fetch all data plans to map code to exact GB size
+                from app.models.data_plan import DataPlan
+                all_plans = db.query(DataPlan).all()
+                plan_map = {p.plan_code: _parse_size_gb(p.data_size) for p in all_plans}
+                
+                total_gb = 0.0
+                for tx in txs:
+                    if tx.tx_type == TransactionType.DATA:
+                        total_gb += plan_map.get(tx.data_plan_code, 0.0)
+                        
+                for stx in stxs:
+                    if stx.tx_type.lower() == "data":
+                        # product_code is used in ServiceTransaction instead of data_plan_code
+                        total_gb += plan_map.get(getattr(stx, "product_code", ""), 0.0)
+                
+                progress = total_gb
                 is_qualified = progress >= float(camp.target_value)
+                
             elif camp.target_metric == "airtime_volume":
-                progress = total_airtime
+                airtime_naira = Decimal("0.00")
+                for tx in txs:
+                    if tx.tx_type == TransactionType.AIRTIME:
+                        airtime_naira += tx.amount
+                for stx in stxs:
+                    if stx.tx_type.lower() == "airtime":
+                        airtime_naira += stx.amount
+                        
+                progress = float(airtime_naira)
                 is_qualified = progress >= float(camp.target_value)
         
         elif camp.campaign_type == CampaignType.REFERRAL:
-            # Check how many qualified referrals they have
+            # Check how many qualified referrals they have since campaign start
             qualified_refs = db.query(Referral).filter(
                 Referral.referrer_id == user.id,
-                Referral.status == ReferralStatus.QUALIFIED
+                Referral.status.in_([ReferralStatus.QUALIFIED, ReferralStatus.REWARDED]),
+                Referral.created_at >= camp.created_at
             ).count()
             progress = float(qualified_refs)
             is_qualified = progress >= float(camp.target_value)
@@ -182,22 +232,58 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
         elif existing_reward.status == AgentRewardStatus.PENDING:
             raise HTTPException(status_code=400, detail="Reward claim is pending processing.")
             
-    # Re-evaluate qualification
-    agent_stat = db.query(AgentStat).filter(AgentStat.agent_id == user.id).first()
-    total_data = agent_stat.total_data_mb / 1024 if agent_stat else 0
-    total_airtime = float(agent_stat.total_airtime_amount) if agent_stat else 0
-    
+    # Re-evaluate qualification based on transactions since campaign activation
     is_qualified = False
+    
     if campaign.campaign_type == CampaignType.VOLUME:
+        campaign_start = campaign.created_at
+        
+        txs = db.query(Transaction).filter(
+            Transaction.user_id == user.id,
+            Transaction.status == TransactionStatus.SUCCESS,
+            Transaction.created_at >= campaign_start
+        ).all()
+        
+        stxs = db.query(ServiceTransaction).filter(
+            ServiceTransaction.user_id == user.id,
+            ServiceTransaction.status == "success",
+            ServiceTransaction.created_at >= campaign_start
+        ).all()
+        
         if campaign.target_metric == "data_volume_gb":
-            is_qualified = total_data >= float(campaign.target_value)
+            from app.models.data_plan import DataPlan
+            all_plans = db.query(DataPlan).all()
+            plan_map = {p.plan_code: _parse_size_gb(p.data_size) for p in all_plans}
+            
+            total_gb = 0.0
+            for tx in txs:
+                if tx.tx_type == TransactionType.DATA:
+                    total_gb += plan_map.get(tx.data_plan_code, 0.0)
+                    
+            for stx in stxs:
+                if stx.tx_type.lower() == "data":
+                    total_gb += plan_map.get(getattr(stx, "product_code", ""), 0.0)
+                    
+            progress = total_gb
+            is_qualified = progress >= float(campaign.target_value)
+            
         elif campaign.target_metric == "airtime_volume":
-            is_qualified = total_airtime >= float(campaign.target_value)
+            airtime_naira = Decimal("0.00")
+            for tx in txs:
+                if tx.tx_type == TransactionType.AIRTIME:
+                    airtime_naira += tx.amount
+            for stx in stxs:
+                if stx.tx_type.lower() == "airtime":
+                    airtime_naira += stx.amount
+                    
+            progress = float(airtime_naira)
+            is_qualified = progress >= float(campaign.target_value)
             
     elif campaign.campaign_type == CampaignType.REFERRAL:
         qualified_refs = db.query(Referral).filter(
             Referral.referrer_id == user.id,
-            Referral.status == ReferralStatus.QUALIFIED
+            Referral.status.in_([ReferralStatus.QUALIFIED, ReferralStatus.REWARDED]),
+            Referral.created_at >= campaign.created_at
         ).count()
         is_qualified = qualified_refs >= float(campaign.target_value)
         

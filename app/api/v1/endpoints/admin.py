@@ -725,7 +725,6 @@ def get_user_details(
         db.query(Transaction)
         .filter(Transaction.user_id == user_id)
         .order_by(Transaction.created_at.desc(), Transaction.id.desc())
-        .limit(20)
         .all()
     )
     for tx in data_rows:
@@ -755,7 +754,6 @@ def get_user_details(
             db.query(ServiceTransaction)
             .filter(ServiceTransaction.user_id == user_id)
             .order_by(ServiceTransaction.created_at.desc(), ServiceTransaction.id.desc())
-            .limit(20)
             .all()
         )
         for tx in service_rows:
@@ -779,7 +777,6 @@ def get_user_details(
         key=lambda item: _ensure_utc(item.get("created_at")) or floor_utc,
         reverse=True,
     )
-    recent_items = recent_items[:20]
 
     return {
         "user": {

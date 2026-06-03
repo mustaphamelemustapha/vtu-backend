@@ -287,12 +287,37 @@ def record_referral_data_activity(db: Session, *, user: User, tx_type: str, amou
     # Check qualification criteria: e.g. sold 50GB (51200 MB)
     target_mb = 51200.0
     if float(stat.total_data_mb) >= target_mb:
-        # Qualify the referral
-        referral.qualified_at = _utcnow()
-        referral.status = ReferralStatus.QUALIFIED
+        # Qualify and grant reward automatically (₦2000 for 50GB referral)
+        reward_amount = Decimal("2000.00")
         
-        # Grant reward to referrer if needed, or wait for claim endpoint
-        # For this design, we just mark it qualified. The referrer can claim it via campaign or direct reward.
+        referrer = db.query(User).filter(User.id == referral.referrer_id).first()
+        if referrer:
+            from app.services.wallet import get_or_create_wallet, credit_wallet
+            wallet = get_or_create_wallet(db, referrer.id, commit=False)
+            tx_ref = f"AG-REF-RWD-{referral.id}-{int(_utcnow().timestamp())}"
+            description = f"Referral reward for {user.first_name or user.email} hitting 50GB"
+            
+            # Credit wallet directly
+            credit_wallet(db, wallet, reward_amount, tx_ref, description, commit=False)
+            
+            # Record Transaction
+            tx = Transaction(
+                user_id=referrer.id,
+                reference=tx_ref,
+                amount=reward_amount,
+                status=TransactionStatus.SUCCESS,
+                tx_type=TransactionType.WALLET_FUND,
+                external_reference=f"REF-{referral.id}",
+            )
+            db.add(tx)
+            
+            # Update referral
+            referral.qualified_at = _utcnow()
+            referral.rewarded_at = _utcnow()
+            referral.status = ReferralStatus.REWARDED
+            referral.reward_amount = reward_amount
+            referral.reward_transaction_reference = tx_ref
+
         db.flush()
         
     return referral
