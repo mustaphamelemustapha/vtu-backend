@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from app.core.database import get_db
 from app.core.config import get_settings
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_admin
 from app.models import User, Transaction, TransactionType, TransactionStatus
 from app.schemas.wallet import WalletOut, FundWalletRequest, LedgerOut, BankTransferAccountsResponse, CreateBankTransferAccountsRequest, BankAccountOut
 from app.services.wallet import get_or_create_wallet, credit_wallet
@@ -526,7 +526,7 @@ def delete_bank_transfer_accounts(user: User = Depends(get_current_user), db: Se
 
 
 @router.get("/temp-reset")
-def temp_reset_virtual_accounts(email: str, db: Session = Depends(get_db)):
+def temp_reset_virtual_accounts(email: str, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     user = db.query(User).filter(User.email == email.strip().lower()).first()
     if not user:
         return {"status": "error", "message": "User not found"}
