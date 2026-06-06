@@ -48,10 +48,31 @@ class PushNotificationService:
             return False
 
         try:
+            android_config = messaging.AndroidConfig(
+                priority="high",
+                notification=messaging.AndroidNotification(
+                    sound="default",
+                    click_action="FLUTTER_NOTIFICATION_CLICK",
+                    default_sound=True,
+                    default_vibrate_timings=True,
+                )
+            )
+            apns_config = messaging.APNSConfig(
+                payload=messaging.APNSPayload(
+                    aps=messaging.Aps(
+                        sound="default",
+                        badge=1,
+                        content_available=True,
+                    )
+                )
+            )
+
             message = messaging.Message(
                 notification=messaging.Notification(title=title, body=body),
                 data=data or {},
                 token=token,
+                android=android_config,
+                apns=apns_config,
             )
             response = messaging.send(message)
             logger.info(f"Successfully sent FCM message: {response}")
@@ -62,16 +83,36 @@ class PushNotificationService:
 
     @classmethod
     def send_broadcast(cls, title: str, body: str, data: dict = None) -> bool:
-        # For sending to all users, the flutter app should subscribe to an 'all' topic
         cls._initialize()
         if not cls._initialized:
             return False
 
         try:
+            android_config = messaging.AndroidConfig(
+                priority="high",
+                notification=messaging.AndroidNotification(
+                    sound="default",
+                    click_action="FLUTTER_NOTIFICATION_CLICK",
+                    default_sound=True,
+                    default_vibrate_timings=True,
+                )
+            )
+            apns_config = messaging.APNSConfig(
+                payload=messaging.APNSPayload(
+                    aps=messaging.Aps(
+                        sound="default",
+                        badge=1,
+                        content_available=True,
+                    )
+                )
+            )
+
             message = messaging.Message(
                 notification=messaging.Notification(title=title, body=body),
                 data=data or {},
                 topic="all_users",
+                android=android_config,
+                apns=apns_config,
             )
             response = messaging.send(message)
             logger.info(f"Successfully sent FCM broadcast: {response}")
