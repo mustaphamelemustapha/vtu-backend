@@ -80,6 +80,18 @@ def credit_wallet(
         db.commit()
         db.refresh(entry)
         db.refresh(wallet)
+        try:
+            if wallet.user and wallet.user.fcm_token:
+                from app.services.push_notification import PushNotificationService
+                PushNotificationService.send_to_token(
+                    token=wallet.user.fcm_token,
+                    title="Wallet Credited ₦" + f"{amount:,.2f}",
+                    body=f"Your wallet has been credited with ₦{amount:,.2f}. Ref: {reference}",
+                    data={"type": "wallet", "reference": reference, "action": "credit"}
+                )
+        except Exception as push_exc:
+            import logging
+            logging.getLogger(__name__).warning("Failed to send credit wallet push notification: %s", push_exc)
     else:
         db.flush()
         db.refresh(wallet)
@@ -126,4 +138,16 @@ def debit_wallet(db: Session, wallet: Wallet, amount: Decimal, reference: str, d
     db.commit()
     db.refresh(entry)
     db.refresh(wallet)
+    try:
+        if wallet.user and wallet.user.fcm_token:
+            from app.services.push_notification import PushNotificationService
+            PushNotificationService.send_to_token(
+                token=wallet.user.fcm_token,
+                title="Wallet Debited ₦" + f"{amount:,.2f}",
+                body=f"Your wallet has been debited with ₦{amount:,.2f}. Ref: {reference}",
+                data={"type": "wallet", "reference": reference, "action": "debit"}
+            )
+    except Exception as push_exc:
+        import logging
+        logging.getLogger(__name__).warning("Failed to send debit wallet push notification: %s", push_exc)
     return entry

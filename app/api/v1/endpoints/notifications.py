@@ -143,6 +143,19 @@ def admin_create_broadcast(
     db.add(row)
     db.commit()
     db.refresh(row)
+
+    if row.is_active:
+        try:
+            from app.services.push_notification import PushNotificationService
+            PushNotificationService.send_broadcast(
+                title=row.title,
+                body=row.message,
+                data={"type": "announcement", "id": str(row.id)}
+            )
+        except Exception as push_exc:
+            import logging
+            logging.getLogger(__name__).warning("Failed to send broadcast push notification: %s", push_exc)
+
     return _to_out(row)
 
 
