@@ -38,10 +38,17 @@ def get_agent_dashboard_stats(db: Session, user: User) -> dict:
     today_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
     month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
 
-    # Calculate Data and Airtime Sales
-    # We query both Transaction and ServiceTransaction to cover all bases depending on the VTU flow.
+    # If database is SQLite, strip timezone info for comparisons
+    try:
+        is_sqlite = db.get_bind().dialect.name == "sqlite"
+    except Exception:
+        is_sqlite = True
 
-    # -- TODAY --
+    if is_sqlite:
+        today_start = today_start.replace(tzinfo=None)
+        month_start = month_start.replace(tzinfo=None)
+
+    # Calculate Data and Airtime Sales
     today_txs = db.query(Transaction).filter(
         Transaction.user_id == user.id,
         Transaction.status == TransactionStatus.SUCCESS,
@@ -104,11 +111,70 @@ def get_agent_dashboard_stats(db: Session, user: User) -> dict:
     # Agent Status
     agent_status = "Active" if (month_data_naira > 5000 or month_airtime_naira > 5000) else "Inactive"
     
-    # We display Naira value as GB approx (Assuming 1GB ~ N250 for display purposes if real GB tracking isn't feasible)
-    # The prompt asked for "Total Data Sold". We'll return the value in float assuming N250 = 1GB as a placeholder
-    # In a real system we'd parse the MB out of DataPlan, but this keeps the dashboard fast.
-    today_data_gb = float(today_data_naira) / 250.0
-    month_data_gb = float(month_data_naira) / 250.0
+    # Map exact plan sizes to calculate real GB sold
+    from app.models.data_plan import DataPlan
+    all_plans = db.query(DataPlan).all()
+    plan_map = {p.plan_code: _parse_size_gb(p.data_size) for p in all_plans}
+
+    today_data_gb = 0.0
+    for tx in today_txs:
+        if tx.tx_type == TransactionType.DATA:
+            gb = plan_map.get(tx.data_plan_code, None)
+            if gb is None and tx.data_plan_code:
+                parts = str(tx.data_plan_code).split(":")
+                raw_code = parts[-1]
+                for code, size in plan_map.items():
+                    if code.split(":")[-1] == raw_code:
+                        gb = size
+                        break
+            if gb is None:
+                gb = float(tx.amount) / 400.0  # Fallback to estimation based on N400/GB
+            today_data_gb += gb or 0.0
+
+    for stx in today_svc_txs:
+        if stx.tx_type.lower() == "data":
+            prod_code = getattr(stx, "product_code", "")
+            gb = plan_map.get(prod_code, None)
+            if gb is None and prod_code:
+                parts = str(prod_code).split(":")
+                raw_code = parts[-1]
+                for code, size in plan_map.items():
+                    if code.split(":")[-1] == raw_code:
+                        gb = size
+                        break
+            if gb is None:
+                gb = float(stx.amount) / 400.0
+            today_data_gb += gb or 0.0
+
+    month_data_gb = 0.0
+    for tx in month_txs:
+        if tx.tx_type == TransactionType.DATA:
+            gb = plan_map.get(tx.data_plan_code, None)
+            if gb is None and tx.data_plan_code:
+                parts = str(tx.data_plan_code).split(":")
+                raw_code = parts[-1]
+                for code, size in plan_map.items():
+                    if code.split(":")[-1] == raw_code:
+                        gb = size
+                        break
+            if gb is None:
+                gb = float(tx.amount) / 400.0
+            month_data_gb += gb or 0.0
+
+    for stx in month_svc_txs:
+        if stx.tx_type.lower() == "data":
+            prod_code = getattr(stx, "product_code", "")
+            gb = plan_map.get(prod_code, None)
+            if gb is None and prod_code:
+                parts = str(prod_code).split(":")
+                raw_code = parts[-1]
+                for code, size in plan_map.items():
+                    if code.split(":")[-1] == raw_code:
+                        gb = size
+                        break
+            if gb is None:
+                gb = float(stx.amount) / 400.0
+            month_data_gb += gb or 0.0
 
     return {
         "wallet_balance": wallet_balance,
@@ -124,6 +190,11 @@ def get_agent_dashboard_stats(db: Session, user: User) -> dict:
 def get_active_campaigns(db: Session, user: User) -> list[dict]:
     campaigns = db.query(RewardCampaign).filter(RewardCampaign.is_active == True).all()
 
+    try:
+        is_sqlite = db.get_bind().dialect.name == "sqlite"
+    except Exception:
+        is_sqlite = True
+
     results = []
     for camp in campaigns:
         progress = 0.0
@@ -132,7 +203,7 @@ def get_active_campaigns(db: Session, user: User) -> list[dict]:
         if camp.campaign_type == CampaignType.VOLUME:
             campaign_start = camp.activated_at or camp.created_at
             if campaign_start and campaign_start.tzinfo is not None:
-                if hasattr(db, "bind") and db.bind is not None and db.bind.dialect.name == "sqlite":
+                if is_sqlite:
                     campaign_start = campaign_start.replace(tzinfo=None)
             
             # Query transactions since campaign activation
@@ -166,7 +237,7 @@ def get_active_campaigns(db: Session, user: User) -> list[dict]:
                                     gb = size
                                     break
                         if gb is None:
-                            gb = float(tx.amount) / 250.0
+                            gb = float(tx.amount) / 400.0
                         total_gb += gb or 0.0
                         
                 for stx in stxs:
@@ -182,7 +253,7 @@ def get_active_campaigns(db: Session, user: User) -> list[dict]:
                                         gb = size
                                         break
                             if gb is None:
-                                gb = float(stx.amount) / 250.0
+                                gb = float(stx.amount) / 400.0
                             total_gb += gb or 0.0
                 
                 progress = total_gb
