@@ -424,8 +424,30 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
             messages.append(f"Paystack: {exc}")
 
     # 2. Clear Database Monnify Cache & Re-generate (Hard Refresh)
+    import hashlib
     bvn = (payload.bvn or "").strip()
     nin = (payload.nin or "").strip()
+
+    bvn_hash_val = None
+    nin_hash_val = None
+
+    if bvn:
+        bvn_hash_val = hashlib.sha256(bvn.encode()).hexdigest()
+        dup_bvn = db.query(User).filter(User.bvn_hash == bvn_hash_val, User.id != user.id).first()
+        if dup_bvn:
+            raise HTTPException(
+                status_code=400,
+                detail="This BVN is already linked to another account on our platform. Please use a unique BVN."
+            )
+
+    if nin:
+        nin_hash_val = hashlib.sha256(nin.encode()).hexdigest()
+        dup_nin = db.query(User).filter(User.nin_hash == nin_hash_val, User.id != user.id).first()
+        if dup_nin:
+            raise HTTPException(
+                status_code=400,
+                detail="This NIN is already linked to another account on our platform. Please use a unique NIN."
+            )
 
     # Flush any existing Monnify virtual accounts for this user first
     db.query(VirtualAccount).filter(
@@ -487,6 +509,13 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
                     status=VirtualAccountStatus.ACTIVE,
                 )
                 db.add(db_acc)
+            if bvn_hash_val or nin_hash_val:
+                db_user = db.query(User).filter(User.id == user.id).first()
+                if db_user:
+                    if bvn_hash_val:
+                        db_user.bvn_hash = bvn_hash_val
+                    if nin_hash_val:
+                        db_user.nin_hash = nin_hash_val
             db.commit()
             all_accounts.extend(accounts_data)
         else:

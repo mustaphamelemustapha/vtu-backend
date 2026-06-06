@@ -139,6 +139,7 @@ def ensure_tables():
         _ensure_transaction_provider_columns()
         _ensure_campaign_activated_at_column()
         _ensure_user_agent_upgrade_seen_column()
+        _ensure_user_kyc_hash_columns()
         return
 
     # Optional local fallback for fresh environments.
@@ -157,6 +158,7 @@ def ensure_tables():
     _ensure_data_plan_promo_columns()
     _ensure_data_plan_text_lengths()
     _ensure_transaction_provider_columns()
+    _ensure_user_kyc_hash_columns()
 
 
 @app.on_event("shutdown")
@@ -404,6 +406,25 @@ def _ensure_user_agent_upgrade_seen_column() -> None:
         logging.getLogger(__name__).info("Added users.agent_upgrade_seen column.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure agent_upgrade_seen column: %s", exc)
+
+
+def _ensure_user_kyc_hash_columns() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("users"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("users")}
+        with engine.begin() as conn:
+            if "bvn_hash" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN bvn_hash VARCHAR(64) NULL"))
+                conn.execute(text("CREATE UNIQUE INDEX ix_users_bvn_hash ON users (bvn_hash)"))
+                logging.getLogger(__name__).info("Added users.bvn_hash column and index.")
+            if "nin_hash" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN nin_hash VARCHAR(64) NULL"))
+                conn.execute(text("CREATE UNIQUE INDEX ix_users_nin_hash ON users (nin_hash)"))
+                logging.getLogger(__name__).info("Added users.nin_hash column and index.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure users.bvn_hash/nin_hash columns: %s", exc)
 
 
 @app.get("/healthz")
