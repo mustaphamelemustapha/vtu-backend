@@ -131,6 +131,9 @@ def get_active_campaigns(db: Session, user: User) -> list[dict]:
         
         if camp.campaign_type == CampaignType.VOLUME:
             campaign_start = camp.activated_at or camp.created_at
+            if campaign_start and campaign_start.tzinfo is not None:
+                if hasattr(db, "bind") and db.bind is not None and db.bind.dialect.name == "sqlite":
+                    campaign_start = campaign_start.replace(tzinfo=None)
             
             # Query transactions since campaign activation
             txs = db.query(Transaction).filter(
@@ -154,12 +157,33 @@ def get_active_campaigns(db: Session, user: User) -> list[dict]:
                 total_gb = 0.0
                 for tx in txs:
                     if tx.tx_type == TransactionType.DATA:
-                        total_gb += plan_map.get(tx.data_plan_code, 0.0)
+                        gb = plan_map.get(tx.data_plan_code, None)
+                        if gb is None and tx.data_plan_code:
+                            parts = str(tx.data_plan_code).split(":")
+                            raw_code = parts[-1]
+                            for code, size in plan_map.items():
+                                if code.split(":")[-1] == raw_code:
+                                    gb = size
+                                    break
+                        if gb is None:
+                            gb = float(tx.amount) / 250.0
+                        total_gb += gb or 0.0
                         
                 for stx in stxs:
                     if stx.tx_type.lower() == "data":
-                        # product_code is used in ServiceTransaction instead of data_plan_code
-                        total_gb += plan_map.get(getattr(stx, "product_code", ""), 0.0)
+                        prod_code = getattr(stx, "product_code", "")
+                        if prod_code:
+                            gb = plan_map.get(prod_code, None)
+                            if gb is None:
+                                parts = str(prod_code).split(":")
+                                raw_code = parts[-1]
+                                for code, size in plan_map.items():
+                                    if code.split(":")[-1] == raw_code:
+                                        gb = size
+                                        break
+                            if gb is None:
+                                gb = float(stx.amount) / 250.0
+                            total_gb += gb or 0.0
                 
                 progress = total_gb
                 is_qualified = progress >= float(camp.target_value)
@@ -237,6 +261,9 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
     
     if campaign.campaign_type == CampaignType.VOLUME:
         campaign_start = campaign.activated_at or campaign.created_at
+        if campaign_start and campaign_start.tzinfo is not None:
+            if hasattr(db, "bind") and db.bind is not None and db.bind.dialect.name == "sqlite":
+                campaign_start = campaign_start.replace(tzinfo=None)
         
         txs = db.query(Transaction).filter(
             Transaction.user_id == user.id,
@@ -258,11 +285,33 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
             total_gb = 0.0
             for tx in txs:
                 if tx.tx_type == TransactionType.DATA:
-                    total_gb += plan_map.get(tx.data_plan_code, 0.0)
+                    gb = plan_map.get(tx.data_plan_code, None)
+                    if gb is None and tx.data_plan_code:
+                        parts = str(tx.data_plan_code).split(":")
+                        raw_code = parts[-1]
+                        for code, size in plan_map.items():
+                            if code.split(":")[-1] == raw_code:
+                                gb = size
+                                break
+                    if gb is None:
+                        gb = float(tx.amount) / 250.0
+                    total_gb += gb or 0.0
                     
             for stx in stxs:
                 if stx.tx_type.lower() == "data":
-                    total_gb += plan_map.get(getattr(stx, "product_code", ""), 0.0)
+                    prod_code = getattr(stx, "product_code", "")
+                    if prod_code:
+                        gb = plan_map.get(prod_code, None)
+                        if gb is None:
+                            parts = str(prod_code).split(":")
+                            raw_code = parts[-1]
+                            for code, size in plan_map.items():
+                                if code.split(":")[-1] == raw_code:
+                                    gb = size
+                                    break
+                        if gb is None:
+                            gb = float(stx.amount) / 250.0
+                        total_gb += gb or 0.0
                     
             progress = total_gb
             is_qualified = progress >= float(campaign.target_value)
