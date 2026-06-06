@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from app.core.database import get_db
@@ -68,6 +68,7 @@ def create_campaign(
         target_value=payload.target_value,
         reward_amount=payload.reward_amount,
         is_active=payload.is_active,
+        activated_at=datetime.now(timezone.utc) if payload.is_active else None,
     )
     db.add(campaign)
     db.commit()
@@ -115,6 +116,13 @@ def update_campaign(
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     update_data = payload.dict(exclude_unset=True)
+    if "is_active" in update_data:
+        new_active = update_data["is_active"]
+        if new_active and not campaign.is_active:
+            campaign.activated_at = datetime.now(timezone.utc)
+        elif not new_active:
+            campaign.activated_at = None
+
     for field, value in update_data.items():
         setattr(campaign, field, value)
     db.commit()

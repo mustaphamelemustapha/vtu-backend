@@ -137,6 +137,7 @@ def ensure_tables():
         _ensure_data_plan_promo_columns()
         _ensure_data_plan_text_lengths()
         _ensure_transaction_provider_columns()
+        _ensure_campaign_activated_at_column()
         return
 
     # Optional local fallback for fresh environments.
@@ -370,6 +371,23 @@ def _ensure_transaction_provider_columns() -> None:
         logging.getLogger(__name__).info("Added transactions provider columns.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure transactions provider columns: %s", exc)
+
+
+def _ensure_campaign_activated_at_column() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("reward_campaigns"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("reward_campaigns")}
+        if "activated_at" in cols:
+            return
+        dialect_name = getattr(engine.dialect, "name", "")
+        ts_type = "TIMESTAMP WITH TIME ZONE" if dialect_name == "postgresql" else "DATETIME"
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE reward_campaigns ADD COLUMN activated_at {ts_type}"))
+        logging.getLogger(__name__).info("Added reward_campaigns.activated_at column.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure reward_campaigns.activated_at column: %s", exc)
 
 
 @app.get("/healthz")

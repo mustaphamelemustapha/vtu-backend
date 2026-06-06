@@ -72,6 +72,12 @@ async def smeplug_webhook(request: Request, db: Session = Depends(get_db)):
         transaction.status = TransactionStatus.SUCCESS
         transaction.external_reference = provider_reference
         db.commit()
+        try:
+            from app.services.referrals import trigger_referral_data_activity
+            trigger_referral_data_activity(db, transaction)
+            db.commit()
+        except Exception as ref_exc:
+            logger.error("Failed to trigger referral activity in webhook: %s", ref_exc)
         logger.info("SMEPlug Webhook: Transaction %s marked as SUCCESS", customer_reference)
     elif status == "failed":
         transaction.status = TransactionStatus.FAILED

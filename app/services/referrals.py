@@ -375,3 +375,25 @@ def get_referral_dashboard(db: Session, *, user: User) -> dict:
         "reward_amount": reward_amount,
         "referrals": items,
     }
+
+
+def trigger_referral_data_activity(db: Session, transaction: Transaction) -> None:
+    if transaction.tx_type != TransactionType.DATA:
+        return
+    try:
+        from app.models.data_plan import DataPlan
+        plan = db.query(DataPlan).filter(DataPlan.plan_code == transaction.data_plan_code).first()
+        if plan:
+            from app.api.v1.endpoints.data import _parse_size_gb
+            mb_size = _parse_size_gb(plan.data_size) * 1024.0
+        else:
+            mb_size = float(transaction.amount) / 250.0 * 1024.0
+
+        user = transaction.user
+        if not user:
+            user = db.query(User).filter(User.id == transaction.user_id).first()
+        if user:
+            record_referral_data_activity(db, user=user, tx_type="data", amount=transaction.amount, data_mb=mb_size)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error("Failed to trigger referral data activity: %s", exc)

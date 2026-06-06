@@ -185,6 +185,11 @@ def reconcile_pending_data_once(limit: int = 50) -> dict[str, int]:
                         or response.get("transaction_id")
                         or tx.external_reference
                     )
+                    try:
+                        from app.services.referrals import trigger_referral_data_activity
+                        trigger_referral_data_activity(db, tx)
+                    except Exception as ref_exc:
+                        logger.error("Failed to trigger referral activity in reconcile worker: %s", ref_exc)
                     moved_success += 1
                 elif outcome == TransactionStatus.FAILED.value:
                     msg = str(response.get("message") or "Provider rejected transaction")

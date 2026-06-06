@@ -130,7 +130,7 @@ def get_active_campaigns(db: Session, user: User) -> list[dict]:
         is_qualified = False
         
         if camp.campaign_type == CampaignType.VOLUME:
-            campaign_start = camp.created_at
+            campaign_start = camp.activated_at or camp.created_at
             
             # Query transactions since campaign activation
             txs = db.query(Transaction).filter(
@@ -236,7 +236,7 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
     is_qualified = False
     
     if campaign.campaign_type == CampaignType.VOLUME:
-        campaign_start = campaign.created_at
+        campaign_start = campaign.activated_at or campaign.created_at
         
         txs = db.query(Transaction).filter(
             Transaction.user_id == user.id,

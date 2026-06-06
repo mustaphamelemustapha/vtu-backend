@@ -20,6 +20,7 @@ class RewardCampaign(Base, TimestampMixin):
     target_value = Column(Numeric(12, 2), nullable=False) # e.g., 51200 for 50GB
     reward_amount = Column(Numeric(12, 2), nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
+    activated_at = Column(DateTime(timezone=True), nullable=True)
     
     agent_rewards = relationship("AgentReward", back_populates="campaign")
 
