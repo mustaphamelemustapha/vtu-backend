@@ -314,3 +314,13 @@ def update_fcm_token(
     user.fcm_token = payload.fcm_token
     db.commit()
     return Message(message="FCM token updated successfully")
+
+
+@router.post("/me/acknowledge-agent-upgrade", response_model=Message)
+def acknowledge_agent_upgrade(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    user.agent_upgrade_seen = True
+    db.commit()
+    return Message(message="Agent upgrade notification marked as seen.")

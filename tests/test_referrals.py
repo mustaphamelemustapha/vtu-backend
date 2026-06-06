@@ -12,6 +12,7 @@ from app.services.referrals import (
     generate_referral_code,
     get_referral_dashboard,
     record_referral_first_deposit_reward,
+    record_referral_data_activity,
 )
 
 
@@ -274,3 +275,41 @@ def test_referral_dashboard_exposes_first_deposit_and_total_earned():
         assert dashboard["referrals"][0]["reward_amount"] == Decimal("500.00")
     finally:
         db.close()
+
+
+def test_agent_upgrade_on_50gb_sales():
+    db = SessionLocal()
+    try:
+        # 1. Setup referrer and referred user
+        referrer = _seed_user(db, email="ref_owner@example.com", full_name="Referrer Owner", referral_code="AX99")
+        referred = _seed_user(db, email="ref_target@example.com", full_name="Referred Target", referred_by_id=referrer.id)
+        attach_signup_referral(db, new_user=referred, referral_code=referrer.referral_code)
+        db.commit()
+
+        # Check initial states
+        assert referred.role == UserRole.USER
+        assert referred.agent_upgrade_seen is False
+
+        # 2. Trigger data activity below 50GB (e.g. 10GB = 10240 MB)
+        record_referral_data_activity(db, user=referred, tx_type="data", amount=Decimal("2000.00"), data_mb=10240.0)
+        db.commit()
+        db.refresh(referred)
+        assert referred.role == UserRole.USER
+
+        # 3. Trigger additional data activity to cross 50GB (total 52GB = 53248 MB)
+        # record_referral_data_activity handles user role upgrade and agent_upgrade_seen update
+        record_referral_data_activity(db, user=referred, tx_type="data", amount=Decimal("8000.00"), data_mb=43008.0)
+        db.commit()
+        db.refresh(referred)
+
+        # 4. Assert role was upgraded to RESELLER and agent_upgrade_seen is set to False
+        assert referred.role == UserRole.RESELLER
+        assert referred.agent_upgrade_seen is False
+
+        # 5. Check that the referrer got their active agent referral bonus
+        wallet = db.query(Wallet).filter(Wallet.user_id == referrer.id).first()
+        assert wallet is not None
+        assert wallet.balance == Decimal("2000.00")
+    finally:
+        db.close()
+

@@ -35,6 +35,7 @@ class User(Base, TimestampMixin):
     verification_token = Column(String(128), nullable=True, index=True)
     verification_token_expires_at = Column(DateTime(timezone=True), nullable=True)
     fcm_token = Column(String(255), nullable=True)
+    agent_upgrade_seen = Column(Boolean, default=False, nullable=False, server_default='0')
 
     referred_by = relationship(
         "User",

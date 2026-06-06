@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models import Referral, ReferralStatus, Transaction, TransactionStatus, TransactionType, User
+from app.models import Referral, ReferralStatus, Transaction, TransactionStatus, TransactionType, User, UserRole
 from app.services.wallet import credit_wallet, get_or_create_wallet
 
 settings = get_settings()
@@ -266,13 +266,11 @@ def record_referral_data_activity(db: Session, *, user: User, tx_type: str, amou
     if tx_type == TransactionType.DATA or tx_type == "data":
         # Approximate MB if not provided
         mb = data_mb if data_mb > 0 else (float(amount) / 250.0 * 1024.0)
-        stat.total_data_mb = Decimal(str(float(stat.total_data_mb) + mb))
-        stat.total_sales_amount = Decimal(str(float(stat.total_sales_amount) + float(amount)))
+        stat.total_data_mb = int((stat.total_data_mb or 0) + mb)
     elif tx_type == TransactionType.AIRTIME or tx_type == "airtime":
-        stat.total_airtime_amount = Decimal(str(float(stat.total_airtime_amount) + float(amount)))
-        stat.total_sales_amount = Decimal(str(float(stat.total_sales_amount) + float(amount)))
+        stat.total_airtime_amount = Decimal(str(float(stat.total_airtime_amount or 0.0) + float(amount)))
         
-    stat.last_active_date = _utcnow()
+    stat.total_transactions = (stat.total_transactions or 0) + 1
     db.flush()
 
     # 2. Check if this user was referred and is pending qualification
@@ -287,6 +285,11 @@ def record_referral_data_activity(db: Session, *, user: User, tx_type: str, amou
     # Check qualification criteria: e.g. sold 50GB (51200 MB)
     target_mb = 51200.0
     if float(stat.total_data_mb) >= target_mb:
+        # Upgrade user to Agent (RESELLER) role
+        if user.role == UserRole.USER:
+            user.role = UserRole.RESELLER
+            user.agent_upgrade_seen = False
+
         # Qualify and grant reward automatically (₦2000 for 50GB referral)
         reward_amount = Decimal("2000.00")
         
@@ -295,7 +298,7 @@ def record_referral_data_activity(db: Session, *, user: User, tx_type: str, amou
             from app.services.wallet import get_or_create_wallet, credit_wallet
             wallet = get_or_create_wallet(db, referrer.id, commit=False)
             tx_ref = f"AG-REF-RWD-{referral.id}-{int(_utcnow().timestamp())}"
-            description = f"Referral reward for {user.first_name or user.email} hitting 50GB"
+            description = f"Referral reward for {user.full_name or user.email} hitting 50GB"
             
             # Credit wallet directly
             credit_wallet(db, wallet, reward_amount, tx_ref, description, commit=False)

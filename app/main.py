@@ -138,6 +138,7 @@ def ensure_tables():
         _ensure_data_plan_text_lengths()
         _ensure_transaction_provider_columns()
         _ensure_campaign_activated_at_column()
+        _ensure_user_agent_upgrade_seen_column()
         return
 
     # Optional local fallback for fresh environments.
@@ -388,6 +389,21 @@ def _ensure_campaign_activated_at_column() -> None:
         logging.getLogger(__name__).info("Added reward_campaigns.activated_at column.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure reward_campaigns.activated_at column: %s", exc)
+
+
+def _ensure_user_agent_upgrade_seen_column() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("users"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("users")}
+        if "agent_upgrade_seen" in cols:
+            return
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE users ADD COLUMN agent_upgrade_seen BOOLEAN NOT NULL DEFAULT FALSE"))
+        logging.getLogger(__name__).info("Added users.agent_upgrade_seen column.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure agent_upgrade_seen column: %s", exc)
 
 
 @app.get("/healthz")

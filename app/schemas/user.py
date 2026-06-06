@@ -12,6 +12,7 @@ class UserOut(BaseModel):
     is_active: bool
     is_verified: bool
     referral_code: str | None = None
+    agent_upgrade_seen: bool = False
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
