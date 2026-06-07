@@ -835,11 +835,13 @@ def list_wallets(
         .all()
     )
 
+    from sqlalchemy import func
+    total_balance_res = db.query(func.sum(Wallet.balance)).scalar()
+    aggregate_balance = float(total_balance_res) if total_balance_res is not None else 0.0
+
     items = []
-    aggregate_balance = 0.0
     for user, wallet in rows:
         balance = float(wallet.balance) if wallet and wallet.balance is not None else 0.0
-        aggregate_balance += balance
         items.append(
             {
                 "user_id": user.id,
