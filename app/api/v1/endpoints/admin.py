@@ -816,6 +816,7 @@ def list_wallets(
     query = (
         db.query(User, Wallet)
         .outerjoin(Wallet, Wallet.user_id == User.id)
+        .filter(User.role != UserRole.ADMIN)
     )
     if q:
         needle = f"%{q.strip()}%"
@@ -836,7 +837,12 @@ def list_wallets(
     )
 
     from sqlalchemy import func
-    balance_query = db.query(func.sum(Wallet.balance)).select_from(User).outerjoin(Wallet, Wallet.user_id == User.id)
+    balance_query = (
+        db.query(func.sum(Wallet.balance))
+        .select_from(User)
+        .outerjoin(Wallet, Wallet.user_id == User.id)
+        .filter(User.role != UserRole.ADMIN)
+    )
     if q:
         needle = f"%{q.strip()}%"
         balance_query = balance_query.filter(
