@@ -190,11 +190,6 @@ def get_agent_dashboard_stats(db: Session, user: User) -> dict:
 def get_active_campaigns(db: Session, user: User) -> list[dict]:
     campaigns = db.query(RewardCampaign).filter(RewardCampaign.is_active == True).all()
 
-    try:
-        is_sqlite = db.get_bind().dialect.name == "sqlite"
-    except Exception:
-        is_sqlite = True
-
     results = []
     for camp in campaigns:
         progress = 0.0
@@ -202,22 +197,40 @@ def get_active_campaigns(db: Session, user: User) -> list[dict]:
         
         if camp.campaign_type == CampaignType.VOLUME:
             campaign_start = camp.activated_at or camp.created_at
-            if campaign_start and campaign_start.tzinfo is not None:
-                if is_sqlite:
-                    campaign_start = campaign_start.replace(tzinfo=None)
             
-            # Query transactions since campaign activation
-            txs = db.query(Transaction).filter(
+            # Fetch all successful user transactions
+            all_txs = db.query(Transaction).filter(
                 Transaction.user_id == user.id,
-                Transaction.status == TransactionStatus.SUCCESS,
-                Transaction.created_at >= campaign_start
+                Transaction.status == TransactionStatus.SUCCESS
             ).all()
             
-            stxs = db.query(ServiceTransaction).filter(
+            all_stxs = db.query(ServiceTransaction).filter(
                 ServiceTransaction.user_id == user.id,
-                ServiceTransaction.status == "success",
-                ServiceTransaction.created_at >= campaign_start
+                ServiceTransaction.status == "success"
             ).all()
+            
+            # Normalize campaign start to naive UTC for safe comparison
+            camp_time = campaign_start
+            if camp_time and camp_time.tzinfo is not None:
+                camp_time = camp_time.astimezone(timezone.utc).replace(tzinfo=None)
+            
+            txs = []
+            for tx in all_txs:
+                tx_time = tx.created_at
+                if tx_time:
+                    if tx_time.tzinfo is not None:
+                        tx_time = tx_time.astimezone(timezone.utc).replace(tzinfo=None)
+                    if camp_time is None or tx_time >= camp_time:
+                        txs.append(tx)
+                        
+            stxs = []
+            for stx in all_stxs:
+                stx_time = stx.created_at
+                if stx_time:
+                    if stx_time.tzinfo is not None:
+                        stx_time = stx_time.astimezone(timezone.utc).replace(tzinfo=None)
+                    if camp_time is None or stx_time >= camp_time:
+                        stxs.append(stx)
             
             if camp.target_metric == "data_volume_gb":
                 # Fetch all data plans to map code to exact GB size
@@ -273,11 +286,24 @@ def get_active_campaigns(db: Session, user: User) -> list[dict]:
         
         elif camp.campaign_type == CampaignType.REFERRAL:
             # Check how many qualified referrals they have since campaign start
-            qualified_refs = db.query(Referral).filter(
+            all_refs = db.query(Referral).filter(
                 Referral.referrer_id == user.id,
-                Referral.status.in_([ReferralStatus.QUALIFIED, ReferralStatus.REWARDED]),
-                Referral.created_at >= camp.created_at
-            ).count()
+                Referral.status.in_([ReferralStatus.QUALIFIED, ReferralStatus.REWARDED])
+            ).all()
+            
+            camp_time = camp.created_at
+            if camp_time and camp_time.tzinfo is not None:
+                camp_time = camp_time.astimezone(timezone.utc).replace(tzinfo=None)
+                
+            qualified_refs = 0
+            for ref in all_refs:
+                ref_time = ref.created_at
+                if ref_time:
+                    if ref_time.tzinfo is not None:
+                        ref_time = ref_time.astimezone(timezone.utc).replace(tzinfo=None)
+                    if camp_time is None or ref_time >= camp_time:
+                        qualified_refs += 1
+                        
             progress = float(qualified_refs)
             is_qualified = progress >= float(camp.target_value)
 
@@ -332,21 +358,40 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
     
     if campaign.campaign_type == CampaignType.VOLUME:
         campaign_start = campaign.activated_at or campaign.created_at
-        if campaign_start and campaign_start.tzinfo is not None:
-            if hasattr(db, "bind") and db.bind is not None and db.bind.dialect.name == "sqlite":
-                campaign_start = campaign_start.replace(tzinfo=None)
         
-        txs = db.query(Transaction).filter(
+        # Fetch all successful user transactions
+        all_txs = db.query(Transaction).filter(
             Transaction.user_id == user.id,
-            Transaction.status == TransactionStatus.SUCCESS,
-            Transaction.created_at >= campaign_start
+            Transaction.status == TransactionStatus.SUCCESS
         ).all()
         
-        stxs = db.query(ServiceTransaction).filter(
+        all_stxs = db.query(ServiceTransaction).filter(
             ServiceTransaction.user_id == user.id,
-            ServiceTransaction.status == "success",
-            ServiceTransaction.created_at >= campaign_start
+            ServiceTransaction.status == "success"
         ).all()
+        
+        # Normalize campaign start to naive UTC for safe comparison
+        camp_time = campaign_start
+        if camp_time and camp_time.tzinfo is not None:
+            camp_time = camp_time.astimezone(timezone.utc).replace(tzinfo=None)
+        
+        txs = []
+        for tx in all_txs:
+            tx_time = tx.created_at
+            if tx_time:
+                if tx_time.tzinfo is not None:
+                    tx_time = tx_time.astimezone(timezone.utc).replace(tzinfo=None)
+                if camp_time is None or tx_time >= camp_time:
+                    txs.append(tx)
+                    
+        stxs = []
+        for stx in all_stxs:
+            stx_time = stx.created_at
+            if stx_time:
+                if stx_time.tzinfo is not None:
+                    stx_time = stx_time.astimezone(timezone.utc).replace(tzinfo=None)
+                if camp_time is None or stx_time >= camp_time:
+                    stxs.append(stx)
         
         if campaign.target_metric == "data_volume_gb":
             from app.models.data_plan import DataPlan
@@ -400,11 +445,23 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
             is_qualified = progress >= float(campaign.target_value)
             
     elif campaign.campaign_type == CampaignType.REFERRAL:
-        qualified_refs = db.query(Referral).filter(
+        all_refs = db.query(Referral).filter(
             Referral.referrer_id == user.id,
-            Referral.status.in_([ReferralStatus.QUALIFIED, ReferralStatus.REWARDED]),
-            Referral.created_at >= campaign.created_at
-        ).count()
+            Referral.status.in_([ReferralStatus.QUALIFIED, ReferralStatus.REWARDED])
+        ).all()
+        
+        camp_time = campaign.created_at
+        if camp_time and camp_time.tzinfo is not None:
+            camp_time = camp_time.astimezone(timezone.utc).replace(tzinfo=None)
+            
+        qualified_refs = 0
+        for ref in all_refs:
+            ref_time = ref.created_at
+            if ref_time:
+                if ref_time.tzinfo is not None:
+                    ref_time = ref_time.astimezone(timezone.utc).replace(tzinfo=None)
+                if camp_time is None or ref_time >= camp_time:
+                    qualified_refs += 1
         is_qualified = qualified_refs >= float(campaign.target_value)
         
     if not is_qualified:
