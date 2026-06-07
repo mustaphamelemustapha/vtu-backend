@@ -836,7 +836,17 @@ def list_wallets(
     )
 
     from sqlalchemy import func
-    total_balance_res = db.query(func.sum(Wallet.balance)).scalar()
+    balance_query = db.query(func.sum(Wallet.balance)).select_from(User).outerjoin(Wallet, Wallet.user_id == User.id)
+    if q:
+        needle = f"%{q.strip()}%"
+        balance_query = balance_query.filter(
+            or_(
+                User.email.ilike(needle),
+                User.full_name.ilike(needle),
+                User.phone_number.ilike(needle),
+            )
+        )
+    total_balance_res = balance_query.scalar()
     aggregate_balance = float(total_balance_res) if total_balance_res is not None else 0.0
 
     items = []
