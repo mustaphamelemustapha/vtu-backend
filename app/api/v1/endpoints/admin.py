@@ -199,7 +199,7 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
         Transaction.created_at >= day_start_utc
     ).scalar() or 0
     today_failed_tx = db.query(func.count(Transaction.id)).filter(
-        Transaction.status == TransactionStatus.FAILED,
+        Transaction.status.in_([TransactionStatus.FAILED, TransactionStatus.REFUNDED]),
         Transaction.created_at >= day_start_utc
     ).scalar() or 0
     today_pending_tx = db.query(func.count(Transaction.id)).filter(
@@ -213,7 +213,7 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
             ServiceTransaction.created_at >= day_start_utc
         ).scalar() or 0
         today_failed_st = db.query(func.count(ServiceTransaction.id)).filter(
-            ServiceTransaction.status == TransactionStatus.FAILED.value,
+            ServiceTransaction.status.in_([TransactionStatus.FAILED.value, TransactionStatus.REFUNDED.value]),
             ServiceTransaction.created_at >= day_start_utc
         ).scalar() or 0
         today_pending_st = db.query(func.count(ServiceTransaction.id)).filter(
