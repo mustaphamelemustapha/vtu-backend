@@ -464,7 +464,6 @@ def list_all_transactions(
             Transaction.id.label("id"),
             Transaction.created_at.label("created_at"),
             Transaction.user_id.label("user_id"),
-            User.email.label("user_email"),
             Transaction.reference.label("reference"),
             cast(Transaction.tx_type, String).label("tx_type"),
             Transaction.amount.label("amount"),
@@ -475,7 +474,6 @@ def list_all_transactions(
             Transaction.failure_reason.label("failure_reason"),
         )
         .select_from(Transaction)
-        .join(User, Transaction.user_id == User.id)
     )
     has_services = False
     try:
@@ -489,7 +487,6 @@ def list_all_transactions(
                 ServiceTransaction.id.label("id"),
                 ServiceTransaction.created_at.label("created_at"),
                 ServiceTransaction.user_id.label("user_id"),
-                User.email.label("user_email"),
                 ServiceTransaction.reference.label("reference"),
                 ServiceTransaction.tx_type.label("tx_type"),
                 ServiceTransaction.amount.label("amount"),
@@ -500,7 +497,6 @@ def list_all_transactions(
                 ServiceTransaction.failure_reason.label("failure_reason"),
             )
             .select_from(ServiceTransaction)
-            .join(User, ServiceTransaction.user_id == User.id)
         )
         combined = union_all(base_sel, extra_sel).subquery("all_tx")
     else:
@@ -514,7 +510,7 @@ def list_all_transactions(
                 combined.c.reference.ilike(needle),
                 combined.c.external_reference.ilike(needle),
                 combined.c.data_plan_code.ilike(needle),
-                combined.c.user_email.ilike(needle),
+                User.email.ilike(needle),
             )
         )
     if status_enum is not None:
@@ -532,7 +528,7 @@ def list_all_transactions(
         combined.c.id.label("id"),
         combined.c.created_at.label("created_at"),
         combined.c.user_id.label("user_id"),
-        combined.c.user_email.label("user_email"),
+        User.email.label("user_email"),
         combined.c.reference.label("reference"),
         combined.c.tx_type.label("tx_type"),
         combined.c.amount.label("amount"),
@@ -543,18 +539,60 @@ def list_all_transactions(
         combined.c.failure_reason.label("failure_reason"),
     ]
 
-    total = db.execute(select(func.count()).select_from(combined).where(*where)).scalar() or 0
-    rows = (
-        db.execute(
+    if q:
+        total = db.execute(
+            select(func.count())
+            .select_from(combined)
+            .join(User, combined.c.user_id == User.id)
+            .where(*where)
+        ).scalar() or 0
+        
+        query_sel = (
             select(*columns)
+            .select_from(combined)
+            .join(User, combined.c.user_id == User.id)
             .where(*where)
             .order_by(combined.c.created_at.desc(), combined.c.id.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
-        .mappings()
-        .all()
-    )
+        rows = db.execute(query_sel).mappings().all()
+    else:
+        total = db.execute(
+            select(func.count())
+            .select_from(combined)
+            .where(*where)
+        ).scalar() or 0
+        
+        paginated_subquery = (
+            select(combined)
+            .where(*where)
+            .order_by(combined.c.created_at.desc(), combined.c.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .subquery("paginated_tx")
+        )
+        
+        query_sel = (
+            select(
+                paginated_subquery.c.id.label("id"),
+                paginated_subquery.c.created_at.label("created_at"),
+                paginated_subquery.c.user_id.label("user_id"),
+                User.email.label("user_email"),
+                paginated_subquery.c.reference.label("reference"),
+                paginated_subquery.c.tx_type.label("tx_type"),
+                paginated_subquery.c.amount.label("amount"),
+                paginated_subquery.c.status.label("status"),
+                paginated_subquery.c.network.label("network"),
+                paginated_subquery.c.data_plan_code.label("data_plan_code"),
+                paginated_subquery.c.external_reference.label("external_reference"),
+                paginated_subquery.c.failure_reason.label("failure_reason"),
+            )
+            .select_from(paginated_subquery)
+            .join(User, paginated_subquery.c.user_id == User.id)
+            .order_by(paginated_subquery.c.created_at.desc(), paginated_subquery.c.id.desc())
+        )
+        rows = db.execute(query_sel).mappings().all()
 
     items = []
     for r in rows:

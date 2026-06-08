@@ -35,4 +35,6 @@ class ServiceTransaction(Base, TimestampMixin):
 
 
 Index("ix_service_transactions_user_status", ServiceTransaction.user_id, ServiceTransaction.status)
+Index("ix_service_transactions_created_at", ServiceTransaction.created_at)
+
 

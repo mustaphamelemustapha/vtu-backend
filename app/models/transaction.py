@@ -43,3 +43,5 @@ class Transaction(Base, TimestampMixin):
 
 Index("ix_transactions_user_status", Transaction.user_id, Transaction.status)
 Index("ix_transactions_type_status", Transaction.tx_type, Transaction.status)
+Index("ix_transactions_created_at", Transaction.created_at)
+
