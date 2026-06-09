@@ -123,7 +123,12 @@ class SMEPlugProvider:
             }
         
         lowered = message.lower()
-        if "processing" in lowered or "pending" in lowered:
+        ambiguous_hints = (
+            "timeout", "timed out", "connection error", "connection reset", 
+            "non-json", "invalid json", "service unavailable", "remote protocol",
+            "network error", "connecterror", "readerror", "transport", "http error"
+        )
+        if "processing" in lowered or "pending" in lowered or any(hint in lowered for hint in ambiguous_hints):
             return {
                 "status": "pending",
                 "provider_reference": str(data_node.get("reference") or ""),

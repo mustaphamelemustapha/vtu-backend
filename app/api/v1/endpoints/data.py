@@ -1,4 +1,5 @@
 import hashlib
+import httpx
 import logging
 import re
 import secrets
@@ -127,10 +128,13 @@ def _safe_reason(value: str, limit: int = 255) -> str:
     return text[:limit] if text else "Unknown provider error"
 
 def _is_ambiguous_provider_error(exc: Exception) -> bool:
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
     msg = str(exc).strip().lower()
     ambiguous_hints = (
         "timeout", "timed out", "connection error", "connection reset", 
-        "non-json", "invalid json", "service unavailable", "remote protocol"
+        "non-json", "invalid json", "service unavailable", "remote protocol",
+        "network error", "connecterror", "readerror", "transport", "http error"
     )
     return any(hint in msg for hint in ambiguous_hints)
 
@@ -479,10 +483,10 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                     provider_res = {"status": "failed", "error": res.get("message") or "Amigo reported failure"}
             except AmigoApiError as e:
                 err_msg = str(e)
-                # CRITICAL: If Amigo says "coming soon" but user reports they received data,
+                # CRITICAL: If Amigo says "coming soon" or connection times out,
                 # we must NOT mark as failed (to prevent automatic refund).
-                if "coming soon" in err_msg.lower() or "network must be" in err_msg.lower():
-                    logger.warning("Amigo reported 'coming soon' error for reference %s. Marking as pending for safety.", reference)
+                if _is_ambiguous_provider_error(e) or "coming soon" in err_msg.lower() or "network must be" in err_msg.lower():
+                    logger.warning("Amigo reported ambiguous/coming-soon error for reference %s. Marking as pending for safety: %s", reference, err_msg)
                     provider_res = {"status": "pending", "error": err_msg}
                 else:
                     provider_res = {"status": "failed", "error": err_msg}
