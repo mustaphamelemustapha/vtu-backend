@@ -816,6 +816,26 @@ def get_user_details(
         reverse=True,
     )
 
+    referrals_query = (
+        db.query(Referral, User)
+        .join(User, Referral.referred_user_id == User.id)
+        .filter(Referral.referrer_id == user_id)
+        .order_by(Referral.created_at.desc())
+        .all()
+    )
+    referral_list = []
+    for ref, ref_user in referrals_query:
+        referral_list.append({
+            "id": ref.id,
+            "referred_user_id": ref.referred_user_id,
+            "referred_email": ref_user.email,
+            "referred_name": ref_user.full_name,
+            "referred_phone": getattr(ref_user, "phone_number", None),
+            "status": ref.status.value if hasattr(ref.status, "value") else str(ref.status),
+            "created_at": ref.created_at,
+            "reward_amount": float(ref.reward_amount or 0),
+        })
+
     return {
         "user": {
             "id": user.id,
@@ -835,6 +855,7 @@ def get_user_details(
             "updated_at": wallet.updated_at if wallet else None,
         },
         "recent_transactions": recent_items,
+        "referred_users": referral_list,
     }
 
 
