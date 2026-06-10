@@ -169,7 +169,6 @@ def services_catalog(user: User = Depends(get_current_user)):
             "portharcourt",
             "kaduna",
             "benin",
-            "yola",
             "aba",
         ],
         "exam_types": ["waec", "neco", "jamb"],
@@ -492,6 +491,9 @@ def cable_verify(
 @limiter.limit("5/minute")
 def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _ensure_service_table(db)
+    disco = str(payload.disco or "").strip().lower()
+    if disco in {"yola", "yedc"}:
+        raise HTTPException(status_code=400, detail="Yola Electricity subscription is temporarily unavailable.")
     wallet = get_or_create_wallet(db, user.id)
     base_amount = Decimal(payload.amount)
     charge_amount, margin = get_service_charge_for_user(
@@ -625,7 +627,6 @@ def electricity_discos(user: User = Depends(get_current_user)):
                 {"code": "08", "id": "kaedco", "name": "KAEDCO"},
                 {"code": "09", "id": "eedc", "name": "EEDC"},
                 {"code": "10", "id": "bedc", "name": "BEDC"},
-                {"code": "11", "id": "yedc", "name": "YEDC"},
                 {"code": "12", "id": "aple", "name": "APLE"},
             ]
         }
@@ -640,10 +641,12 @@ def electricity_discos(user: User = Depends(get_current_user)):
             continue
         code = str(row.get("code") or row.get("id") or "").strip()
         disco_id = str(row.get("id") or "").strip().lower()
+        if disco_id in {"yola", "yedc"}:
+            continue
         name = str(row.get("name") or disco_id or code).strip()
         if not disco_id and name:
             disco_id = name.lower().replace(" ", "")
-        if not disco_id:
+        if not disco_id or disco_id in {"yola", "yedc"}:
             continue
         normalized.append({"code": code, "id": disco_id, "name": name or disco_id.upper()})
     if not normalized:
@@ -658,7 +661,6 @@ def electricity_discos(user: User = Depends(get_current_user)):
             {"code": "08", "id": "kaedco", "name": "KAEDCO"},
             {"code": "09", "id": "eedc", "name": "EEDC"},
             {"code": "10", "id": "bedc", "name": "BEDC"},
-            {"code": "11", "id": "yedc", "name": "YEDC"},
             {"code": "12", "id": "aple", "name": "APLE"},
         ]
     return {"discos": normalized}
@@ -669,6 +671,8 @@ def electricity_discos(user: User = Depends(get_current_user)):
 @limiter.limit("15/minute")
 def electricity_verify(request: Request, payload: ElectricityVerifyRequest, user: User = Depends(get_current_user)):
     disco = str(payload.disco or "").strip().lower()
+    if disco in {"yola", "yedc"}:
+        raise HTTPException(status_code=400, detail="Yola Electricity verification is temporarily unavailable.")
     meter_number = str(payload.meter_number or "").strip()
     meter_type = str(payload.meter_type or "").strip().lower()
     if not disco or not meter_number or not meter_type:

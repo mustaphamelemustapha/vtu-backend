@@ -1150,6 +1150,8 @@ class ClubKonnectBillsProvider:
                 key = str(name).strip().lower().replace(" ", "")
             if not key and code:
                 key = code
+            if key in {"yola", "yedc"}:
+                continue
             if key:
                 discos.append(
                     {
@@ -1163,13 +1165,14 @@ class ClubKonnectBillsProvider:
             for key, code in _CLUBKONNECT_DISCO_CODE_MAP.items():
                 if len(code) != 2:
                     continue
-                if key not in {"ekedc", "ikedc", "aedc", "kedco", "phed", "jos", "ibedc", "kaedco", "eedc", "bedc", "yedc", "aple"}:
+                if key not in {"ekedc", "ikedc", "aedc", "kedco", "phed", "jos", "ibedc", "kaedco", "eedc", "bedc", "aple"}:
                     continue
                 discos.append({"code": code, "id": key, "name": key.upper()})
 
         dedup: dict[str, dict] = {}
         for item in discos:
-            dedup[item["id"]] = item
+            if item["id"] not in {"yola", "yedc"}:
+                dedup[item["id"]] = item
         return list(dedup.values())
 
     def verify_electricity_customer(self, disco: str, meter_number: str, meter_type: str) -> dict:
@@ -1453,7 +1456,6 @@ class MockBillsProvider:
             {"code": "08", "id": "kaedco", "name": "KAEDCO"},
             {"code": "09", "id": "eedc", "name": "EEDC"},
             {"code": "10", "id": "bedc", "name": "BEDC"},
-            {"code": "11", "id": "yedc", "name": "YEDC"},
             {"code": "12", "id": "aple", "name": "APLE"},
         ]
 
