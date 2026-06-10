@@ -709,7 +709,14 @@ def list_users(
     if page_size < 1 or page_size > 200:
         raise HTTPException(status_code=400, detail="page_size must be between 1 and 200")
 
-    query = db.query(User)
+    ref_subquery = (
+        db.query(func.count(Referral.id))
+        .filter(Referral.referrer_id == User.id)
+        .correlate(User)
+        .as_scalar()
+    )
+
+    query = db.query(User, ref_subquery.label("referral_count"))
     if q:
         needle = f"%{q.strip()}%"
         query = query.filter(
@@ -729,7 +736,7 @@ def list_users(
     )
 
     items = []
-    for u in users:
+    for u, ref_count in users:
         items.append(
             {
                 "id": u.id,
@@ -740,6 +747,7 @@ def list_users(
                 "role": u.role,
                 "is_active": u.is_active,
                 "is_verified": u.is_verified,
+                "referral_count": ref_count or 0,
             }
         )
 
