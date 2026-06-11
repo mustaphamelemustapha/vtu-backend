@@ -1102,15 +1102,41 @@ class ClubKonnectBillsProvider:
         )
         result = self._settle_pending(self._parse_result(data, action="electricity"), "electricity", request_id=request_id)
         final_raw = (result.meta or {}).get("clubkonnect", {}).get("raw") or {}
-        token = str(
-            final_raw.get("token") or final_raw.get("Token") or final_raw.get("metertoken") or
-            final_raw.get("pin") or final_raw.get("PIN") or final_raw.get("Pin") or ""
-        ).strip()
+
+        def extract_token_field(d: dict) -> str:
+            if not d:
+                return ""
+            # Case-insensitive check for common keys
+            for k, v in d.items():
+                if k.lower() in ("token", "metertoken", "meterno", "pin"):
+                    val = str(v or "").strip()
+                    if val:
+                        return val
+            # Search keys containing 'token' or 'pin'
+            for k, v in d.items():
+                if "token" in k.lower() or "pin" in k.lower():
+                    val = str(v or "").strip()
+                    if val:
+                        return val
+            return ""
+
+        token = extract_token_field(final_raw)
         if not token:
-            token = str(
-                data.get("token") or data.get("Token") or data.get("metertoken") or
-                data.get("pin") or data.get("PIN") or data.get("Pin") or ""
-            ).strip()
+            token = extract_token_field(data)
+
+        # If token is still not found, explicitly query the transaction status (sometimes needed for ClubKonnect)
+        if not token:
+            order_id = str(result.external_reference or "").strip() or None
+            if order_id or request_id:
+                time.sleep(1.5)
+                queried = self._query_transaction(order_id=order_id, request_id=request_id)
+                if queried:
+                    if result.meta is None:
+                        result.meta = {}
+                    result.meta.setdefault("clubkonnect", {})
+                    result.meta["clubkonnect"]["raw"] = queried
+                    token = extract_token_field(queried)
+
         if token:
             result.meta = {**(result.meta or {}), "token": token}
         return result
