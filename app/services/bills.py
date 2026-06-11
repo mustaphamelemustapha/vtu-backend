@@ -1118,7 +1118,7 @@ class ClubKonnectBillsProvider:
                 return ""
             # Case-insensitive check for common keys
             for k, v in d.items():
-                if k.lower() in ("token", "metertoken", "meterno", "pin"):
+                if k.lower() in ("token", "metertoken", "pin"):
                     val = str(v or "").strip()
                     if val:
                         return val
