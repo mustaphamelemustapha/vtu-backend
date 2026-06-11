@@ -1101,7 +1101,16 @@ class ClubKonnectBillsProvider:
             },
         )
         result = self._settle_pending(self._parse_result(data, action="electricity"), "electricity", request_id=request_id)
-        token = str(data.get("token") or data.get("Token") or data.get("metertoken") or data.get("pin") or data.get("PIN") or data.get("Pin") or "").strip()
+        final_raw = (result.meta or {}).get("clubkonnect", {}).get("raw") or {}
+        token = str(
+            final_raw.get("token") or final_raw.get("Token") or final_raw.get("metertoken") or
+            final_raw.get("pin") or final_raw.get("PIN") or final_raw.get("Pin") or ""
+        ).strip()
+        if not token:
+            token = str(
+                data.get("token") or data.get("Token") or data.get("metertoken") or
+                data.get("pin") or data.get("PIN") or data.get("Pin") or ""
+            ).strip()
         if token:
             result.meta = {**(result.meta or {}), "token": token}
         return result
