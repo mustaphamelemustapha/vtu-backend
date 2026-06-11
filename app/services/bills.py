@@ -1103,6 +1103,16 @@ class ClubKonnectBillsProvider:
         result = self._settle_pending(self._parse_result(data, action="electricity"), "electricity", request_id=request_id)
         final_raw = (result.meta or {}).get("clubkonnect", {}).get("raw") or {}
 
+        def extract_field(d: dict, possible_keys: tuple[str, ...]) -> str:
+            if not d:
+                return ""
+            for k, v in d.items():
+                if k.lower() in possible_keys:
+                    val = str(v or "").strip()
+                    if val:
+                        return val
+            return ""
+
         def extract_token_field(d: dict) -> str:
             if not d:
                 return ""
@@ -1121,11 +1131,18 @@ class ClubKonnectBillsProvider:
             return ""
 
         token = extract_token_field(final_raw)
+        units = extract_field(final_raw, ("electricityunits", "units", "electricity_units"))
+        address = extract_field(final_raw, ("customeraddress", "address", "customer_address"))
+
         if not token:
             token = extract_token_field(data)
+        if not units:
+            units = extract_field(data, ("electricityunits", "units", "electricity_units"))
+        if not address:
+            address = extract_field(data, ("customeraddress", "address", "customer_address"))
 
         # If token is still not found, explicitly query the transaction status (sometimes needed for ClubKonnect)
-        if not token:
+        if not token or not units or not address:
             order_id = str(result.external_reference or "").strip() or None
             if order_id or request_id:
                 time.sleep(1.5)
@@ -1135,10 +1152,21 @@ class ClubKonnectBillsProvider:
                         result.meta = {}
                     result.meta.setdefault("clubkonnect", {})
                     result.meta["clubkonnect"]["raw"] = queried
-                    token = extract_token_field(queried)
+                    if not token:
+                        token = extract_token_field(queried)
+                    if not units:
+                        units = extract_field(queried, ("electricityunits", "units", "electricity_units"))
+                    if not address:
+                        address = extract_field(queried, ("customeraddress", "address", "customer_address"))
 
+        if result.meta is None:
+            result.meta = {}
         if token:
-            result.meta = {**(result.meta or {}), "token": token}
+            result.meta["token"] = token
+        if units:
+            result.meta["units"] = units
+        if address:
+            result.meta["address"] = address
         return result
 
     def fetch_electricity_discos(self) -> list[dict]:
