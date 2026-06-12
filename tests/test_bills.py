@@ -305,11 +305,9 @@ def test_get_bills_provider_falls_back_to_mock_when_forced_without_creds(monkeyp
 
 def test_clubkonnect_purchase_electricity_extracts_token(monkeypatch):
     provider = ClubKonnectBillsProvider()
-    captured = {}
-
-    def _fake_request(endpoint, params):
-        captured["endpoint"] = endpoint
-        captured["params"] = params
+    
+    # Test 1: Extract from description
+    def _fake_request_desc(endpoint, params):
         return {
             "statuscode": "200",
             "status": "ORDER_COMPLETED",
@@ -317,8 +315,22 @@ def test_clubkonnect_purchase_electricity_extracts_token(monkeypatch):
             "description": "Token Code: 6464-4560-2879-0511-8019 Units: 15.6 Address: Lagos, Nigeria",
         }
 
-    monkeypatch.setattr(provider, "_request", _fake_request)
+    monkeypatch.setattr(provider, "_request", _fake_request_desc)
     result = provider.purchase_electricity("ikedc", "1010101010", "prepaid", 2000.0)
     assert result.success is True
     assert (result.meta or {}).get("token") == "6464-4560-2879-0511-8019"
+
+    # Test 2: Extract from orderremark
+    def _fake_request_remark(endpoint, params):
+        return {
+            "statuscode": "200",
+            "orderstatus": "ORDER_COMPLETED",
+            "OrderID": "CK-ELEC-2",
+            "orderremark": "TRANSACTION SUCCESSFUL. Token: 9988-7766-5544-3322-1100 Units: 10",
+        }
+
+    monkeypatch.setattr(provider, "_request", _fake_request_remark)
+    result = provider.purchase_electricity("ikedc", "1010101010", "prepaid", 2000.0)
+    assert result.success is True
+    assert (result.meta or {}).get("token") == "9988-7766-5544-3322-1100"
 

@@ -1129,22 +1129,23 @@ class ClubKonnectBillsProvider:
                     val = str(v or "").strip()
                     if val:
                         return val
-            # 3. Search within text fields (like description, remark, maininfo, message, details) for token patterns
-            for k in ("description", "remark", "maininfo", "message", "details"):
-                val = d.get(k)
+            # 3. Search within all string values in the dictionary for token patterns
+            for k, val in d.items():
                 if val and isinstance(val, str):
-                    # Try _TOKEN_RE first
-                    token_match = _TOKEN_RE.search(val)
-                    if token_match:
-                        return str(token_match.group(1) or "").strip()
-                    # Try a generic 20-digit pattern (Nigeria prepaid STS token standard)
-                    generic_match = _GENERIC_TOKEN_RE.search(val)
+                    val_str = val.strip()
+                    # Try _TOKEN_RE first if the key name is promising
+                    if any(x in k.lower() for x in ("description", "remark", "info", "message", "detail")):
+                        token_match = _TOKEN_RE.search(val_str)
+                        if token_match:
+                            return str(token_match.group(1) or "").strip()
+                    # Try a generic 20-digit pattern (Nigeria prepaid STS token standard) anywhere in the string
+                    generic_match = _GENERIC_TOKEN_RE.search(val_str)
                     if generic_match:
                         return str(generic_match.group(0) or "").strip()
                     # Fallback to _extract_token logic if the field mentions token or pin
-                    val_lower = val.lower()
+                    val_lower = val_str.lower()
                     if "token" in val_lower or "pin" in val_lower:
-                        ext = _extract_token(val)
+                        ext = _extract_token(val_str)
                         if ext and any(c.isdigit() for c in ext):
                             return ext
             return ""
