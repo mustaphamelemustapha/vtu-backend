@@ -1164,25 +1164,30 @@ class ClubKonnectBillsProvider:
         if not customer_name:
             customer_name = extract_field(data, ("customername", "customer_name", "customer"))
 
-        # If token is still not found, explicitly query the transaction status (sometimes needed for ClubKonnect)
+        # If token is still not found, explicitly query the transaction status in a loop (allowing ClubKonnect time to process)
         if not token or not units or not address or not customer_name:
             order_id = str(result.external_reference or "").strip() or None
             if order_id or request_id:
-                time.sleep(1.5)
-                queried = self._query_transaction(order_id=order_id, request_id=request_id)
-                if queried:
-                    if result.meta is None:
-                        result.meta = {}
-                    result.meta.setdefault("clubkonnect", {})
-                    result.meta["clubkonnect"]["raw"] = queried
-                    if not token:
-                        token = extract_token_field(queried)
-                    if not units:
-                        units = extract_field(queried, ("electricityunits", "units", "electricity_units"))
-                    if not address:
-                        address = extract_field(queried, ("customeraddress", "address", "customer_address"))
-                    if not customer_name:
-                        customer_name = extract_field(queried, ("customername", "customer_name", "customer"))
+                for attempt in range(4):  # Poll up to 4 times (max 6s total wait)
+                    time.sleep(1.5)
+                    queried = self._query_transaction(order_id=order_id, request_id=request_id)
+                    if queried:
+                        if result.meta is None:
+                            result.meta = {}
+                        result.meta.setdefault("clubkonnect", {})
+                        result.meta["clubkonnect"]["raw"] = queried
+                        if not token:
+                            token = extract_token_field(queried)
+                        if not units:
+                            units = extract_field(queried, ("electricityunits", "units", "electricity_units"))
+                        if not address:
+                            address = extract_field(queried, ("customeraddress", "address", "customer_address"))
+                        if not customer_name:
+                            customer_name = extract_field(queried, ("customername", "customer_name", "customer"))
+                        
+                        # Stop polling as soon as we successfully get the token!
+                        if token:
+                            break
 
         if result.meta is None:
             result.meta = {}
