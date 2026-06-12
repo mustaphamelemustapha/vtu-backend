@@ -1153,6 +1153,7 @@ class ClubKonnectBillsProvider:
         token = extract_token_field(final_raw)
         units = extract_field(final_raw, ("electricityunits", "units", "electricity_units"))
         address = extract_field(final_raw, ("customeraddress", "address", "customer_address"))
+        customer_name = extract_field(final_raw, ("customername", "customer_name", "customer"))
 
         if not token:
             token = extract_token_field(data)
@@ -1160,9 +1161,11 @@ class ClubKonnectBillsProvider:
             units = extract_field(data, ("electricityunits", "units", "electricity_units"))
         if not address:
             address = extract_field(data, ("customeraddress", "address", "customer_address"))
+        if not customer_name:
+            customer_name = extract_field(data, ("customername", "customer_name", "customer"))
 
         # If token is still not found, explicitly query the transaction status (sometimes needed for ClubKonnect)
-        if not token or not units or not address:
+        if not token or not units or not address or not customer_name:
             order_id = str(result.external_reference or "").strip() or None
             if order_id or request_id:
                 time.sleep(1.5)
@@ -1178,6 +1181,8 @@ class ClubKonnectBillsProvider:
                         units = extract_field(queried, ("electricityunits", "units", "electricity_units"))
                     if not address:
                         address = extract_field(queried, ("customeraddress", "address", "customer_address"))
+                    if not customer_name:
+                        customer_name = extract_field(queried, ("customername", "customer_name", "customer"))
 
         if result.meta is None:
             result.meta = {}
@@ -1187,6 +1192,8 @@ class ClubKonnectBillsProvider:
             result.meta["units"] = units
         if address:
             result.meta["address"] = address
+        if customer_name:
+            result.meta["customer_name"] = customer_name
         return result
 
     def fetch_electricity_discos(self) -> list[dict]:
