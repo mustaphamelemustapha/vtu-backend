@@ -31,6 +31,28 @@ def _seed_kyc_user(db, *, email: str, full_name: str, referral_code: str):
 def test_kyc_bvn_nin_uniqueness():
     db = SessionLocal()
     try:
+        # Clean up target test users to ensure idempotency across test runs
+        import hashlib
+        from app.models.virtual_account import VirtualAccount
+        dummy_bvn_hash = hashlib.sha256("12345678901".encode()).hexdigest()
+        db.query(VirtualAccount).filter(
+            (VirtualAccount.account_number == "9998887771") |
+            VirtualAccount.user_id.in_(
+                db.query(User.id).filter(
+                    (User.email.in_(["kyc1@example.com", "kyc2@example.com"])) | (User.bvn_hash == dummy_bvn_hash)
+                )
+            )
+        ).delete(synchronize_session=False)
+        db.query(Wallet).filter(Wallet.user_id.in_(
+            db.query(User.id).filter(
+                (User.email.in_(["kyc1@example.com", "kyc2@example.com"])) | (User.bvn_hash == dummy_bvn_hash)
+            )
+        )).delete(synchronize_session=False)
+        db.query(User).filter(
+            (User.email.in_(["kyc1@example.com", "kyc2@example.com"])) | (User.bvn_hash == dummy_bvn_hash)
+        ).delete(synchronize_session=False)
+        db.commit()
+
         # Create users
         u1 = _seed_kyc_user(db, email="kyc1@example.com", full_name="KYC User One", referral_code="ref111")
         u2 = _seed_kyc_user(db, email="kyc2@example.com", full_name="KYC User Two", referral_code="ref222")

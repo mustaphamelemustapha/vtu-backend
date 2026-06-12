@@ -140,7 +140,7 @@ def test_clubkonnect_purchase_cable_maps_payload(monkeypatch):
     monkeypatch.setattr(provider, "_request", _fake_request)
     result = provider.purchase_cable("dstv", "1234567890", "dstv-padi", 4400.0, "08141114647")
     assert captured["endpoint"] == "APICableTVV1.asp"
-    assert captured["params"]["CableTV"] == "DStv"
+    assert captured["params"]["CableTV"] == "dstv"
     assert captured["params"]["Package"] == "dstv-padi"
     assert captured["params"]["SmartCardNo"] == "1234567890"
     assert captured["params"]["PhoneNo"] == "08141114647"
@@ -158,8 +158,8 @@ def test_clubkonnect_verify_cable_customer_maps_payload(monkeypatch):
 
     monkeypatch.setattr(provider, "_request", _fake_request)
     result = provider.verify_cable_customer("gotv", "4455667788")
-    assert captured["endpoint"] == "APIVerifyCableTVV1.0.asp"
-    assert captured["params"]["CableTV"] == "GOtv"
+    assert captured["endpoint"] == "APIVerifyCableTVV1.asp"
+    assert captured["params"]["CableTV"] == "gotv"
     assert captured["params"]["SmartCardNo"] == "4455667788"
     assert result["ok"] is True
     assert result["customer_name"] == "BALOGUN SUNDAY"

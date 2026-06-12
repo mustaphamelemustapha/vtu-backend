@@ -27,6 +27,15 @@ class _StubQuery:
     def order_by(self, *args, **kwargs):
         return self
 
+    def correlate(self, *args, **kwargs):
+        return self
+
+    def as_scalar(self, *args, **kwargs):
+        return self
+
+    def label(self, *args, **kwargs):
+        return self
+
     def offset(self, value):
         self._offset = int(value or 0)
         return self
@@ -56,6 +65,9 @@ class _StubSession:
     def query(self, *args, **kwargs):
         # get_current_user -> query(User).filter(...).first()
         if args and getattr(args[0], "__name__", "") == "User":
+            if len(args) > 1:
+                results = [(u, 0) for u in self._users]
+                return _StubQuery(all_results=results, first_result=None)
             return _StubQuery(all_results=self._users, first_result=self._current_user)
         # admin transactions -> query(Transaction, User.email.label(...)).join(...).all()
         if args and getattr(args[0], "__name__", "") == "Transaction":

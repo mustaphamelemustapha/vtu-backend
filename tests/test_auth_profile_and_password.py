@@ -66,6 +66,7 @@ def test_update_me_updates_full_name():
         hashed_password=hash_password("Password123!"),
         reset_token=None,
         reset_token_expires_at=None,
+        phone_number=None,
     )
 
     with _client_with_user(user) as client:
@@ -86,6 +87,7 @@ def test_change_password_rejects_wrong_current_password():
         hashed_password=hash_password("Password123!"),
         reset_token=None,
         reset_token_expires_at=None,
+        phone_number=None,
     )
 
     with _client_with_user(user) as client:
@@ -110,6 +112,7 @@ def test_change_password_updates_hash():
         hashed_password=hash_password("Password123!"),
         reset_token="tok",
         reset_token_expires_at="anything",
+        phone_number=None,
     )
 
     with _client_with_user(user) as client:
@@ -139,6 +142,7 @@ def test_delete_me_deactivates_account():
         reset_token_expires_at="anything",
         verification_token="v_tok",
         verification_token_expires_at="v_anything",
+        phone_number=None,
     )
 
     with _client_with_user(user) as client:
