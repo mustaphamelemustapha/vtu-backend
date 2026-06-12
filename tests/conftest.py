@@ -10,7 +10,7 @@ def _set_test_env() -> None:
         "REFRESH_TOKEN_EXPIRE_DAYS": "7",
         "PASSWORD_BCRYPT_ROUNDS": "4",
         "AUTO_CREATE_TABLES": "false",
-        "DATABASE_URL": "postgresql://user:password@localhost:5432/vtu_test",
+        "DATABASE_URL": "sqlite:///./test.db",
         "REDIS_URL": "",
         "PAYSTACK_SECRET_KEY": "sk_test_xxx",
         "PAYSTACK_WEBHOOK_SECRET": "whsec_test_xxx",
