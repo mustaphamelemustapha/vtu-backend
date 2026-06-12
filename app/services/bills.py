@@ -60,6 +60,7 @@ _EXAM_SERVICE_CONFIG: dict[str, dict[str, list[str]]] = {
 
 _PIN_RE = re.compile(r"\bpin\b\s*[:=]\s*([A-Za-z0-9-]+)", re.IGNORECASE)
 _TOKEN_RE = re.compile(r"\btoken\b\s*[:=]\s*([A-Za-z0-9-]+)", re.IGNORECASE)
+_GENERIC_TOKEN_RE = re.compile(r"\b(?:\d[- ]*){20}\b")
 
 _CLUBKONNECT_SUCCESS_CODES = {100, 199, 200, 201, 300}
 _CLUBKONNECT_PENDING_CODES = {100, 201, 300, 600, 601, 602, 603, 604, 605, 606}
@@ -1116,18 +1117,36 @@ class ClubKonnectBillsProvider:
         def extract_token_field(d: dict) -> str:
             if not d:
                 return ""
-            # Case-insensitive check for common keys
+            # 1. Case-insensitive check for common direct keys
             for k, v in d.items():
                 if k.lower() in ("token", "metertoken", "pin"):
                     val = str(v or "").strip()
                     if val:
                         return val
-            # Search keys containing 'token' or 'pin'
+            # 2. Search keys containing 'token' or 'pin'
             for k, v in d.items():
                 if "token" in k.lower() or "pin" in k.lower():
                     val = str(v or "").strip()
                     if val:
                         return val
+            # 3. Search within text fields (like description, remark, maininfo, message, details) for token patterns
+            for k in ("description", "remark", "maininfo", "message", "details"):
+                val = d.get(k)
+                if val and isinstance(val, str):
+                    # Try _TOKEN_RE first
+                    token_match = _TOKEN_RE.search(val)
+                    if token_match:
+                        return str(token_match.group(1) or "").strip()
+                    # Try a generic 20-digit pattern (Nigeria prepaid STS token standard)
+                    generic_match = _GENERIC_TOKEN_RE.search(val)
+                    if generic_match:
+                        return str(generic_match.group(0) or "").strip()
+                    # Fallback to _extract_token logic if the field mentions token or pin
+                    val_lower = val.lower()
+                    if "token" in val_lower or "pin" in val_lower:
+                        ext = _extract_token(val)
+                        if ext and any(c.isdigit() for c in ext):
+                            return ext
             return ""
 
         token = extract_token_field(final_raw)

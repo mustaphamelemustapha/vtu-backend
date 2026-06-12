@@ -301,3 +301,24 @@ def test_get_bills_provider_falls_back_to_mock_when_forced_without_creds(monkeyp
     monkeypatch.setattr(bills_settings, "clubkonnect_api_key", "", raising=False)
     provider = get_bills_provider()
     assert isinstance(provider, MockBillsProvider)
+
+
+def test_clubkonnect_purchase_electricity_extracts_token(monkeypatch):
+    provider = ClubKonnectBillsProvider()
+    captured = {}
+
+    def _fake_request(endpoint, params):
+        captured["endpoint"] = endpoint
+        captured["params"] = params
+        return {
+            "statuscode": "200",
+            "status": "ORDER_COMPLETED",
+            "OrderID": "CK-ELEC-1",
+            "description": "Token Code: 6464-4560-2879-0511-8019 Units: 15.6 Address: Lagos, Nigeria",
+        }
+
+    monkeypatch.setattr(provider, "_request", _fake_request)
+    result = provider.purchase_electricity("ikedc", "1010101010", "prepaid", 2000.0)
+    assert result.success is True
+    assert (result.meta or {}).get("token") == "6464-4560-2879-0511-8019"
+
