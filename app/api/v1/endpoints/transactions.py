@@ -170,6 +170,39 @@ def list_transactions(user: User = Depends(get_current_user), db: Session = Depe
             }
         )
 
+    # 3. Retrieve historical agent rewards and append them if they don't already exist in base
+    from app.models.agent import AgentReward, AgentRewardStatus
+    rewards = db.query(AgentReward).filter(
+        AgentReward.agent_id == user.id,
+        AgentReward.status == AgentRewardStatus.CREDITED
+    ).all()
+    
+    existing_refs = {tx.reference for tx in base if tx.reference}
+    
+    for r in rewards:
+        ref = r.transaction_reference or f"AG-RWD-{r.campaign_id}-{r.agent_id}-{int(r.created_at.timestamp() if r.created_at else 0)}"
+        if ref in existing_refs:
+            continue
+        
+        campaign_title = r.campaign.title if r.campaign else "Campaign Reward"
+        
+        items.append(
+            {
+                "id": r.id,
+                "created_at": r.created_at,
+                "reference": ref,
+                "network": None,
+                "data_plan_code": None,
+                "amount": r.amount,
+                "status": "success",
+                "tx_type": "agent_reward",
+                "external_reference": None,
+                "failure_reason": "Agent Reward",
+                "meta": {"ledger_description": f"Reward claim for {campaign_title}"},
+                "has_open_report": False,
+            }
+        )
+
     items.sort(key=lambda r: (r.get("created_at") is not None, r.get("created_at")), reverse=True)
     return items
 
