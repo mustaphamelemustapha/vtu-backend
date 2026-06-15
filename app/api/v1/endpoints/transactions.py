@@ -130,9 +130,11 @@ def list_transactions(user: User = Depends(get_current_user), db: Session = Depe
                 tx_type_val = "admin_debit"
             elif str(tx.failure_reason) == "Admin Credit" or (ledger_description and "Admin credit:" in ledger_description):
                 tx_type_val = "admin_credit"
+            elif str(tx.failure_reason) == "Agent Reward" or (ledger_description and "Reward claim" in ledger_description):
+                tx_type_val = "agent_reward"
             
             # Ensure meta exists so frontend can use failure_reason as fallback reason
-            if not meta and tx_type_val in ("admin_credit", "admin_debit"):
+            if not meta and tx_type_val in ("admin_credit", "admin_debit", "agent_reward"):
                 meta = {"ledger_description": str(tx.failure_reason)}
         items.append(
             {

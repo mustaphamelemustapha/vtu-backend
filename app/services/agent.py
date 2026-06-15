@@ -486,6 +486,17 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to credit wallet: {str(e)}")
         
+    # 1b. Create Transaction record
+    tx = Transaction(
+        user_id=user.id,
+        reference=tx_ref,
+        amount=campaign.reward_amount,
+        status=TransactionStatus.SUCCESS,
+        tx_type=TransactionType.WALLET_FUND,
+        failure_reason="Agent Reward",
+    )
+    db.add(tx)
+
     # 2. Record reward
     reward = AgentReward(
         agent_id=user.id,
