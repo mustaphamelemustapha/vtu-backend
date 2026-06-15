@@ -138,6 +138,7 @@ def ensure_tables():
         _ensure_data_plan_text_lengths()
         _ensure_transaction_provider_columns()
         _ensure_campaign_activated_at_column()
+        _ensure_campaign_is_agent_only_column()
         _ensure_user_agent_upgrade_seen_column()
         _ensure_user_kyc_hash_columns()
         return
@@ -158,6 +159,7 @@ def ensure_tables():
     _ensure_data_plan_promo_columns()
     _ensure_data_plan_text_lengths()
     _ensure_transaction_provider_columns()
+    _ensure_campaign_is_agent_only_column()
     _ensure_user_kyc_hash_columns()
 
 
@@ -391,6 +393,23 @@ def _ensure_campaign_activated_at_column() -> None:
         logging.getLogger(__name__).info("Added reward_campaigns.activated_at column.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure reward_campaigns.activated_at column: %s", exc)
+
+
+def _ensure_campaign_is_agent_only_column() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("reward_campaigns"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("reward_campaigns")}
+        if "is_agent_only" in cols:
+            return
+        dialect_name = getattr(engine.dialect, "name", "")
+        bool_default_true = "1" if dialect_name == "sqlite" else "true"
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE reward_campaigns ADD COLUMN is_agent_only BOOLEAN NOT NULL DEFAULT {bool_default_true}"))
+        logging.getLogger(__name__).info("Added reward_campaigns.is_agent_only column.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure reward_campaigns.is_agent_only column: %s", exc)
 
 
 def _ensure_user_agent_upgrade_seen_column() -> None:

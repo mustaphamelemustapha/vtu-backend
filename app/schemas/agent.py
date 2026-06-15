@@ -24,6 +24,8 @@ class RewardCampaignOut(BaseModel):
     is_active: bool
     progress_value: float
     is_qualified: bool
+    is_claimed: bool = False
+    is_agent_only: bool = True
 
     model_config = ConfigDict(from_attributes=True)
 

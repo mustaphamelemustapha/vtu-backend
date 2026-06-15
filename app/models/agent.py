@@ -21,6 +21,7 @@ class RewardCampaign(Base, TimestampMixin):
     reward_amount = Column(Numeric(12, 2), nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     activated_at = Column(DateTime(timezone=True), nullable=True)
+    is_agent_only = Column(Boolean, default=True, nullable=False)
     
     agent_rewards = relationship("AgentReward", back_populates="campaign")
 

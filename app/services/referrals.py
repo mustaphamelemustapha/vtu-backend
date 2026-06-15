@@ -273,27 +273,18 @@ def record_referral_data_activity(db: Session, *, user: User, tx_type: str, amou
     stat.total_transactions = (stat.total_transactions or 0) + 1
     db.flush()
 
-    # 2. Check if this user was referred and is pending qualification
-    referral = db.query(Referral).filter(
-        Referral.referred_user_id == user.id,
-        Referral.status == ReferralStatus.PENDING
-    ).first()
-    
-    if not referral:
-        return None
-
     # Check qualification criteria: e.g. sold 50GB (51200 MB)
     target_mb = 51200.0
-    if float(stat.total_data_mb) >= target_mb:
+    referral = None
+    if float(stat.total_data_mb) >= target_mb and user.role == UserRole.USER:
         # Upgrade user to Agent (RESELLER) role
-        if user.role == UserRole.USER:
-            user.role = UserRole.RESELLER
-            user.agent_upgrade_seen = False
+        user.role = UserRole.RESELLER
+        user.agent_upgrade_seen = False
 
-        # Qualify and grant reward automatically (₦2000 for 50GB referral)
+        # Grant reward automatically (₦2000 welcome reward)
         reward_amount = Decimal("2000.00")
         
-        # 1. Credit the referred user themselves
+        # 1. Credit the user themselves
         from app.services.wallet import get_or_create_wallet, credit_wallet
         user_wallet = get_or_create_wallet(db, user.id, commit=False)
         user_tx_ref = f"AG-RWD-50GB-{user.id}-{int(_utcnow().timestamp())}"
@@ -311,34 +302,40 @@ def record_referral_data_activity(db: Session, *, user: User, tx_type: str, amou
         )
         db.add(user_tx)
 
-        # 2. Credit the referrer
-        referrer = db.query(User).filter(User.id == referral.referrer_id).first()
-        if referrer:
-            wallet = get_or_create_wallet(db, referrer.id, commit=False)
-            tx_ref = f"AG-REF-RWD-{referral.id}-{int(_utcnow().timestamp())}"
-            description = f"Referral reward for {user.full_name or user.email} hitting 50GB"
-            
-            # Credit wallet directly
-            credit_wallet(db, wallet, reward_amount, tx_ref, description, commit=False)
-            
-            # Record Transaction
-            tx = Transaction(
-                user_id=referrer.id,
-                reference=tx_ref,
-                amount=reward_amount,
-                status=TransactionStatus.SUCCESS,
-                tx_type=TransactionType.WALLET_FUND,
-                external_reference=f"REF-{referral.id}",
-                failure_reason="Agent Referral Reward",
-            )
-            db.add(tx)
-            
-            # Update referral
-            referral.qualified_at = _utcnow()
-            referral.rewarded_at = _utcnow()
-            referral.status = ReferralStatus.REWARDED
-            referral.reward_amount = reward_amount
-            referral.reward_transaction_reference = tx_ref
+        # 2. Check if this user was referred and is pending qualification to reward the referrer
+        referral = db.query(Referral).filter(
+            Referral.referred_user_id == user.id,
+            Referral.status == ReferralStatus.PENDING
+        ).first()
+        
+        if referral:
+            referrer = db.query(User).filter(User.id == referral.referrer_id).first()
+            if referrer:
+                wallet = get_or_create_wallet(db, referrer.id, commit=False)
+                tx_ref = f"AG-REF-RWD-{referral.id}-{int(_utcnow().timestamp())}"
+                description = f"Referral reward for {user.full_name or user.email} hitting 50GB"
+                
+                # Credit wallet directly
+                credit_wallet(db, wallet, reward_amount, tx_ref, description, commit=False)
+                
+                # Record Transaction
+                tx = Transaction(
+                    user_id=referrer.id,
+                    reference=tx_ref,
+                    amount=reward_amount,
+                    status=TransactionStatus.SUCCESS,
+                    tx_type=TransactionType.WALLET_FUND,
+                    external_reference=f"REF-{referral.id}",
+                    failure_reason="Agent Referral Reward",
+                )
+                db.add(tx)
+                
+                # Update referral
+                referral.qualified_at = _utcnow()
+                referral.rewarded_at = _utcnow()
+                referral.status = ReferralStatus.REWARDED
+                referral.reward_amount = reward_amount
+                referral.reward_transaction_reference = tx_ref
 
         db.flush()
         

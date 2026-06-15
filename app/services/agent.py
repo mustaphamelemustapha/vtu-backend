@@ -188,7 +188,10 @@ def get_agent_dashboard_stats(db: Session, user: User) -> dict:
     }
 
 def get_active_campaigns(db: Session, user: User) -> list[dict]:
-    campaigns = db.query(RewardCampaign).filter(RewardCampaign.is_active == True).all()
+    query = db.query(RewardCampaign).filter(RewardCampaign.is_active == True)
+    if user.role == UserRole.USER:
+        query = query.filter(RewardCampaign.is_agent_only == False)
+    campaigns = query.all()
 
     results = []
     for camp in campaigns:
@@ -334,7 +337,8 @@ def get_active_campaigns(db: Session, user: User) -> list[dict]:
             "is_active": camp.is_active,
             "progress_value": round(progress, 2),
             "is_qualified": is_qualified,
-            "is_claimed": is_claimed
+            "is_claimed": is_claimed,
+            "is_agent_only": camp.is_agent_only
         })
     return results
 
