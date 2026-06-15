@@ -160,12 +160,31 @@ def _ensure_utc(value: Optional[datetime]) -> Optional[datetime]:
 
 
 @router.get("/analytics")
-
 def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
     now_utc = _utcnow()
     day_start_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start_utc = day_start_utc - timedelta(days=day_start_utc.weekday())
     month_start_utc = day_start_utc.replace(day=1)
+
+    # Initialize calendar month buckets for the last 6 months
+    current_m = month_start_utc
+    months_starts = []
+    for _ in range(6):
+        months_starts.insert(0, current_m)
+        prev_m_end = current_m - timedelta(days=1)
+        current_m = prev_m_end.replace(day=1)
+
+    trend_buckets = []
+    for m_start in months_starts:
+        label = m_start.strftime("%b %y")
+        trend_buckets.append({
+            "start": m_start,
+            "label": label,
+            "revenue": 0.0,
+            "cost_estimate": 0.0,
+            "profit_estimate": 0.0,
+            "tx_count": 0
+        })
 
     total_revenue = db.query(func.sum(Transaction.amount)).filter(Transaction.status == TransactionStatus.SUCCESS).scalar() or 0
     data_revenue = (
@@ -260,16 +279,31 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
                 target["profit_estimate"] += revenue - cost
                 target["tx_count"] += 1
 
+    def _apply_trends(created_at, revenue: float, cost: float):
+        created_utc = _ensure_utc(created_at)
+        if not created_utc:
+            return
+        matched_bucket = None
+        for bucket in trend_buckets:
+            if created_utc >= bucket["start"]:
+                matched_bucket = bucket
+        if matched_bucket:
+            matched_bucket["revenue"] += revenue
+            matched_bucket["cost_estimate"] += cost
+            matched_bucket["profit_estimate"] += revenue - cost
+            matched_bucket["tx_count"] += 1
+
     try:
         data_period_rows = (
             db.query(Transaction.created_at, Transaction.amount, DataPlan.base_price)
             .outerjoin(DataPlan, Transaction.data_plan_code == DataPlan.plan_code)
             .filter(
                 Transaction.status == TransactionStatus.SUCCESS,
-                Transaction.created_at >= month_start_utc,
+                Transaction.created_at >= months_starts[0],
             )
             .all()
         )
+
         for created_at, amount, base_price in data_period_rows:
             revenue_num = float(amount or 0)
             try:
@@ -277,6 +311,7 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
             except Exception:
                 cost_num = revenue_num
             _apply_period_totals(created_at, revenue_num, cost_num)
+            _apply_trends(created_at, revenue_num, cost_num)
 
         if inspect(db.bind).has_table("service_transactions"):
             rows = (
@@ -299,7 +334,7 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
                 db.query(ServiceTransaction.created_at, ServiceTransaction.amount, ServiceTransaction.meta)
                 .filter(
                     ServiceTransaction.status == TransactionStatus.SUCCESS.value,
-                    ServiceTransaction.created_at >= month_start_utc,
+                    ServiceTransaction.created_at >= months_starts[0],
                 )
                 .all()
             )
@@ -311,6 +346,7 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
                 except Exception:
                     cost_num = revenue_num
                 _apply_period_totals(created_at, revenue_num, cost_num)
+                _apply_trends(created_at, revenue_num, cost_num)
         if inspect(db.bind).has_table("transaction_disputes"):
             reports_open = (
                 db.query(func.count(TransactionDispute.id))
@@ -356,6 +392,16 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
             "tx_count": int(values["tx_count"]),
         }
 
+    monthly_trends_payload = []
+    for bucket in trend_buckets:
+        monthly_trends_payload.append({
+            "label": bucket["label"],
+            "revenue": round(float(bucket["revenue"]), 2),
+            "cost_estimate": round(float(bucket["cost_estimate"]), 2),
+            "profit_estimate": round(float(bucket["profit_estimate"]), 2),
+            "tx_count": int(bucket["tx_count"]),
+        })
+
     return {
         "total_revenue": total_revenue,
         "data_revenue": data_revenue,
@@ -381,6 +427,7 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
         "promo_mtn_1gb_remaining": int(promo_remaining),
         "promo_mtn_1gb_active": bool(promo_active),
         "profit_period_estimates": period_profit_payload,
+        "monthly_trends": monthly_trends_payload,
     }
 
 @router.get("/transactions", response_model=AdminTransactionsResponse)
