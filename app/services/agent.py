@@ -315,6 +315,15 @@ def get_active_campaigns(db: Session, user: User) -> list[dict]:
         if progress > float(camp.target_value):
             progress = float(camp.target_value)
 
+        # Check if user has already claimed/received the reward
+        from app.models.agent import AgentRewardStatus
+        existing_reward = db.query(AgentReward).filter(
+            AgentReward.agent_id == user.id,
+            AgentReward.campaign_id == camp.id,
+            AgentReward.status == AgentRewardStatus.CREDITED
+        ).first()
+        is_claimed = existing_reward is not None
+
         results.append({
             "id": camp.id,
             "title": camp.title,
@@ -324,7 +333,8 @@ def get_active_campaigns(db: Session, user: User) -> list[dict]:
             "reward_amount": camp.reward_amount,
             "is_active": camp.is_active,
             "progress_value": round(progress, 2),
-            "is_qualified": is_qualified
+            "is_qualified": is_qualified,
+            "is_claimed": is_claimed
         })
     return results
 

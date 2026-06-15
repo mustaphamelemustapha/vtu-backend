@@ -293,9 +293,27 @@ def record_referral_data_activity(db: Session, *, user: User, tx_type: str, amou
         # Qualify and grant reward automatically (₦2000 for 50GB referral)
         reward_amount = Decimal("2000.00")
         
+        # 1. Credit the referred user themselves
+        from app.services.wallet import get_or_create_wallet, credit_wallet
+        user_wallet = get_or_create_wallet(db, user.id, commit=False)
+        user_tx_ref = f"AG-RWD-50GB-{user.id}-{int(_utcnow().timestamp())}"
+        user_description = f"Welcome reward for hitting 50GB agent threshold"
+        
+        credit_wallet(db, user_wallet, reward_amount, user_tx_ref, user_description, commit=False)
+        
+        user_tx = Transaction(
+            user_id=user.id,
+            reference=user_tx_ref,
+            amount=reward_amount,
+            status=TransactionStatus.SUCCESS,
+            tx_type=TransactionType.WALLET_FUND,
+            failure_reason="Agent Reward",
+        )
+        db.add(user_tx)
+
+        # 2. Credit the referrer
         referrer = db.query(User).filter(User.id == referral.referrer_id).first()
         if referrer:
-            from app.services.wallet import get_or_create_wallet, credit_wallet
             wallet = get_or_create_wallet(db, referrer.id, commit=False)
             tx_ref = f"AG-REF-RWD-{referral.id}-{int(_utcnow().timestamp())}"
             description = f"Referral reward for {user.full_name or user.email} hitting 50GB"
@@ -311,6 +329,7 @@ def record_referral_data_activity(db: Session, *, user: User, tx_type: str, amou
                 status=TransactionStatus.SUCCESS,
                 tx_type=TransactionType.WALLET_FUND,
                 external_reference=f"REF-{referral.id}",
+                failure_reason="Agent Referral Reward",
             )
             db.add(tx)
             
