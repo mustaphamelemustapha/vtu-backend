@@ -232,7 +232,7 @@ def get_active_campaigns(db: Session, user: User) -> list[dict]:
                     if camp_time is None or stx_time >= camp_time:
                         stxs.append(stx)
             
-            if camp.target_metric == "data_volume_gb":
+            if camp.target_metric in ("data_volume_gb", "data_gb"):
                 # Fetch all data plans to map code to exact GB size
                 from app.models.data_plan import DataPlan
                 all_plans = db.query(DataPlan).all()
@@ -272,7 +272,7 @@ def get_active_campaigns(db: Session, user: User) -> list[dict]:
                 progress = total_gb
                 is_qualified = progress >= float(camp.target_value)
                 
-            elif camp.target_metric == "airtime_volume":
+            elif camp.target_metric in ("airtime_volume", "airtime_amount"):
                 airtime_naira = Decimal("0.00")
                 for tx in txs:
                     if tx.tx_type == TransactionType.AIRTIME:
@@ -282,6 +282,10 @@ def get_active_campaigns(db: Session, user: User) -> list[dict]:
                         airtime_naira += stx.amount
                         
                 progress = float(airtime_naira)
+                is_qualified = progress >= float(camp.target_value)
+                
+            elif camp.target_metric == "transactions":
+                progress = float(len(txs) + len(stxs))
                 is_qualified = progress >= float(camp.target_value)
         
         elif camp.campaign_type == CampaignType.REFERRAL:
@@ -393,7 +397,7 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
                 if camp_time is None or stx_time >= camp_time:
                     stxs.append(stx)
         
-        if campaign.target_metric == "data_volume_gb":
+        if campaign.target_metric in ("data_volume_gb", "data_gb"):
             from app.models.data_plan import DataPlan
             all_plans = db.query(DataPlan).all()
             plan_map = {p.plan_code: _parse_size_gb(p.data_size) for p in all_plans}
@@ -432,7 +436,7 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
             progress = total_gb
             is_qualified = progress >= float(campaign.target_value)
             
-        elif campaign.target_metric == "airtime_volume":
+        elif campaign.target_metric in ("airtime_volume", "airtime_amount"):
             airtime_naira = Decimal("0.00")
             for tx in txs:
                 if tx.tx_type == TransactionType.AIRTIME:
@@ -442,6 +446,10 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
                     airtime_naira += stx.amount
                     
             progress = float(airtime_naira)
+            is_qualified = progress >= float(campaign.target_value)
+            
+        elif campaign.target_metric == "transactions":
+            progress = float(len(txs) + len(stxs))
             is_qualified = progress >= float(campaign.target_value)
             
     elif campaign.campaign_type == CampaignType.REFERRAL:
