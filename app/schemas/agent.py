@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 from decimal import Decimal
@@ -27,7 +27,8 @@ class RewardCampaignOut(BaseModel):
     is_claimed: bool = False
     is_agent_only: bool = True
 
-    model_config = ConfigDict(from_attributes=True)
+    class Config:
+        orm_mode = True
 
 class AgentReferralOut(BaseModel):
     id: int

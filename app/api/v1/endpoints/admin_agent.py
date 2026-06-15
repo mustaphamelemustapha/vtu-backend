@@ -69,6 +69,7 @@ def create_campaign(
         reward_amount=payload.reward_amount,
         is_active=payload.is_active,
         activated_at=datetime.now(timezone.utc) if payload.is_active else None,
+        is_agent_only=payload.is_agent_only,
     )
     db.add(campaign)
     db.commit()
@@ -85,6 +86,7 @@ def create_campaign(
                 "target_metric": campaign.target_metric,
                 "target_value": str(campaign.target_value),
                 "reward_amount": str(campaign.reward_amount),
+                "is_agent_only": campaign.is_agent_only,
             },
         )
     )

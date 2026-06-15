@@ -132,6 +132,7 @@ class Settings(BaseSettings):
 
     # App Update Config
     min_app_version: str = "1.0.0"
+    latest_app_version: str = "1.0.0"
     play_store_url: str = "https://play.google.com/store/apps/details?id=com.axisvtu.app"
     app_store_url: str = "https://apps.apple.com/us/app/axisvtu/id6400000000"
 

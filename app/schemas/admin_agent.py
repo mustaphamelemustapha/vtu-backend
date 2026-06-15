@@ -12,6 +12,7 @@ class RewardCampaignCreate(BaseModel):
     target_value: Decimal
     reward_amount: Decimal
     is_active: bool = True
+    is_agent_only: bool = True
 
 
 class RewardCampaignUpdate(BaseModel):
@@ -21,6 +22,7 @@ class RewardCampaignUpdate(BaseModel):
     target_value: Optional[Decimal] = None
     reward_amount: Optional[Decimal] = None
     is_active: Optional[bool] = None
+    is_agent_only: Optional[bool] = None
 
 
 class RewardCampaignOut(BaseModel):
@@ -31,6 +33,7 @@ class RewardCampaignOut(BaseModel):
     target_value: Decimal
     reward_amount: Decimal
     is_active: bool
+    is_agent_only: bool
     created_at: datetime
     updated_at: datetime
 
