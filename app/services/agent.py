@@ -493,7 +493,6 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
         amount=campaign.reward_amount,
         status=AgentRewardStatus.CREDITED,
         transaction_reference=tx_ref,
-        rewarded_at=_utcnow()
     )
     db.add(reward)
     db.commit()
