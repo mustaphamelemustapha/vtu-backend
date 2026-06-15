@@ -19,8 +19,16 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('reward_campaigns', sa.Column('is_agent_only', sa.Boolean(), nullable=False, server_default=sa.true()))
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    columns = [c['name'] for c in inspector.get_columns('reward_campaigns')]
+    if 'is_agent_only' not in columns:
+        op.add_column('reward_campaigns', sa.Column('is_agent_only', sa.Boolean(), nullable=False, server_default=sa.true()))
 
 
 def downgrade() -> None:
-    op.drop_column('reward_campaigns', 'is_agent_only')
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    columns = [c['name'] for c in inspector.get_columns('reward_campaigns')]
+    if 'is_agent_only' in columns:
+        op.drop_column('reward_campaigns', 'is_agent_only')
