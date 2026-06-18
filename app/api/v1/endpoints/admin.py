@@ -1962,6 +1962,37 @@ def create_data_plan(payload: DataPlanUpdate, admin: User = Depends(require_admi
     return plan
 
 
+@router.delete("/data-plans/{plan_id}")
+def delete_data_plan(
+    plan_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)
+):
+    """
+    Manually delete a specific data plan.
+    """
+    plan = db.query(DataPlan).filter(DataPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Data plan not found")
+
+    plan_code = plan.plan_code
+    db.delete(plan)
+
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action="data_plan_delete",
+        target=str(plan_id),
+        details={"plan_code": plan_code, "network": plan.network},
+    )
+    db.add(audit_log)
+    db.commit()
+
+    try:
+        _invalidate_plans_cache()
+    except Exception:
+        pass
+
+    return {"status": "ok", "message": f"Data plan {plan_code} successfully deleted."}
+
+
 @router.post("/users/reset-virtual-accounts")
 def admin_reset_virtual_accounts(
     email: str = Query(..., description="Email address of the user to reset accounts for"),
