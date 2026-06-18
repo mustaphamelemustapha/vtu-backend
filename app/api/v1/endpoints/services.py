@@ -220,6 +220,14 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
     existing = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == user.id, ServiceTransaction.reference == reference).first()
     if existing:
         return {"reference": existing.reference, "status": existing.status, "message": existing.failure_reason or ""}
+    # 1. DEBIT WALLET
+    try:
+        debit_wallet(db, wallet, charge_amount, reference, "Airtime purchase")
+    except Exception as e:
+        logger.error(f"Wallet debit failed: {e}")
+        raise HTTPException(status_code=400, detail="Wallet debit failed.")
+
+    # 2. CREATE PENDING TRANSACTION
     tx = ServiceTransaction(
         user_id=user.id,
         reference=reference,
@@ -239,8 +247,6 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
     db.add(tx)
     db.commit()
     db.refresh(tx)
-
-    debit_wallet(db, wallet, charge_amount, reference, "Airtime purchase")
 
     provider = get_bills_provider()
     try:
@@ -327,6 +333,14 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
     existing = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == user.id, ServiceTransaction.reference == reference).first()
     if existing:
         return {"reference": existing.reference, "status": existing.status, "message": existing.failure_reason or ""}
+    # 1. DEBIT WALLET
+    try:
+        debit_wallet(db, wallet, charge_amount, reference, "Cable subscription")
+    except Exception as e:
+        logger.error(f"Wallet debit failed: {e}")
+        raise HTTPException(status_code=400, detail="Wallet debit failed.")
+
+    # 2. CREATE PENDING TRANSACTION
     tx = ServiceTransaction(
         user_id=user.id,
         reference=reference,
@@ -350,8 +364,6 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
     db.add(tx)
     db.commit()
     db.refresh(tx)
-
-    debit_wallet(db, wallet, charge_amount, reference, "Cable subscription")
 
     provider = get_bills_provider()
     try:
@@ -513,6 +525,14 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
     existing = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == user.id, ServiceTransaction.reference == reference).first()
     if existing:
         return {"reference": existing.reference, "status": existing.status, "message": existing.failure_reason or "", "token": (existing.meta or {}).get("token")}
+    # 1. DEBIT WALLET
+    try:
+        debit_wallet(db, wallet, charge_amount, reference, "Electricity purchase")
+    except Exception as e:
+        logger.error(f"Wallet debit failed: {e}")
+        raise HTTPException(status_code=400, detail="Wallet debit failed.")
+
+    # 2. CREATE PENDING TRANSACTION
     tx = ServiceTransaction(
         user_id=user.id,
         reference=reference,
@@ -535,8 +555,6 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
     db.add(tx)
     db.commit()
     db.refresh(tx)
-
-    debit_wallet(db, wallet, charge_amount, reference, "Electricity purchase")
 
     provider = get_bills_provider()
     try:
@@ -737,6 +755,14 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
     existing = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == user.id, ServiceTransaction.reference == reference).first()
     if existing:
         return {"reference": existing.reference, "status": existing.status, "message": existing.failure_reason or "", "pins": (existing.meta or {}).get("pins", [])}
+    # 1. DEBIT WALLET
+    try:
+        debit_wallet(db, wallet, charge_amount, reference, "Exam pin purchase")
+    except Exception as e:
+        logger.error(f"Wallet debit failed: {e}")
+        raise HTTPException(status_code=400, detail="Wallet debit failed.")
+
+    # 2. CREATE PENDING TRANSACTION
     tx = ServiceTransaction(
         user_id=user.id,
         reference=reference,
@@ -761,8 +787,6 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
     db.add(tx)
     db.commit()
     db.refresh(tx)
-
-    debit_wallet(db, wallet, charge_amount, reference, "Exam pin purchase")
 
     try:
         result = provider.purchase_exam_pin(

@@ -456,12 +456,12 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
     try:
         provider_name = str(plan.provider or "").strip().lower()
 
-        if provider_name == "smeplug":
+        if provider_name in ("smeplug", "sim"):
             sme = SMEPlugProvider()
             sme_network_map = {"mtn": 1, "airtel": 2, "9mobile": 3, "glo": 4}
             net_id = sme_network_map.get(network_key, 2)
             provider_res = sme.purchase_network_data(net_id, phone, plan.provider_plan_id or plan.plan_code, reference)
-            transaction.provider = "smeplug"
+            transaction.provider = provider_name
 
         elif provider_name == "amigo" or (not provider_name and network_key in {"mtn", "glo", "airtel", "9mobile"}):
             amigo = AmigoClient()

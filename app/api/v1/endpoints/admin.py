@@ -2030,3 +2030,80 @@ def update_user_role(
         "new_role": raw_role
     }
 
+
+from app.models.referral import ReferralStatus
+
+@router.post("/referrals/{referral_id}/manual-reward")
+def manual_reward_referral(
+    referral_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Manually mark a referral as rewarded because the admin has already rewarded them manually.
+    Bypasses wallet crediting.
+    """
+    referral = db.query(Referral).filter(Referral.id == referral_id).first()
+    if not referral:
+        raise HTTPException(status_code=404, detail="Referral not found")
+        
+    if referral.status == ReferralStatus.REWARDED:
+        raise HTTPException(status_code=400, detail="Referral is already marked as rewarded")
+
+    import uuid
+    tx_ref = f"MANUAL_REWARD_{uuid.uuid4().hex[:8].upper()}"
+    
+    referral.status = ReferralStatus.REWARDED
+    referral.rewarded_at = datetime.now(timezone.utc)
+    referral.reward_transaction_reference = tx_ref
+    
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action="referral_manual_reward",
+        target=str(referral_id),
+        details={"referrer_id": referral.referrer_id, "referred_user_id": referral.referred_user_id, "tx_ref": tx_ref},
+    )
+    db.add(audit_log)
+    db.commit()
+    
+    return {"status": "ok", "message": "Referral successfully marked as manually rewarded.", "referral_id": referral_id}
+
+
+@router.post("/referrals/{referral_id}/revoke")
+def revoke_referral(
+    referral_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Revoke a referral connection. Removes the referrer link from the referred user 
+    and deletes/deactivates the referral record to prevent future automatic qualification or reward.
+    """
+    referral = db.query(Referral).filter(Referral.id == referral_id).first()
+    if not referral:
+        raise HTTPException(status_code=404, detail="Referral not found")
+
+    # Set referred user's referred_by_id to None
+    referred_user = db.query(User).filter(User.id == referral.referred_user_id).first()
+    if referred_user:
+        referred_user.referred_by_id = None
+        
+    # Delete the referral record completely
+    db.delete(referral)
+    
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action="referral_revoke",
+        target=str(referral_id),
+        details={
+            "referrer_id": referral.referrer_id,
+            "referred_user_id": referral.referred_user_id,
+            "message": "Referral record deleted and referred_by_id cleared"
+        },
+    )
+    db.add(audit_log)
+    db.commit()
+    
+    return {"status": "ok", "message": "Referral successfully revoked and connection cleared."}
+
+

@@ -44,6 +44,18 @@ class Referral(Base, TimestampMixin):
         cascade="all, delete-orphan",
     )
 
+    @property
+    def referrer_email(self) -> str:
+        return self.referrer.email if self.referrer else ""
+
+    @property
+    def referred_id(self) -> int:
+        return self.referred_user_id
+
+    @property
+    def referred_email(self) -> str:
+        return self.referred_user.email if self.referred_user else ""
+
 
 class ReferralContribution(Base, TimestampMixin):
     __tablename__ = "referral_contributions"
