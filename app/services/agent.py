@@ -345,7 +345,15 @@ def get_active_campaigns(db: Session, user: User) -> list[dict]:
 def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
     from app.models.agent import AgentRewardStatus
     from fastapi import HTTPException
+    from app.models.wallet import Wallet
+    from app.services.wallet import get_or_create_wallet
     
+    # Lock the user's wallet row to serialize claims and avoid parallel race conditions
+    wallet = db.query(Wallet).filter(Wallet.user_id == user.id).with_for_update().first()
+    if not wallet:
+        wallet = get_or_create_wallet(db, user.id)
+        wallet = db.query(Wallet).filter(Wallet.user_id == user.id).with_for_update().first()
+
     # Check if campaign exists and is active
     campaign = db.query(RewardCampaign).filter(
         RewardCampaign.id == campaign_id,
@@ -491,8 +499,7 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
         
     # Claim the reward
     # 1. Credit wallet
-    from app.services.wallet import get_or_create_wallet, credit_wallet
-    wallet = get_or_create_wallet(db, user.id)
+    from app.services.wallet import credit_wallet
     tx_ref = f"AG-RWD-{campaign.id}-{user.id}-{int(_utcnow().timestamp())}"
     
     try:

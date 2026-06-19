@@ -21,6 +21,9 @@ class _StubQuery:
     def all(self):
         return self._all
 
+    def first(self):
+        return self._all[0] if self._all else None
+
     def count(self):
         return len(self._all)
 
@@ -49,7 +52,8 @@ def test_get_active_campaigns_filters_by_activation_time():
         reward_amount=Decimal("1000.00"),
         is_active=True,
         created_at=now - timedelta(hours=5),
-        activated_at=now - timedelta(hours=1)
+        activated_at=now - timedelta(hours=1),
+        is_agent_only=True
     )
     
     # Transaction created 2 hours ago (before activation)
