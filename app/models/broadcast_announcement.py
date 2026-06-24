@@ -24,6 +24,8 @@ class BroadcastAnnouncement(Base, TimestampMixin):
     starts_at = Column(DateTime(timezone=True), nullable=True)
     ends_at = Column(DateTime(timezone=True), nullable=True)
     created_by_email = Column(String(255), nullable=True)
+    button_label = Column(String(50), nullable=True)
+    button_link = Column(String(255), nullable=True)
 
 
 Index(

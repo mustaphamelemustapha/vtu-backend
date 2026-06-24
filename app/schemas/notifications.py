@@ -14,6 +14,8 @@ class BroadcastAnnouncementOut(BaseModel):
     ends_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     created_by_email: Optional[str] = None
+    button_label: Optional[str] = None
+    button_link: Optional[str] = None
 
     class Config:
         orm_mode = True
@@ -26,6 +28,8 @@ class BroadcastAnnouncementCreate(BaseModel):
     is_active: bool = True
     starts_at: Optional[datetime] = None
     ends_at: Optional[datetime] = None
+    button_label: Optional[str] = Field(default=None, max_length=50)
+    button_link: Optional[str] = Field(default=None, max_length=255)
 
 
 class BroadcastAnnouncementUpdate(BaseModel):
@@ -35,3 +39,5 @@ class BroadcastAnnouncementUpdate(BaseModel):
     is_active: Optional[bool] = None
     starts_at: Optional[datetime] = None
     ends_at: Optional[datetime] = None
+    button_label: Optional[str] = Field(default=None, max_length=50)
+    button_link: Optional[str] = Field(default=None, max_length=255)

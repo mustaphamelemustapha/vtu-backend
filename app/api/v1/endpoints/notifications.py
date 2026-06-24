@@ -73,6 +73,8 @@ def _to_out(item: BroadcastAnnouncement) -> dict:
         "ends_at": item.ends_at,
         "created_at": item.created_at,
         "created_by_email": item.created_by_email,
+        "button_label": item.button_label,
+        "button_link": item.button_link,
     }
 
 
@@ -139,6 +141,8 @@ def admin_create_broadcast(
         starts_at=starts_at,
         ends_at=ends_at,
         created_by_email=admin.email,
+        button_label=payload.button_label.strip() if payload.button_label else None,
+        button_link=payload.button_link.strip() if payload.button_link else None,
     )
     db.add(row)
     db.commit()
@@ -190,6 +194,14 @@ def admin_update_broadcast(
         row.starts_at = _as_utc(payload.starts_at)
     if "ends_at" in fields_set:
         row.ends_at = _as_utc(payload.ends_at)
+    if "button_label" in fields_set:
+        row.button_label = payload.button_label.strip() if payload.button_label else None
+    if "button_link" in fields_set:
+        row.button_link = payload.button_link.strip() if payload.button_link else None
+
+    _validate_window(_as_utc(row.starts_at), _as_utc(row.ends_at))
+    db.commit()
+    db.refresh(row)
 
     _validate_window(_as_utc(row.starts_at), _as_utc(row.ends_at))
     db.commit()

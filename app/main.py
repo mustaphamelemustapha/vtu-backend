@@ -141,6 +141,7 @@ def ensure_tables():
         _ensure_campaign_is_agent_only_column()
         _ensure_user_agent_upgrade_seen_column()
         _ensure_user_kyc_hash_columns()
+        _ensure_broadcast_announcement_button_columns()
         return
 
     # Optional local fallback for fresh environments.
@@ -161,6 +162,7 @@ def ensure_tables():
     _ensure_transaction_provider_columns()
     _ensure_campaign_is_agent_only_column()
     _ensure_user_kyc_hash_columns()
+    _ensure_broadcast_announcement_button_columns()
 
 
 @app.on_event("shutdown")
@@ -444,6 +446,23 @@ def _ensure_user_kyc_hash_columns() -> None:
                 logging.getLogger(__name__).info("Added users.nin_hash column and index.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure users.bvn_hash/nin_hash columns: %s", exc)
+
+
+def _ensure_broadcast_announcement_button_columns() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("broadcast_announcements"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("broadcast_announcements")}
+        with engine.begin() as conn:
+            if "button_label" not in cols:
+                conn.execute(text("ALTER TABLE broadcast_announcements ADD COLUMN button_label VARCHAR(50) NULL"))
+                logging.getLogger(__name__).info("Added broadcast_announcements.button_label column.")
+            if "button_link" not in cols:
+                conn.execute(text("ALTER TABLE broadcast_announcements ADD COLUMN button_link VARCHAR(255) NULL"))
+                logging.getLogger(__name__).info("Added broadcast_announcements.button_link column.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure broadcast_announcements button columns: %s", exc)
 
 
 @app.get("/healthz")
