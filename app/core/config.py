@@ -133,8 +133,8 @@ class Settings(BaseSettings):
     # App Update Config
     min_app_version: str = "1.0.0"
     latest_app_version: str = "1.0.0"
-    play_store_url: str = "https://play.google.com/store/apps/details?id=com.axisvtu.app"
-    app_store_url: str = "https://apps.apple.com/us/app/axisvtu/id6400000000"
+    play_store_url: str = "https://play.google.com/store/apps/details?id=com.mmtech.axisvtu"
+    app_store_url: str = "https://apps.apple.com/ng/app/mele-data/id6779367547"
 
     # Email (password reset)
     email_provider: str = "console"  # console|resend|smtp|brevo
