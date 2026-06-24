@@ -425,8 +425,9 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
 
     # 2. Clear Database Monnify Cache & Re-generate (Hard Refresh)
     import hashlib
-    bvn = (payload.bvn or "").strip()
-    nin = (payload.nin or "").strip()
+    import re
+    bvn = re.sub(r"\D", "", (payload.bvn or "").strip())
+    nin = re.sub(r"\D", "", (payload.nin or "").strip())
 
     bvn_hash_val = None
     nin_hash_val = None

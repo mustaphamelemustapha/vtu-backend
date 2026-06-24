@@ -527,7 +527,14 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
         transaction_reference=tx_ref,
     )
     db.add(reward)
-    db.commit()
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        from sqlalchemy.exc import IntegrityError
+        if isinstance(e, IntegrityError):
+            raise HTTPException(status_code=400, detail="Reward already claimed or in progress.")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     
     return {
         "success": True,

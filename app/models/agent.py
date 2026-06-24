@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, Integer, String, Boolean, Enum, ForeignKey, Numeric, DateTime, Index
+from sqlalchemy import Column, Integer, String, Boolean, Enum, ForeignKey, Numeric, DateTime, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 from app.models.base import TimestampMixin
@@ -34,6 +34,9 @@ class AgentRewardStatus(str, enum.Enum):
 
 class AgentReward(Base, TimestampMixin):
     __tablename__ = "agent_rewards"
+    __table_args__ = (
+        UniqueConstraint("agent_id", "campaign_id", name="uq_agent_campaign"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     agent_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
