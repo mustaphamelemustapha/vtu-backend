@@ -256,10 +256,14 @@ async def billstack_webhook(request: Request, db: Session = Depends(get_db)):
     signature = request.headers.get("x-billstack-signature") or request.headers.get("billstack-signature")
     body = await request.body()
     
-    # Optional signature check if configured
-    if settings.billstack_webhook_secret or settings.billstack_api_key:
+    # Verify signature only if billstack_webhook_secret is explicitly configured
+    if settings.billstack_webhook_secret:
         if not signature or not verify_billstack_signature(body, signature):
+            logger.error("Billstack Webhook: Invalid signature")
             raise HTTPException(status_code=401, detail="Invalid signature")
+    elif signature:
+        is_valid = verify_billstack_signature(body, signature)
+        logger.info("Billstack Webhook: Signature present. Verification result: %s", is_valid)
 
     payload = await request.json()
     logger.info("Billstack Webhook received: %s", payload)
@@ -267,7 +271,7 @@ async def billstack_webhook(request: Request, db: Session = Depends(get_db)):
     event = payload.get("event")
     data = payload.get("eventData", {}) or payload.get("data", {})
     
-    if event != "PAYMENT_NOTIFIFICATION":
+    if event not in {"PAYMENT_NOTIFICATION", "PAYMENT_NOTIFIFICATION"}:
         logger.info("Billstack Webhook: Ignored event type %s", event)
         return {"status": "ignored"}
         
