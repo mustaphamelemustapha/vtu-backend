@@ -9,6 +9,7 @@ from app.core.database import get_db
 from app.models import Transaction, TransactionStatus, TransactionType, User
 from app.services.wallet import get_or_create_wallet, credit_wallet
 from app.services.monnify import verify_monnify_signature
+from app.services.billstack import verify_billstack_signature
 from app.core.config import get_settings
 from app.api.v1.endpoints.wallet import _maybe_reward_first_deposit, _safe_ref
 from app.models.virtual_account import VirtualAccount, VirtualAccountProvider
@@ -246,6 +247,132 @@ async def monnify_webhook(request: Request, db: Session = Depends(get_db)):
             transaction.status = TransactionStatus.FAILED
             transaction.external_reference = data.get("transactionReference") or data.get("paymentReference")
             db.commit()
+
+    return {"status": "ok"}
+
+
+@router.post("/billstack")
+async def billstack_webhook(request: Request, db: Session = Depends(get_db)):
+    signature = request.headers.get("x-billstack-signature") or request.headers.get("billstack-signature")
+    body = await request.body()
+    
+    # Optional signature check if configured
+    if settings.billstack_webhook_secret or settings.billstack_api_key:
+        if not signature or not verify_billstack_signature(body, signature):
+            raise HTTPException(status_code=401, detail="Invalid signature")
+
+    payload = await request.json()
+    logger.info("Billstack Webhook received: %s", payload)
+
+    event = payload.get("event")
+    data = payload.get("eventData", {}) or payload.get("data", {})
+    
+    if event != "PAYMENT_NOTIFIFICATION":
+        logger.info("Billstack Webhook: Ignored event type %s", event)
+        return {"status": "ignored"}
+        
+    tx_type = data.get("type")
+    if tx_type != "RESERVED_ACCOUNT_TRANSACTION":
+        logger.info("Billstack Webhook: Ignored transaction type %s", tx_type)
+        return {"status": "ignored"}
+
+    reference = data.get("reference")
+    merchant_reference = data.get("merchant_reference")
+    amount_str = data.get("amount")
+
+    if not amount_str:
+        logger.warning("Billstack Webhook: Missing amount")
+        return {"status": "ignored"}
+
+    amount = Decimal(str(amount_str))
+
+    # Resolve User:
+    # 1. Parse user_id from merchant_reference (which would be of format "AXISVTU_{user_id}_billstack_...")
+    user = None
+    if merchant_reference:
+        ref_str = str(merchant_reference).strip()
+        if ref_str.startswith("AXISVTU_"):
+            try:
+                user_id = int(ref_str.split("_")[1])
+                user = db.query(User).filter(User.id == user_id).first()
+                if user:
+                    logger.info("Billstack Webhook: Resolved user ID %d directly from merchant_reference %s", user.id, ref_str)
+            except (ValueError, IndexError):
+                pass
+        
+        if not user:
+            # Query VirtualAccount table by customer_reference / reservation_reference
+            va = db.query(VirtualAccount).filter(
+                (VirtualAccount.reservation_reference == ref_str) |
+                (VirtualAccount.customer_reference == ref_str)
+            ).first()
+            if va:
+                user = va.user
+                if user:
+                    logger.info("Billstack Webhook: Resolved user ID %d from VirtualAccount by merchant_reference %s", user.id, ref_str)
+
+    # 2. Resolve user by destination account number (from data["account"]["account_number"])
+    if not user:
+        account_data = data.get("account") or {}
+        acc_num = account_data.get("account_number")
+        if acc_num:
+            va = db.query(VirtualAccount).filter(
+                VirtualAccount.account_number == str(acc_num).strip(),
+                VirtualAccount.provider == VirtualAccountProvider.BILLSTACK
+            ).first()
+            if va:
+                user = va.user
+                if user:
+                    logger.info("Billstack Webhook: Resolved user ID %d from VirtualAccount table by account number %s", user.id, acc_num)
+
+    # 3. Fallback: Resolve user by email
+    if not user:
+        email = payload.get("meta", {}).get("email") or payload.get("customer", {}).get("email")
+        if email:
+            user = db.query(User).filter(User.email == str(email).strip().lower()).first()
+            if user:
+                logger.info("Billstack Webhook: Resolved user ID %d by email %s as fallback", user.id, email)
+
+    if not user:
+        logger.warning("Billstack Webhook: Could not resolve user for transaction %s. Merchant Reference: %s", reference, merchant_reference)
+        return {"status": "ignored"}
+
+    # Unique check via external reference (billstack reference)
+    if reference and (existing := db.query(Transaction).filter(Transaction.external_reference == reference).first()):
+        _maybe_reward_first_deposit(
+            db,
+            user=existing.user,
+            reference=existing.reference,
+            amount=Decimal(existing.amount),
+            status=existing.status,
+        )
+        return {"status": "ok"}
+
+    tx_ref = _safe_ref("TRF", str(reference or secrets.token_hex(8)))
+    tx = Transaction(
+        user_id=user.id,
+        reference=tx_ref,
+        amount=amount,
+        status=TransactionStatus.SUCCESS,
+        tx_type=TransactionType.WALLET_FUND,
+        external_reference=str(reference) if reference else None,
+    )
+    try:
+        db.add(tx)
+        wallet = get_or_create_wallet(db, user.id)
+        credit_wallet(db, wallet, amount, tx_ref, "Wallet funding via bank transfer (Billstack)")
+        db.commit()
+        _maybe_reward_first_deposit(
+            db,
+            user=user,
+            reference=tx_ref,
+            amount=amount,
+            status=TransactionStatus.SUCCESS,
+        )
+        logger.info("Billstack Webhook: Successfully credited user ID %d with NGN %s (Ref: %s)", user.id, amount, tx_ref)
+    except IntegrityError:
+        db.rollback()
+        return {"status": "ok"}
 
     return {"status": "ok"}
 

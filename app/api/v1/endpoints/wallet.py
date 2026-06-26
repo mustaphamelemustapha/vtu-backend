@@ -27,6 +27,10 @@ from app.services.monnify import (
     get_reserved_account_details,
     update_monnify_kyc_info,
 )
+from app.services.billstack import (
+    generate_billstack_virtual_account,
+    upgrade_billstack_kyc,
+)
 from app.middlewares.rate_limit import limiter
 from app.models import WalletLedger
 from app.models.virtual_account import VirtualAccount, VirtualAccountProvider, VirtualAccountStatus
@@ -333,7 +337,64 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
                 "account_name": db_acc.account_name,
             })
 
-    # Sort accounts: Moniepoint first
+    # 3. Fetch/Create Billstack Reserved Account
+    if settings.billstack_enabled:
+        db_billstack = db.query(VirtualAccount).filter(
+            VirtualAccount.user_id == user.id,
+            VirtualAccount.provider == VirtualAccountProvider.BILLSTACK
+        ).all()
+
+        if not db_billstack:
+            try:
+                first = (user.full_name or "").strip().split(" ")[0] or "Mele"
+                last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
+                resp = generate_billstack_virtual_account(
+                    email=user.email,
+                    reference=f"{account_reference}_billstack_{settings.billstack_preferred_bank.lower()}",
+                    phone=user.phone_number or "",
+                    first_name=first,
+                    last_name=last,
+                    bank=settings.billstack_preferred_bank,
+                )
+                if resp.get("status") is True:
+                    data = resp.get("data", {})
+                    accounts = data.get("account") or []
+                    reservation_ref = data.get("reference") or secrets.token_hex(8)
+                    for acc in accounts:
+                        db_acc = VirtualAccount(
+                            user_id=user.id,
+                            provider=VirtualAccountProvider.BILLSTACK,
+                            account_number=acc["account_number"],
+                            account_name=acc["account_name"],
+                            bank_name=acc["bank_name"],
+                            bank_code=acc.get("bank_id", "000"),
+                            customer_reference=f"{account_reference}_billstack_{settings.billstack_preferred_bank.lower()}",
+                            reservation_reference=reservation_ref,
+                            status=VirtualAccountStatus.ACTIVE,
+                        )
+                        db.add(db_acc)
+                    db.commit()
+                    for acc in accounts:
+                        all_accounts.append({
+                            "bank_name": acc["bank_name"],
+                            "account_number": acc["account_number"],
+                            "account_name": acc["account_name"],
+                        })
+                else:
+                    messages.append("Billstack account generation is pending.")
+            except Exception as exc:
+                db.rollback()
+                logger.warning("Auto-generate Billstack account failed: %s", exc)
+                messages.append(f"Billstack: {exc}")
+        else:
+            for db_acc in db_billstack:
+                all_accounts.append({
+                    "bank_name": db_acc.bank_name,
+                    "account_number": db_acc.account_number,
+                    "account_name": db_acc.account_name,
+                })
+
+    # Sort accounts: Moniepoint/Monnify first
     all_accounts.sort(key=lambda acc: 0 if "moniepoint" in str(acc.get("bank_name", "")).lower() or "monnify" in str(acc.get("bank_name", "")).lower() else 1)
 
     return {
@@ -529,6 +590,64 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
         requires_kyc = True
         messages.append(f"Monnify: {exc}")
 
+    # 3. Recreate / Update Billstack Reserved Account
+    if settings.billstack_enabled:
+        db.query(VirtualAccount).filter(
+            VirtualAccount.user_id == user.id,
+            VirtualAccount.provider == VirtualAccountProvider.BILLSTACK
+        ).delete()
+        db.commit()
+
+        try:
+            first = (user.full_name or "").strip().split(" ")[0] or "Mele"
+            last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
+            resp = generate_billstack_virtual_account(
+                email=user.email,
+                reference=f"{account_reference}_billstack_{settings.billstack_preferred_bank.lower()}",
+                phone=user.phone_number or "",
+                first_name=first,
+                last_name=last,
+                bank=settings.billstack_preferred_bank,
+            )
+            if resp.get("status") is True:
+                data = resp.get("data", {})
+                accounts = data.get("account") or []
+                reservation_ref = data.get("reference") or secrets.token_hex(8)
+                for acc in accounts:
+                    db_acc = VirtualAccount(
+                        user_id=user.id,
+                        provider=VirtualAccountProvider.BILLSTACK,
+                        account_number=acc["account_number"],
+                        account_name=acc["account_name"],
+                        bank_name=acc["bank_name"],
+                        bank_code=acc.get("bank_id", "000"),
+                        customer_reference=f"{account_reference}_billstack_{settings.billstack_preferred_bank.lower()}",
+                        reservation_reference=reservation_ref,
+                        status=VirtualAccountStatus.ACTIVE,
+                        )
+                    db.add(db_acc)
+                db.commit()
+                for acc in accounts:
+                    all_accounts.append({
+                        "bank_name": acc["bank_name"],
+                        "account_number": acc["account_number"],
+                        "account_name": acc["account_name"],
+                    })
+                
+                # Upgrade KYC if BVN is provided
+                if bvn:
+                    try:
+                        upgrade_billstack_kyc(email=user.email, bvn=bvn)
+                    except Exception as kyc_exc:
+                        logger.warning("Billstack KYC upgrade failed: %s", kyc_exc)
+                        messages.append(f"Billstack KYC: {kyc_exc}")
+            else:
+                messages.append("Failed to reserve Billstack account.")
+        except Exception as exc:
+            db.rollback()
+            logger.warning("Recreate Billstack account failed: %s", exc)
+            messages.append(f"Billstack: {exc}")
+
     if not all_accounts and messages:
         raise HTTPException(status_code=502, detail=" | ".join(messages))
 
@@ -549,7 +668,7 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
 def delete_bank_transfer_accounts(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     db.query(VirtualAccount).filter(
         VirtualAccount.user_id == user.id,
-        VirtualAccount.provider == VirtualAccountProvider.MONNIFY
+        VirtualAccount.provider.in_([VirtualAccountProvider.MONNIFY, VirtualAccountProvider.BILLSTACK])
     ).delete()
     db.commit()
     return {"status": "success", "message": "Virtual accounts cache successfully deleted."}
@@ -562,7 +681,7 @@ def temp_reset_virtual_accounts(email: str, db: Session = Depends(get_db), admin
         return {"status": "error", "message": "User not found"}
     deleted = db.query(VirtualAccount).filter(
         VirtualAccount.user_id == user.id,
-        VirtualAccount.provider == VirtualAccountProvider.MONNIFY
+        VirtualAccount.provider.in_([VirtualAccountProvider.MONNIFY, VirtualAccountProvider.BILLSTACK])
     ).delete()
     db.commit()
     return {"status": "success", "message": f"Successfully deleted {deleted} cached accounts for {email}."}

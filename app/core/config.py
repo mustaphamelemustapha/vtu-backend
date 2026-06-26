@@ -69,6 +69,12 @@ class Settings(BaseSettings):
     monnify_currency: str = "NGN"
     monnify_payment_methods: str = "CARD,ACCOUNT_TRANSFER,USSD"
 
+    # Billstack
+    billstack_api_key: str = ""
+    billstack_webhook_secret: Optional[str] = None
+    billstack_enabled: bool = False
+    billstack_preferred_bank: str = "PALMPAY"
+
     # Amigo API
     amigo_base_url: AnyHttpUrl
     amigo_api_key: str

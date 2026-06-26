@@ -7,6 +7,7 @@ from app.models.base import TimestampMixin
 class VirtualAccountProvider(str, enum.Enum):
     MONNIFY = "monnify"
     PAYSTACK = "paystack"
+    BILLSTACK = "billstack"
 
 class VirtualAccountStatus(str, enum.Enum):
     ACTIVE = "active"
