@@ -795,8 +795,15 @@ async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
 
     if event == "charge.success" and transaction:
         if transaction.status != TransactionStatus.SUCCESS:
+            auth = data.get("authorization") or {}
+            sender_name = auth.get("sender_name")
+            if sender_name:
+                sender_name = str(sender_name).strip()
+            else:
+                sender_name = None
             wallet = get_or_create_wallet(db, transaction.user_id)
-            credit_wallet(db, wallet, Decimal(transaction.amount), reference, "Wallet funding via Paystack")
+            desc = f"Wallet funding from {sender_name}" if sender_name else "Wallet funding via Paystack"
+            credit_wallet(db, wallet, Decimal(transaction.amount), reference, desc, sender_name=sender_name)
             transaction.status = TransactionStatus.SUCCESS
             transaction.external_reference = data.get("id")
             db.commit()
@@ -834,8 +841,15 @@ async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
             )
             try:
                 db.add(tx)
+                auth = data.get("authorization") or {}
+                sender_name = auth.get("sender_name")
+                if sender_name:
+                    sender_name = str(sender_name).strip()
+                else:
+                    sender_name = None
                 wallet = get_or_create_wallet(db, user.id)
-                credit_wallet(db, wallet, amt, tx_ref, "Wallet funding via Paystack transfer")
+                desc = f"Wallet funding from {sender_name}" if sender_name else "Wallet funding via Paystack transfer"
+                credit_wallet(db, wallet, amt, tx_ref, desc, sender_name=sender_name)
                 db.commit()
                 _maybe_reward_first_deposit(
                     db,

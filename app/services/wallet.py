@@ -40,6 +40,7 @@ def credit_wallet(
     description: str,
     *,
     commit: bool = True,
+    sender_name: str | None = None,
 ) -> WalletLedger:
     if wallet.is_locked:
         raise HTTPException(status_code=423, detail="Wallet is locked")
@@ -83,10 +84,14 @@ def credit_wallet(
         try:
             if wallet.user and wallet.user.fcm_token:
                 from app.services.push_notification import PushNotificationService
+                if sender_name:
+                    body_msg = f"Your wallet has been credited with ₦{amount:,.2f} from {sender_name.strip()}."
+                else:
+                    body_msg = f"Your wallet has been credited with ₦{amount:,.2f}. Ref: {reference}"
                 PushNotificationService.send_to_token(
                     token=wallet.user.fcm_token,
                     title="Wallet Credited ₦" + f"{amount:,.2f}",
-                    body=f"Your wallet has been credited with ₦{amount:,.2f}. Ref: {reference}",
+                    body=body_msg,
                     data={"type": "wallet", "reference": reference, "action": "credit"}
                 )
         except Exception as push_exc:

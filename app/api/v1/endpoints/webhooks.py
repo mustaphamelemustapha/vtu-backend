@@ -123,8 +123,14 @@ async def monnify_webhook(request: Request, db: Session = Depends(get_db)):
     if payment_status in {"PAID", "SUCCESSFUL", "SUCCESS"} or (event_type and "SUCCESS" in event_type):
         if transaction:
             if transaction.status != TransactionStatus.SUCCESS:
+                sender_name = data.get("payerName") or (data.get("customer") or {}).get("name")
+                if sender_name:
+                    sender_name = str(sender_name).strip()
+                else:
+                    sender_name = None
                 wallet = get_or_create_wallet(db, transaction.user_id)
-                credit_wallet(db, wallet, Decimal(transaction.amount), reference, "Wallet funding via Monnify")
+                desc = f"Wallet funding from {sender_name}" if sender_name else "Wallet funding via Monnify"
+                credit_wallet(db, wallet, Decimal(transaction.amount), reference, desc, sender_name=sender_name)
                 transaction.status = TransactionStatus.SUCCESS
                 transaction.external_reference = data.get("transactionReference") or data.get("paymentReference")
                 db.commit()
@@ -140,6 +146,11 @@ async def monnify_webhook(request: Request, db: Session = Depends(get_db)):
             ext_ref = data.get("transactionReference") or data.get("paymentReference") or reference
             
             if amount_paid:
+                sender_name = data.get("payerName") or (data.get("customer") or {}).get("name")
+                if sender_name:
+                    sender_name = str(sender_name).strip()
+                else:
+                    sender_name = None
                 user = None
                 
                 # 1. Resolve user by accountReference pattern ("AXISVTU_{user_id}")
@@ -227,7 +238,8 @@ async def monnify_webhook(request: Request, db: Session = Depends(get_db)):
                     try:
                         db.add(tx)
                         wallet = get_or_create_wallet(db, user.id)
-                        credit_wallet(db, wallet, amt, tx_ref, "Wallet funding via bank transfer (Monnify)")
+                        desc = f"Wallet funding from {sender_name}" if sender_name else "Wallet funding via bank transfer (Monnify)"
+                        credit_wallet(db, wallet, amt, tx_ref, desc, sender_name=sender_name)
                         db.commit()
                         _maybe_reward_first_deposit(
                             db,
@@ -289,6 +301,13 @@ async def billstack_webhook(request: Request, db: Session = Depends(get_db)):
         return {"status": "ignored"}
 
     amount = Decimal(str(amount_str))
+
+    payer = data.get("payer") or {}
+    first_name = str(payer.get("first_name") or "").strip()
+    last_name = str(payer.get("last_name") or "").strip()
+    sender_name = f"{first_name} {last_name}".strip()
+    if not sender_name:
+        sender_name = None
 
     # Resolve User:
     # 1. Parse user_id from merchant_reference (which would be of format "AXISVTU_{user_id}_billstack_...")
@@ -364,7 +383,8 @@ async def billstack_webhook(request: Request, db: Session = Depends(get_db)):
     try:
         db.add(tx)
         wallet = get_or_create_wallet(db, user.id)
-        credit_wallet(db, wallet, amount, tx_ref, "Wallet funding via bank transfer (Billstack)")
+        desc = f"Wallet funding from {sender_name}" if sender_name else "Wallet funding via bank transfer (Billstack)"
+        credit_wallet(db, wallet, amount, tx_ref, desc, sender_name=sender_name)
         db.commit()
         _maybe_reward_first_deposit(
             db,
