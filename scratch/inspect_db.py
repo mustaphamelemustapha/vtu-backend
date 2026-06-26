@@ -1,30 +1,24 @@
-import os
-import sys
-
-# Add backend root to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from app.core.database import SessionLocal
-from app.models.agent import RewardCampaign, AgentReward
-from app.models.transaction import Transaction
-from app.models.user import User
+from app.models import Transaction, Wallet, User
 
 db = SessionLocal()
 try:
-    print("--- Users ---")
-    users = db.query(User).all()
-    for u in users:
-        print(f"User ID: {u.id}, Name: {u.full_name}, Email: {u.email}, Role: {u.role}")
+    # Check if transaction with external_reference R-XOLNQDQJKP exists
+    tx = db.query(Transaction).filter(Transaction.external_reference == "R-XOLNQDQJKP").first()
+    print("TX WITH EXT REF:", tx)
+    if tx:
+        print("  id:", tx.id)
+        print("  status:", tx.status)
+        print("  amount:", tx.amount)
+        print("  ref:", tx.reference)
 
-    print("\n--- Campaigns ---")
-    campaigns = db.query(RewardCampaign).all()
-    for c in campaigns:
-        print(f"ID: {c.id}, Title: {c.title}, Type: {c.campaign_type}, Target: {c.target_metric}={c.target_value}, Active: {c.is_active}, Created: {c.created_at}, Activated: {c.activated_at}")
-
-    print("\n--- Transactions ---")
-    txs = db.query(Transaction).all()
-    for t in txs:
-        print(f"ID: {t.id}, User ID: {t.user_id}, Type: {t.tx_type}, Status: {t.status}, Plan: {t.data_plan_code}, Amount: {t.amount}, Created: {t.created_at}")
-
+    # Check user 8 wallet balance
+    user = db.query(User).filter(User.id == 8).first()
+    if user:
+        wallet = user.wallet
+        print("USER 8 WALLET:")
+        print("  balance:", wallet.balance if wallet else "No wallet")
+    else:
+        print("User 8 not found")
 finally:
     db.close()

@@ -308,13 +308,35 @@ async def billstack_webhook(request: Request, db: Session = Depends(get_db)):
     amount = Decimal(str(amount_str))
 
     payer = data.get("payer")
+    if isinstance(payer, list) and len(payer) > 0:
+        payer = payer[0]
+
+    sender_name = None
     if isinstance(payer, dict):
-        first_name = str(payer.get("first_name") or "").strip()
-        last_name = str(payer.get("last_name") or "").strip()
-        sender_name = f"{first_name} {last_name}".strip()
-    else:
-        sender_name = None
+        first_name = str(payer.get("first_name") or payer.get("firstName") or "").strip()
+        last_name = str(payer.get("last_name") or payer.get("lastName") or "").strip()
+        if first_name or last_name:
+            sender_name = f"{first_name} {last_name}".strip()
+        else:
+            sender_name = str(payer.get("account_name") or payer.get("name") or "").strip()
+
     if not sender_name:
+        customer = data.get("customer") or {}
+        if isinstance(customer, dict):
+            first_name = str(customer.get("firstName") or customer.get("first_name") or "").strip()
+            last_name = str(customer.get("lastName") or customer.get("last_name") or "").strip()
+            if first_name or last_name:
+                sender_name = f"{first_name} {last_name}".strip()
+            else:
+                sender_name = str(customer.get("name") or "").strip()
+
+    if sender_name:
+        sender_name = str(sender_name).strip()
+        if "/" in sender_name:
+            parts = sender_name.split("/", 1)
+            if len(parts) > 1 and parts[1].strip():
+                sender_name = parts[1].strip()
+    else:
         sender_name = None
 
     # Resolve User:
@@ -368,18 +390,50 @@ async def billstack_webhook(request: Request, db: Session = Depends(get_db)):
         logger.warning("Billstack Webhook: Could not resolve user for transaction %s. Merchant Reference: %s", reference, merchant_reference)
         return {"status": "ignored"}
 
-    # Unique check via external reference (billstack reference)
-    if reference and (existing := db.query(Transaction).filter(Transaction.external_reference == reference).first()):
-        _maybe_reward_first_deposit(
-            db,
-            user=existing.user,
-            reference=existing.reference,
-            amount=Decimal(existing.amount),
-            status=existing.status,
-        )
-        return {"status": "ok"}
-
     tx_ref = _safe_ref("TRF", str(reference or secrets.token_hex(8)))
+
+    # Unique check via external reference or reference/tx_ref
+    transaction = None
+    if reference:
+        transaction = db.query(Transaction).filter(
+            (Transaction.external_reference == reference) | 
+            (Transaction.reference == tx_ref)
+        ).first()
+
+    if transaction:
+        if transaction.status == TransactionStatus.SUCCESS:
+            logger.info("Billstack Webhook: Transaction %s already marked SUCCESS. Reference: %s", reference, transaction.reference)
+            _maybe_reward_first_deposit(
+                db,
+                user=transaction.user,
+                reference=transaction.reference,
+                amount=Decimal(transaction.amount),
+                status=transaction.status,
+            )
+            return {"status": "ok"}
+        else:
+            logger.info("Billstack Webhook: Found existing non-success transaction %s. Crediting wallet now.", transaction.reference)
+            try:
+                wallet = get_or_create_wallet(db, transaction.user_id)
+                desc = f"Wallet funding from {sender_name}" if sender_name else "Wallet funding via bank transfer (Billstack)"
+                credit_wallet(db, wallet, Decimal(transaction.amount), transaction.reference, desc, sender_name=sender_name)
+                transaction.status = TransactionStatus.SUCCESS
+                if not transaction.external_reference and reference:
+                    transaction.external_reference = reference
+                db.commit()
+                _maybe_reward_first_deposit(
+                    db,
+                    user=transaction.user,
+                    reference=transaction.reference,
+                    amount=Decimal(transaction.amount),
+                    status=TransactionStatus.SUCCESS,
+                )
+                logger.info("Billstack Webhook: Successfully updated and credited existing transaction user ID %d with NGN %s (Ref: %s)", transaction.user_id, transaction.amount, transaction.reference)
+            except Exception as e:
+                db.rollback()
+                logger.error("Billstack Webhook: Error crediting existing transaction %s: %s", transaction.reference, e)
+            return {"status": "ok"}
+
     tx = Transaction(
         user_id=user.id,
         reference=tx_ref,
@@ -402,8 +456,13 @@ async def billstack_webhook(request: Request, db: Session = Depends(get_db)):
             status=TransactionStatus.SUCCESS,
         )
         logger.info("Billstack Webhook: Successfully credited user ID %d with NGN %s (Ref: %s)", user.id, amount, tx_ref)
-    except IntegrityError:
+    except IntegrityError as e:
         db.rollback()
+        logger.error("Billstack Webhook: IntegrityError when crediting new transaction for user ID %d, reference %s: %s", user.id, reference, e)
+        return {"status": "ok"}
+    except Exception as e:
+        db.rollback()
+        logger.error("Billstack Webhook: Unexpected error when crediting new transaction for user ID %d, reference %s: %s", user.id, reference, e)
         return {"status": "ok"}
 
     return {"status": "ok"}
