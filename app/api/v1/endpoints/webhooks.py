@@ -297,7 +297,7 @@ async def billstack_webhook(request: Request, db: Session = Depends(get_db)):
         logger.info("Billstack Webhook: Ignored transaction type %s", tx_type)
         return {"status": "ignored"}
 
-    reference = data.get("reference")
+    reference = data.get("transaction_ref") or data.get("wiaxy_ref") or data.get("reference")
     merchant_reference = data.get("merchant_reference")
     amount_str = data.get("amount")
 
