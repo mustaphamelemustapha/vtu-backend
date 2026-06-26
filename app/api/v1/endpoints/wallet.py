@@ -795,8 +795,8 @@ async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
 
     if event == "charge.success" and transaction:
         if transaction.status != TransactionStatus.SUCCESS:
-            auth = data.get("authorization") or {}
-            sender_name = auth.get("sender_name")
+            auth = data.get("authorization")
+            sender_name = auth.get("sender_name") if isinstance(auth, dict) else None
             if sender_name:
                 sender_name = str(sender_name).strip()
             else:
@@ -841,8 +841,8 @@ async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
             )
             try:
                 db.add(tx)
-                auth = data.get("authorization") or {}
-                sender_name = auth.get("sender_name")
+                auth = data.get("authorization")
+                sender_name = auth.get("sender_name") if isinstance(auth, dict) else None
                 if sender_name:
                     sender_name = str(sender_name).strip()
                 else:

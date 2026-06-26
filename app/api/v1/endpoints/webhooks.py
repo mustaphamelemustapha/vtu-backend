@@ -123,7 +123,9 @@ async def monnify_webhook(request: Request, db: Session = Depends(get_db)):
     if payment_status in {"PAID", "SUCCESSFUL", "SUCCESS"} or (event_type and "SUCCESS" in event_type):
         if transaction:
             if transaction.status != TransactionStatus.SUCCESS:
-                sender_name = data.get("payerName") or (data.get("customer") or {}).get("name")
+                customer = data.get("customer")
+                customer_name = customer.get("name") if isinstance(customer, dict) else None
+                sender_name = data.get("payerName") or customer_name
                 if sender_name:
                     sender_name = str(sender_name).strip()
                 else:
@@ -146,7 +148,9 @@ async def monnify_webhook(request: Request, db: Session = Depends(get_db)):
             ext_ref = data.get("transactionReference") or data.get("paymentReference") or reference
             
             if amount_paid:
-                sender_name = data.get("payerName") or (data.get("customer") or {}).get("name")
+                customer = data.get("customer")
+                customer_name = customer.get("name") if isinstance(customer, dict) else None
+                sender_name = data.get("payerName") or customer_name
                 if sender_name:
                     sender_name = str(sender_name).strip()
                 else:
@@ -281,13 +285,14 @@ async def billstack_webhook(request: Request, db: Session = Depends(get_db)):
     logger.info("Billstack Webhook received: %s", payload)
 
     event = payload.get("event")
+    event_upper = str(event or "").upper().strip()
     data = payload.get("eventData", {}) or payload.get("data", {})
     
-    if event not in {"PAYMENT_NOTIFICATION", "PAYMENT_NOTIFIFICATION"}:
+    if event_upper not in {"PAYMENT_NOTIFICATION", "PAYMENT_NOTIFIFICATION"}:
         logger.info("Billstack Webhook: Ignored event type %s", event)
         return {"status": "ignored"}
         
-    tx_type = data.get("type")
+    tx_type = str(data.get("type") or "").upper().strip()
     if tx_type != "RESERVED_ACCOUNT_TRANSACTION":
         logger.info("Billstack Webhook: Ignored transaction type %s", tx_type)
         return {"status": "ignored"}
@@ -302,10 +307,13 @@ async def billstack_webhook(request: Request, db: Session = Depends(get_db)):
 
     amount = Decimal(str(amount_str))
 
-    payer = data.get("payer") or {}
-    first_name = str(payer.get("first_name") or "").strip()
-    last_name = str(payer.get("last_name") or "").strip()
-    sender_name = f"{first_name} {last_name}".strip()
+    payer = data.get("payer")
+    if isinstance(payer, dict):
+        first_name = str(payer.get("first_name") or "").strip()
+        last_name = str(payer.get("last_name") or "").strip()
+        sender_name = f"{first_name} {last_name}".strip()
+    else:
+        sender_name = None
     if not sender_name:
         sender_name = None
 
