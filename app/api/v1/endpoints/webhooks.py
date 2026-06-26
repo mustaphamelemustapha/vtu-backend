@@ -6,7 +6,7 @@ from decimal import Decimal
 import secrets
 from sqlalchemy.exc import IntegrityError
 from app.core.database import get_db
-from app.models import Transaction, TransactionStatus, TransactionType, User
+from app.models import Transaction, TransactionStatus, TransactionType, User, WalletLedger, LedgerType
 from app.services.wallet import get_or_create_wallet, credit_wallet
 from app.services.monnify import verify_monnify_signature
 from app.services.billstack import verify_billstack_signature
@@ -403,6 +403,26 @@ async def billstack_webhook(request: Request, db: Session = Depends(get_db)):
     if transaction:
         if transaction.status == TransactionStatus.SUCCESS:
             logger.info("Billstack Webhook: Transaction %s already marked SUCCESS. Reference: %s", reference, transaction.reference)
+            
+            # Verify if a corresponding ledger entry exists to prevent missing credits
+            wallet = get_or_create_wallet(db, transaction.user_id)
+            ledger = db.query(WalletLedger).filter(
+                WalletLedger.wallet_id == wallet.id,
+                WalletLedger.reference == transaction.reference,
+                WalletLedger.entry_type == LedgerType.CREDIT
+            ).first()
+            
+            if not ledger:
+                logger.warning("Billstack Webhook: Transaction is SUCCESS but no ledger entry found. Crediting wallet now. Reference: %s", transaction.reference)
+                try:
+                    desc = f"Wallet funding from {sender_name}" if sender_name else "Wallet funding via bank transfer (Billstack)"
+                    credit_wallet(db, wallet, Decimal(transaction.amount), transaction.reference, desc, sender_name=sender_name)
+                    db.commit()
+                    logger.info("Billstack Webhook: Successfully credited missing wallet amount NGN %s for SUCCESS transaction %s", transaction.amount, transaction.reference)
+                except Exception as e:
+                    db.rollback()
+                    logger.error("Billstack Webhook: Error crediting missing wallet amount for transaction %s: %s", transaction.reference, e)
+            
             _maybe_reward_first_deposit(
                 db,
                 user=transaction.user,
