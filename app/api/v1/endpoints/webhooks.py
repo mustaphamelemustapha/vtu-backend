@@ -11,6 +11,7 @@ from app.services.wallet import get_or_create_wallet, credit_wallet
 from app.services.monnify import verify_monnify_signature
 from app.core.config import get_settings
 from app.api.v1.endpoints.wallet import _maybe_reward_first_deposit, _safe_ref
+from app.models.virtual_account import VirtualAccount, VirtualAccountProvider
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -134,12 +135,74 @@ async def monnify_webhook(request: Request, db: Session = Depends(get_db)):
                 status=TransactionStatus.SUCCESS,
             )
         else:
-            customer = data.get("customer") or {}
-            email = (customer.get("email") or "").strip().lower()
             amount_paid = data.get("amountPaid") or data.get("amount") or data.get("amountPaidInKobo")
             ext_ref = data.get("transactionReference") or data.get("paymentReference") or reference
-            if email and amount_paid:
-                user = db.query(User).filter(User.email == email).first()
+            
+            if amount_paid:
+                user = None
+                
+                # 1. Resolve user by accountReference pattern ("AXISVTU_{user_id}")
+                account_ref = data.get("accountReference") or (data.get("product") or {}).get("reference")
+                if account_ref:
+                    account_ref_str = str(account_ref).strip()
+                    if account_ref_str.startswith("AXISVTU_"):
+                        try:
+                            user_id_str = account_ref_str.split("_")[1]
+                            user_id = int(user_id_str)
+                            user = db.query(User).filter(User.id == user_id).first()
+                            if user:
+                                logger.info("Monnify Webhook: Resolved user ID %d directly from accountReference %s", user.id, account_ref_str)
+                        except (ValueError, IndexError):
+                            pass
+                    
+                    if not user:
+                        # Query VirtualAccount table by customer_reference / reservation_reference
+                        va = db.query(VirtualAccount).filter(
+                            (VirtualAccount.reservation_reference == account_ref_str) |
+                            (VirtualAccount.customer_reference == account_ref_str)
+                        ).first()
+                        if va:
+                            user = va.user
+                            if user:
+                                logger.info("Monnify Webhook: Resolved user ID %d from VirtualAccount by accountReference %s", user.id, account_ref_str)
+
+                # 2. Resolve user by destination account number (from destinationAccountPaymentResults or destinationAccountNumber)
+                if not user:
+                    acc_nums = []
+                    # Check for direct destinationAccountNumber
+                    direct_acc = data.get("destinationAccountNumber")
+                    if direct_acc:
+                        acc_nums.append(str(direct_acc).strip())
+                    
+                    # Check list of destinationAccountPaymentResults
+                    dest_results = data.get("destinationAccountPaymentResults") or []
+                    for res in dest_results:
+                        if isinstance(res, dict):
+                            num = res.get("destinationAccountNumber")
+                            if num:
+                                acc_nums.append(str(num).strip())
+                    
+                    for acc_num in acc_nums:
+                        if acc_num:
+                            va = db.query(VirtualAccount).filter(
+                                VirtualAccount.account_number == acc_num,
+                                VirtualAccount.provider == VirtualAccountProvider.MONNIFY
+                            ).first()
+                            if va:
+                                user = va.user
+                                if user:
+                                    logger.info("Monnify Webhook: Resolved user ID %d from VirtualAccount table by account number %s", user.id, acc_num)
+                                    break
+
+                # 3. Fallback: Resolve user by email
+                if not user:
+                    customer = data.get("customer") or {}
+                    email = (customer.get("email") or "").strip().lower()
+                    if email:
+                        user = db.query(User).filter(User.email == email).first()
+                        if user:
+                            logger.info("Monnify Webhook: Resolved user ID %d by email %s as fallback", user.id, email)
+
                 if user:
                     if ext_ref and (existing := db.query(Transaction).filter(Transaction.external_reference == ext_ref).first()):
                         _maybe_reward_first_deposit(
@@ -175,6 +238,8 @@ async def monnify_webhook(request: Request, db: Session = Depends(get_db)):
                     except IntegrityError:
                         db.rollback()
                         return {"status": "ok"}
+                else:
+                    logger.warning("Monnify Webhook: Could not resolve user for transaction %s. Account Ref: %s, Email: %s", ext_ref, account_ref, data.get("customer", {}).get("email"))
 
     if payment_status in {"FAILED", "CANCELLED"} or (event_type and "FAILED" in event_type):
         if transaction and transaction.status == TransactionStatus.PENDING:

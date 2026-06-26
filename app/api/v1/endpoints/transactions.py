@@ -67,6 +67,20 @@ def _extract_recipient_phone(description: str | None) -> str | None:
     return digits
 
 
+def _extract_plan_name(description: str | None) -> str | None:
+    text = str(description or "").strip()
+    if not text.startswith("Data Purchase:"):
+        return None
+    try:
+        parts = text[len("Data Purchase:"):].strip()
+        idx = parts.rfind("(")
+        if idx != -1:
+            return parts[:idx].strip()
+        return parts
+    except Exception:
+        return None
+
+
 @router.get("/me", response_model=list[TransactionOut])
 
 def list_transactions(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -118,8 +132,15 @@ def list_transactions(user: User = Depends(get_current_user), db: Session = Depe
         tx_type_val = _normalize_tx_type(tx.tx_type)
         if tx_type_val == "data":
             recipient_phone = recipient_phone_by_ref.get(str(tx.reference))
+            ledger_description = ledger_description_by_ref.get(str(tx.reference))
+            plan_name = _extract_plan_name(ledger_description)
+            meta = {}
             if recipient_phone:
-                meta = {"recipient_phone": recipient_phone}
+                meta["recipient_phone"] = recipient_phone
+            if plan_name:
+                meta["plan_name"] = plan_name
+            if not meta:
+                meta = None
         if tx_type_val == "wallet_fund":
             ledger_description = ledger_description_by_ref.get(str(tx.reference))
             if ledger_description:
