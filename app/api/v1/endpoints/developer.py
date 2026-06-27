@@ -145,6 +145,23 @@ def get_balance(user: User = Depends(get_developer_user), db: Session = Depends(
     return {"balance": wallet.balance, "currency": "NGN"}
 
 
+@router.get("/data/plans")
+def list_data_plans(user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
+    plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+    result = []
+    for plan in plans:
+        price = get_price_for_user(db, plan, user)
+        result.append({
+            "plan_code": plan.plan_code,
+            "network": plan.network.upper(),
+            "plan_name": plan.plan_name,
+            "data_size": plan.data_size,
+            "validity": plan.validity,
+            "price": float(price)
+        })
+    return {"plans": result}
+
+
 @router.post("/data/purchase", response_model=DeveloperPurchaseResponse)
 def developer_buy_data(payload: DeveloperDataPurchaseRequest, user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
     # 1. Idempotency Check
