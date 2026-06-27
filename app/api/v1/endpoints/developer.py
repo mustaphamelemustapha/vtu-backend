@@ -3,6 +3,7 @@ import secrets
 import time
 import logging
 from decimal import Decimal
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Security, status
@@ -39,34 +40,58 @@ security_bearer = HTTPBearer(auto_error=False)
 
 # --- API Key Helpers ---
 def generate_key_pair() -> tuple[str, str, str]:
-    pub = f"MELE_PUB_{secrets.token_hex(16).upper()}"
-    sec_plain = f"MELE_SEC_{secrets.token_hex(24).upper()}"
+    pub = f"mele_pub_{secrets.token_hex(16)}"
+    sec_plain = f"mele_live_{secrets.token_hex(24)}"
     sec_hash = hashlib.sha256(sec_plain.encode("utf-8")).hexdigest()
     return pub, sec_plain, sec_hash
 
 
 # --- Developer Auth Dependency ---
 def get_developer_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Security(security_bearer),
     db: Session = Depends(get_db)
 ) -> User:
-    if not credentials or credentials.scheme.lower() != "bearer":
+    # 1. Try X-API-Key header first
+    token = request.headers.get("X-API-Key")
+    
+    # 2. Try Authorization header (Bearer / Token)
+    if not token and request.headers.get("Authorization"):
+        auth_val = request.headers.get("Authorization").strip()
+        parts = auth_val.split(None, 1)
+        if len(parts) == 2 and parts[0].lower() in {"bearer", "token"}:
+            token = parts[1]
+            
+    # 3. Fallback to HTTPBearer credentials
+    if not token and credentials:
+        token = credentials.credentials.strip()
+        
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid authentication credentials. Use 'Bearer <secret_key>' header.",
+            detail="Missing or invalid authentication credentials. Pass X-API-Key or Authorization header.",
         )
-    token = credentials.credentials.strip()
-    if not token.startswith("MELE_SEC_"):
+        
+    token = token.strip()
+    is_test_mode = token.startswith("mele_test_")
+    lookup_token = token
+    if is_test_mode:
+        # Swap prefix to look up the hash of the user's primary live token
+        lookup_token = "mele_live_" + token[len("mele_test_"):]
+        
+    if not (token.startswith("MELE_SEC_") or token.startswith("mele_live_") or token.startswith("mele_test_")):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key format.",
         )
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        
+    token_hash = hashlib.sha256(lookup_token.encode("utf-8")).hexdigest()
     user = db.query(User).filter(
         User.api_secret_key_hash == token_hash,
         User.developer_status == "approved",
         User.is_developer == True
     ).first()
+    
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -77,6 +102,9 @@ def get_developer_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Developer account is inactive.",
         )
+        
+    # Attach the dynamic test mode flag
+    user.is_test_mode = is_test_mode
     return user
 
 
@@ -145,10 +173,109 @@ def revoke_keys(user: User = Depends(get_current_user), db: Session = Depends(ge
 
 # --- Reseller Services API (Developer authenticated) ---
 
+# Sandbox balance state in memory
+SANDBOX_BALANCES = {}
+
+@router.get("/wallet")
+@router.get("/wallet/")
+def get_wallet_balance_amigo_style(user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
+    is_test = getattr(user, "is_test_mode", False)
+    if is_test:
+        bal = SANDBOX_BALANCES.get(user.id, 1000000.0)
+    else:
+        wallet = get_or_create_wallet(db, user.id)
+        bal = float(wallet.balance)
+        
+    return {
+        "success": True,
+        "data": {
+            "balance": bal,
+            "display": f"₦{bal:,.2f}",
+            "currency": "NGN",
+            "livemode": not is_test,
+            "mode": "test" if is_test else "live"
+        }
+    }
+
+
+@router.post("/commerce/sandbox/reset-balance")
+@router.post("/commerce/sandbox/reset-balance/")
+def reset_sandbox_balance(user: User = Depends(get_developer_user)):
+    is_test = getattr(user, "is_test_mode", False)
+    if not is_test:
+        raise HTTPException(
+            status_code=403,
+            detail="Live tokens are not allowed to reset sandbox balances."
+        )
+    SANDBOX_BALANCES[user.id] = 1000000.0
+    return {
+        "success": True,
+        "data": {
+            "test_balance": 1000000.0,
+            "display": "₦1,000,000.00",
+            "livemode": False
+        }
+    }
+
+
+@router.get("/data/status")
+@router.get("/data/status/")
+def get_data_purchase_status(ref: str, user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
+    ref = ref.strip()
+    if not ref:
+        raise HTTPException(status_code=422, detail="Missing required 'ref' query parameter.")
+        
+    # Scope: only see own client transactions
+    tx = db.query(Transaction).filter(Transaction.user_id == user.id, Transaction.reference == ref).first()
+    if not tx:
+        # Fallback to check ServiceTransaction (e.g. for airtime)
+        tx_service = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == user.id, ServiceTransaction.reference == ref).first()
+        if not tx_service:
+            raise HTTPException(status_code=404, detail="No purchase with that reference is owned by your client.")
+        return {
+            "success": True,
+            "data": {
+                "reference": tx_service.reference,
+                "status": "delivered" if tx_service.status == TransactionStatus.SUCCESS.value else "failed",
+                "network": tx_service.provider,
+                "mobile_number": tx_service.customer,
+                "plan": None,
+                "amount_charged": float(tx_service.amount),
+                "message": f"Airtime topup of ₦{tx_service.amount} delivered to {tx_service.customer} successfully.",
+                "purchased_at": tx_service.created_at.isoformat() if tx_service.created_at else None,
+                "queried_at": datetime.now(timezone.utc).isoformat() + "Z",
+                "livemode": not getattr(user, "is_test_mode", False),
+                "mode": "test" if getattr(user, "is_test_mode", False) else "live"
+            }
+        }
+        
+    return {
+        "success": True,
+        "data": {
+            "reference": tx.reference,
+            "status": "delivered" if tx.status == TransactionStatus.SUCCESS else "failed",
+            "network": tx.network,
+            "mobile_number": tx.recipient_phone,
+            "plan": tx.data_plan_code,
+            "amount_charged": float(tx.amount),
+            "message": f"Data plan delivered to {tx.recipient_phone} successfully.",
+            "purchased_at": tx.created_at.isoformat() if tx.created_at else None,
+            "queried_at": datetime.now(timezone.utc).isoformat() + "Z",
+            "livemode": not getattr(user, "is_test_mode", False),
+            "mode": "test" if getattr(user, "is_test_mode", False) else "live"
+        }
+    }
+
+
 @router.get("/wallet/balance", response_model=DeveloperWalletBalanceResponse)
 def get_balance(user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
-    wallet = get_or_create_wallet(db, user.id)
-    return {"balance": wallet.balance, "currency": "NGN"}
+    is_test = getattr(user, "is_test_mode", False)
+    if is_test:
+        bal = Decimal(str(SANDBOX_BALANCES.get(user.id, 1000000.0)))
+    else:
+        wallet = get_or_create_wallet(db, user.id)
+        bal = wallet.balance
+    return {"balance": bal, "currency": "NGN"}
 
 
 @router.get("/data/plans")
