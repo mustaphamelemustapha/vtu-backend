@@ -2138,3 +2138,75 @@ def revoke_referral(
     return {"status": "ok", "message": "Referral successfully revoked and connection cleared."}
 
 
+@router.get("/developers/applications")
+def list_developer_applications(
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    List all user developer applications.
+    """
+    users = db.query(User).filter(User.developer_status == "applied").all()
+    return [{
+        "id": u.id,
+        "email": u.email,
+        "full_name": u.full_name,
+        "developer_status": u.developer_status,
+        "is_developer": u.is_developer
+    } for u in users]
+
+
+@router.post("/developers/{user_id}/approve")
+def approve_developer_application(
+    user_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Approve a developer application and give developer access.
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user.developer_status = "approved"
+    user.is_developer = True
+    
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action="developer_approve",
+        target=str(user_id),
+        details={"email": user.email, "message": "Developer application approved"}
+    )
+    db.add(audit_log)
+    db.commit()
+    return {"status": "ok", "message": "Developer successfully approved."}
+
+
+@router.post("/developers/{user_id}/suspend")
+def suspend_developer_access(
+    user_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Suspend developer access.
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user.developer_status = "suspended"
+    user.is_developer = False
+    
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action="developer_suspend",
+        target=str(user_id),
+        details={"email": user.email, "message": "Developer access suspended"}
+    )
+    db.add(audit_log)
+    db.commit()
+    return {"status": "ok", "message": "Developer successfully suspended."}
+
+

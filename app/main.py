@@ -142,6 +142,7 @@ def ensure_tables():
         _ensure_user_agent_upgrade_seen_column()
         _ensure_user_kyc_hash_columns()
         _ensure_broadcast_announcement_button_columns()
+        _ensure_user_developer_columns()
         return
 
     # Optional local fallback for fresh environments.
@@ -163,6 +164,7 @@ def ensure_tables():
     _ensure_campaign_is_agent_only_column()
     _ensure_user_kyc_hash_columns()
     _ensure_broadcast_announcement_button_columns()
+    _ensure_user_developer_columns()
 
 
 @app.on_event("shutdown")
@@ -463,6 +465,30 @@ def _ensure_broadcast_announcement_button_columns() -> None:
                 logging.getLogger(__name__).info("Added broadcast_announcements.button_link column.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure broadcast_announcements button columns: %s", exc)
+
+
+def _ensure_user_developer_columns() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("users"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("users")}
+        with engine.begin() as conn:
+            if "is_developer" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN is_developer BOOLEAN DEFAULT FALSE NOT NULL"))
+                logging.getLogger(__name__).info("Added users.is_developer column.")
+            if "developer_status" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN developer_status VARCHAR(32) DEFAULT 'none' NOT NULL"))
+                logging.getLogger(__name__).info("Added users.developer_status column.")
+            if "api_public_key" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN api_public_key VARCHAR(64) NULL"))
+                conn.execute(text("CREATE UNIQUE INDEX ix_users_api_public_key ON users (api_public_key)"))
+                logging.getLogger(__name__).info("Added users.api_public_key column and index.")
+            if "api_secret_key_hash" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN api_secret_key_hash VARCHAR(128) NULL"))
+                logging.getLogger(__name__).info("Added users.api_secret_key_hash column.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure users developer columns: %s", exc)
 
 
 @app.get("/healthz")

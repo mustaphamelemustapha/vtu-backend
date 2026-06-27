@@ -38,6 +38,10 @@ class User(Base, TimestampMixin):
     agent_upgrade_seen = Column(Boolean, default=False, nullable=False, server_default='0')
     bvn_hash = Column(String(64), unique=True, nullable=True, index=True)
     nin_hash = Column(String(64), unique=True, nullable=True, index=True)
+    is_developer = Column(Boolean, default=False, nullable=False, server_default='0')
+    developer_status = Column(String(32), default="none", nullable=False, server_default='none')
+    api_public_key = Column(String(64), unique=True, nullable=True, index=True)
+    api_secret_key_hash = Column(String(128), nullable=True)
 
     referred_by = relationship(
         "User",
