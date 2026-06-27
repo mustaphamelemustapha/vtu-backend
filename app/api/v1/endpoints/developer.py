@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.core.database import get_db
-from app.models import User, Transaction, TransactionStatus, TransactionType, DataPlan, ApiLog
+from app.models import User, UserRole, Transaction, TransactionStatus, TransactionType, DataPlan, ApiLog
 from app.models.service_transaction import ServiceTransaction
 from app.schemas.developer import (
     DeveloperStatusResponse,
@@ -97,14 +97,20 @@ def apply_developer(payload: DeveloperApplyRequest, user: User = Depends(get_cur
     if user.developer_status not in {"none", ""}:
         raise HTTPException(status_code=400, detail=f"Developer application status is already: {user.developer_status}")
     
-    user.developer_status = "applied"
+    pub, sec_plain, sec_hash = generate_key_pair()
+    user.developer_status = "approved"
+    user.is_developer = True
+    user.role = UserRole.RESELLER
+    user.api_public_key = pub
+    user.api_secret_key_hash = sec_hash
     db.commit()
     db.refresh(user)
     return {
         "is_developer": user.is_developer,
         "developer_status": user.developer_status,
         "api_public_key": user.api_public_key,
-        "has_keys": user.api_secret_key_hash is not None
+        "has_keys": True,
+        "api_secret_key": sec_plain
     }
 
 

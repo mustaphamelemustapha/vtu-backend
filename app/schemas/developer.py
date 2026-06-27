@@ -9,6 +9,7 @@ class DeveloperStatusResponse(BaseModel):
     developer_status: str
     api_public_key: Optional[str] = None
     has_keys: bool
+    api_secret_key: Optional[str] = None
 
     class Config:
         orm_mode = True
