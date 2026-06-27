@@ -795,6 +795,7 @@ def list_users(
                 "is_active": u.is_active,
                 "is_verified": u.is_verified,
                 "referral_count": ref_count or 0,
+                "developer_status": getattr(u, "developer_status", "none"),
             }
         )
 
@@ -903,6 +904,7 @@ def get_user_details(
             "is_verified": user.is_verified,
             "referral_code": getattr(user, "referral_code", None),
             "referred_by_id": getattr(user, "referred_by_id", None),
+            "developer_status": getattr(user, "developer_status", "none"),
         },
         "wallet": {
             "balance": wallet.balance if wallet else 0,

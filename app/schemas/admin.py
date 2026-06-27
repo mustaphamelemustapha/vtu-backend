@@ -73,6 +73,7 @@ class AdminUserOut(BaseModel):
     is_active: bool
     is_verified: bool
     referral_count: int = 0
+    developer_status: str = "none"
     class Config:
         orm_mode = True
 
