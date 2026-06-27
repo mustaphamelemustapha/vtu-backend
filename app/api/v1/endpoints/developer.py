@@ -152,6 +152,7 @@ def list_data_plans(user: User = Depends(get_developer_user), db: Session = Depe
     for plan in plans:
         price = get_price_for_user(db, plan, user)
         result.append({
+            "plan_id": plan.id,
             "plan_code": plan.plan_code,
             "network": plan.network.upper(),
             "plan_name": plan.plan_name,
@@ -176,10 +177,9 @@ def developer_buy_data(payload: DeveloperDataPurchaseRequest, user: User = Depen
         }
 
     # 2. Plan lookup
-    plan_code = payload.plan_code.strip()
     network_key = payload.network.strip().lower()
     plan = db.query(DataPlan).filter(
-        DataPlan.plan_code == plan_code,
+        DataPlan.id == payload.plan_id,
         func.lower(DataPlan.network) == network_key,
         DataPlan.is_active == True
     ).first()

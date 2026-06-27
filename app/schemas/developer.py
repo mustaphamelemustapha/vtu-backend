@@ -31,7 +31,7 @@ class DeveloperWalletBalanceResponse(BaseModel):
 class DeveloperDataPurchaseRequest(BaseModel):
     phone_number: str = Field(..., description="Recipient phone number")
     network: str = Field(..., description="MTN, GLO, AIRTEL, or 9MOBILE")
-    plan_code: str = Field(..., description="The plan identifier code")
+    plan_id: int = Field(..., description="The numerical plan ID")
     reference: str = Field(..., description="Unique developer transaction reference")
 
 
