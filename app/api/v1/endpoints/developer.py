@@ -80,7 +80,7 @@ def get_developer_user(
         # Swap prefix to look up the hash of the user's primary live token
         lookup_token = "mele_live_" + token[len("mele_test_"):]
         
-    if not (token.startswith("MELE_SEC_") or token.startswith("mele_live_") or token.startswith("mele_test_")):
+    if not (token.startswith("MELE_SEC_") or token.startswith("mele_live_") or token.startswith("mele_test_") or token.startswith("mele_pub_")):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key format.",
@@ -88,7 +88,7 @@ def get_developer_user(
         
     token_hash = hashlib.sha256(lookup_token.encode("utf-8")).hexdigest()
     user = db.query(User).filter(
-        User.api_secret_key_hash == token_hash,
+        ((User.api_public_key == token) | (User.api_secret_key_hash == token_hash)),
         User.developer_status == "approved",
         User.is_developer == True
     ).first()
