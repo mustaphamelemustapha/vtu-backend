@@ -506,8 +506,8 @@ def list_all_transactions(
     status: Optional[str] = None,
     tx_type: Optional[str] = None,
     network: Optional[str] = None,
-    from_date: Optional[date] = Query(default=None, alias="from"),
-    to_date: Optional[date] = Query(default=None, alias="to"),
+    from_date: Optional[date] = Query(default=None),
+    to_date: Optional[date] = Query(default=None),
     page: int = 1,
     page_size: int = 50,
 ):
