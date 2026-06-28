@@ -132,7 +132,8 @@ def apply_developer(payload: DeveloperApplyRequest, user: User = Depends(get_cur
     pub, sec_plain, sec_hash = generate_key_pair()
     user.developer_status = "approved"
     user.is_developer = True
-    user.role = UserRole.RESELLER
+    if user.role == UserRole.USER:
+        user.role = UserRole.RESELLER
     user.api_public_key = pub
     user.api_secret_key_hash = sec_hash
     db.commit()
