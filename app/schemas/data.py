@@ -12,6 +12,7 @@ class DataPlanOut(BaseModel):
     validity: str
     price: Decimal
     base_price: Optional[Decimal] = None
+    agent_price: Optional[Decimal] = None
     promo_active: bool = False
     promo_old_price: Optional[Decimal] = None
     promo_label: Optional[str] = None
