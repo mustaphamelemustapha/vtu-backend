@@ -1,7 +1,8 @@
 from datetime import date, datetime, time, timezone, timedelta
-from typing import Optional
+from typing import Optional, Any, Dict
 from decimal import Decimal
 import json
+import time
 from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -36,6 +37,10 @@ from app.api.v1.endpoints.data import _invalidate_plans_cache
 
 router = APIRouter()
 settings = get_settings()
+
+# Simple TTL cache for analytics
+_ANALYTICS_CACHE: Dict[str, Any] = {}
+ANALYTICS_CACHE_TTL = 60  # seconds
 
 _SENSITIVE_META_KEYS = {
     "api_key",
@@ -161,6 +166,11 @@ def _ensure_utc(value: Optional[datetime]) -> Optional[datetime]:
 
 @router.get("/analytics")
 def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
+    # Check cache first
+    cached = _ANALYTICS_CACHE.get("admin_analytics")
+    if cached and (time.time() - cached['time']) < ANALYTICS_CACHE_TTL:
+        return cached['data']
+
     now_utc = _utcnow()
     day_start_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start_utc = day_start_utc - timedelta(days=day_start_utc.weekday())
@@ -425,7 +435,7 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
             "tx_count": int(bucket["tx_count"]),
         })
 
-    return {
+    result = {
         "total_revenue": total_revenue,
         "data_revenue": data_revenue,
         "data_cost_estimate": data_cost_estimate,
@@ -452,6 +462,14 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
         "profit_period_estimates": period_profit_payload,
         "monthly_trends": monthly_trends_payload,
     }
+    
+    # Store in cache
+    _ANALYTICS_CACHE["admin_analytics"] = {
+        'time': time.time(),
+        'data': result
+    }
+    
+    return result
 
 @router.get("/transactions", response_model=AdminTransactionsResponse)
 def list_all_transactions(
