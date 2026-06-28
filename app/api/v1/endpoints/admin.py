@@ -398,9 +398,9 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
         total_tx_count += total_st_count
         
     period_profit_payload["all_time"] = {
-        "revenue": round(float((data_revenue or 0) + (service_revenue or 0)), 2),
-        "cost_estimate": round(float((data_cost_estimate or 0) + (service_cost_estimate or 0)), 2),
-        "profit_estimate": round(float((gross_profit_estimate or 0) + (service_profit_estimate or 0)), 2),
+        "revenue": round(float(data_revenue or 0) + float(service_revenue or 0), 2),
+        "cost_estimate": round(float(data_cost_estimate or 0) + float(service_cost_estimate or 0), 2),
+        "profit_estimate": round(float(gross_profit_estimate or 0) + float(service_profit_estimate or 0), 2),
         "tx_count": total_tx_count,
     }
 
