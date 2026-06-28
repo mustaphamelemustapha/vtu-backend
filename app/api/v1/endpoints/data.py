@@ -263,9 +263,6 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
     all_rules = db.query(PricingRule).filter(PricingRule.role == pricing_role).all()
     rule_map = {str(r.network or "").strip().lower(): r for r in all_rules}
     
-    reseller_rules = db.query(PricingRule).filter(PricingRule.role == PricingRole.RESELLER).all()
-    reseller_rule_map = {str(r.network or "").strip().lower(): r for r in reseller_rules}
-    
     priced = []
     for plan in plans:
         try:
@@ -289,23 +286,6 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                     price = base + (base * margin / Decimal("100"))
                 else:
                     price = base + margin
-
-            # Calculate explicit agent_price for the frontend
-            computed_agent_price = None
-            if agent_price is not None:
-                computed_agent_price = Decimal(str(agent_price))
-            else:
-                r_rule = reseller_rule_map.get(str(plan.network or "").strip().lower())
-                r_margin = Decimal(str(r_rule.margin)) if r_rule else Decimal("0")
-                r_margin_type = str(getattr(r_rule, "margin_type", None) or "fixed").strip().lower()
-                if r_margin_type not in ("fixed", "percentage"):
-                    r_margin_type = "fixed"
-                
-                base = Decimal(str(plan.base_price or "0"))
-                if r_margin_type == "percentage":
-                    computed_agent_price = base + (base * r_margin / Decimal("100"))
-                else:
-                    computed_agent_price = base + r_margin
             
             # Promo logic from database fields
             promo_active = bool(getattr(plan, "promo_active", False))
@@ -357,7 +337,6 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                     validity=plan.validity,
                     price=price,
                     base_price=plan.base_price,
-                    agent_price=computed_agent_price,
                     promo_active=promo_active,
                     promo_old_price=promo_old_price,
                     promo_label=promo_label,
