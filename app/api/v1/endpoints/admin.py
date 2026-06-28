@@ -391,6 +391,18 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
             "profit_estimate": round(float(values["profit_estimate"]), 2),
             "tx_count": int(values["tx_count"]),
         }
+        
+    total_tx_count = db.query(func.count(Transaction.id)).filter(Transaction.status == TransactionStatus.SUCCESS).scalar() or 0
+    if inspect(db.bind).has_table("service_transactions"):
+        total_st_count = db.query(func.count(ServiceTransaction.id)).filter(ServiceTransaction.status == TransactionStatus.SUCCESS.value).scalar() or 0
+        total_tx_count += total_st_count
+        
+    period_profit_payload["all_time"] = {
+        "revenue": round(float((data_revenue or 0) + (service_revenue or 0)), 2),
+        "cost_estimate": round(float((data_cost_estimate or 0) + (service_cost_estimate or 0)), 2),
+        "profit_estimate": round(float((gross_profit_estimate or 0) + (service_profit_estimate or 0)), 2),
+        "tx_count": total_tx_count,
+    }
 
     monthly_trends_payload = []
     for bucket in trend_buckets:
