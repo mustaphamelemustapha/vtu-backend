@@ -187,6 +187,17 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
         })
 
     total_revenue = db.query(func.sum(Transaction.amount)).filter(Transaction.status == TransactionStatus.SUCCESS).scalar() or 0
+    
+    # Calculate total cost estimate across ALL transactions (so Wallet Funds correctly zero out profit)
+    total_cost_estimate = (
+        db.query(func.sum(func.coalesce(DataPlan.base_price, Transaction.amount)))
+        .select_from(Transaction)
+        .outerjoin(DataPlan, Transaction.data_plan_code == DataPlan.plan_code)
+        .filter(Transaction.status == TransactionStatus.SUCCESS)
+        .scalar()
+        or 0
+    )
+    
     data_revenue = (
         db.query(func.sum(Transaction.amount))
         .filter(
@@ -208,8 +219,8 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
         .scalar()
         or 0
     )
-    gross_profit_estimate = data_revenue - data_cost_estimate
-    gross_margin_pct = (float(gross_profit_estimate) / float(data_revenue) * 100.0) if float(data_revenue) else 0.0
+    gross_profit_estimate = float(total_revenue or 0) - float(total_cost_estimate or 0)
+    gross_margin_pct = (float(gross_profit_estimate) / float(total_revenue) * 100.0) if float(total_revenue) else 0.0
     total_users = db.query(func.count(User.id)).scalar() or 0
     active_users = db.query(func.count(User.id)).filter(User.is_active == True).scalar() or 0
 
@@ -398,8 +409,8 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
         total_tx_count += total_st_count
         
     period_profit_payload["all_time"] = {
-        "revenue": round(float(data_revenue or 0) + float(service_revenue or 0), 2),
-        "cost_estimate": round(float(data_cost_estimate or 0) + float(service_cost_estimate or 0), 2),
+        "revenue": round(float(total_revenue or 0) + float(service_revenue or 0), 2),
+        "cost_estimate": round(float(total_cost_estimate or 0) + float(service_cost_estimate or 0), 2),
         "profit_estimate": round(float(gross_profit_estimate or 0) + float(service_profit_estimate or 0), 2),
         "tx_count": total_tx_count,
     }
