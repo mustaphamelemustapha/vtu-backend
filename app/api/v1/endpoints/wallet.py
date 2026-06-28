@@ -813,3 +813,15 @@ def paystack_verify(reference: str, user: User = Depends(get_current_user), db: 
     except Exception:
         pass
     return {"status": "pending"}
+
+# --- Backward Compatibility for Webhooks ---
+# Webhooks were moved to webhooks.py, but providers may still have the old /wallet/... URLs configured.
+from app.api.v1.endpoints.webhooks import paystack_webhook, monnify_webhook, billstack_webhook, smeplug_webhook
+
+router.post("/paystack/webhook", include_in_schema=False)(paystack_webhook)
+router.post("/monnify/webhook", include_in_schema=False)(monnify_webhook)
+router.post("/billstack/webhook", include_in_schema=False)(billstack_webhook)
+router.post("/smeplug/webhook", include_in_schema=False)(smeplug_webhook)
+router.post("/smeplug", include_in_schema=False)(smeplug_webhook)
+router.post("/monnify", include_in_schema=False)(monnify_webhook)
+router.post("/billstack", include_in_schema=False)(billstack_webhook)
