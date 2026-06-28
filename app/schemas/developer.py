@@ -10,9 +10,14 @@ class DeveloperStatusResponse(BaseModel):
     api_public_key: Optional[str] = None
     has_keys: bool
     api_secret_key: Optional[str] = None
+    webhook_url: Optional[str] = None
+    webhook_secret_prefix: Optional[str] = None
 
     class Config:
         orm_mode = True
+
+class WebhookConfigRequest(BaseModel):
+    webhook_url: str = Field(..., description="The URL where we will send webhooks")
 
 
 class DeveloperApplyRequest(BaseModel):

@@ -10,6 +10,7 @@ from app.models import Transaction, TransactionStatus, TransactionType, User, Wa
 from app.services.wallet import get_or_create_wallet, credit_wallet
 from app.services.monnify import verify_monnify_signature
 from app.services.billstack import verify_billstack_signature
+from app.services.outbound_webhooks import dispatch_developer_webhook
 from app.core.config import get_settings
 from app.api.v1.endpoints.wallet import _maybe_reward_first_deposit, _safe_ref
 from app.models.virtual_account import VirtualAccount, VirtualAccountProvider
@@ -81,6 +82,7 @@ async def smeplug_webhook(request: Request, db: Session = Depends(get_db)):
         except Exception as ref_exc:
             logger.error("Failed to trigger referral activity in webhook: %s", ref_exc)
         logger.info("SMEPlug Webhook: Transaction %s marked as SUCCESS", customer_reference)
+        dispatch_developer_webhook(transaction, transaction.user)
     elif status == "failed":
         transaction.status = TransactionStatus.FAILED
         transaction.external_reference = provider_reference
@@ -97,6 +99,7 @@ async def smeplug_webhook(request: Request, db: Session = Depends(get_db)):
         transaction.status = TransactionStatus.REFUNDED
         db.commit()
         logger.info("SMEPlug Webhook: Transaction %s marked as FAILED and REFUNDED", customer_reference)
+        dispatch_developer_webhook(transaction, transaction.user)
     else:
         logger.info("SMEPlug Webhook: Transaction %s status is %s, keeping pending", customer_reference, status)
 

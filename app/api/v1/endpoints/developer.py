@@ -21,7 +21,8 @@ from app.schemas.developer import (
     DeveloperWalletBalanceResponse,
     DeveloperDataPurchaseRequest,
     DeveloperAirtimePurchaseRequest,
-    DeveloperPurchaseResponse
+    DeveloperPurchaseResponse,
+    WebhookConfigRequest
 )
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
 from app.services.pricing import get_price_for_user
@@ -112,11 +113,14 @@ def get_developer_user(
 
 @router.get("/status", response_model=DeveloperStatusResponse)
 def get_status(user: User = Depends(get_current_user)):
+    secret_prefix = f"{user.webhook_secret[:10]}..." if getattr(user, "webhook_secret", None) else None
     return {
         "is_developer": user.is_developer,
         "developer_status": user.developer_status,
         "api_public_key": user.api_public_key,
-        "has_keys": user.api_secret_key_hash is not None
+        "has_keys": user.api_secret_key_hash is not None,
+        "webhook_url": getattr(user, "webhook_url", None),
+        "webhook_secret_prefix": secret_prefix
     }
 
 
@@ -163,11 +167,36 @@ def revoke_keys(user: User = Depends(get_current_user), db: Session = Depends(ge
     user.api_secret_key_hash = None
     db.commit()
     db.refresh(user)
+    secret_prefix = f"{user.webhook_secret[:10]}..." if getattr(user, "webhook_secret", None) else None
     return {
         "is_developer": user.is_developer,
         "developer_status": user.developer_status,
         "api_public_key": user.api_public_key,
-        "has_keys": False
+        "has_keys": False,
+        "webhook_url": getattr(user, "webhook_url", None),
+        "webhook_secret_prefix": secret_prefix
+    }
+
+
+@router.post("/webhook/config", response_model=DeveloperStatusResponse)
+def configure_webhook(payload: WebhookConfigRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if user.developer_status != "approved" or not user.is_developer:
+        raise HTTPException(status_code=403, detail="Developer access has not been approved.")
+        
+    user.webhook_url = payload.webhook_url.strip()
+    if not getattr(user, "webhook_secret", None):
+        user.webhook_secret = f"whsec_{secrets.token_hex(24)}"
+        
+    db.commit()
+    db.refresh(user)
+    secret_prefix = f"{user.webhook_secret[:10]}..." if getattr(user, "webhook_secret", None) else None
+    return {
+        "is_developer": user.is_developer,
+        "developer_status": user.developer_status,
+        "api_public_key": user.api_public_key,
+        "has_keys": user.api_secret_key_hash is not None,
+        "webhook_url": user.webhook_url,
+        "webhook_secret_prefix": secret_prefix
     }
 
 

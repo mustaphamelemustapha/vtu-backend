@@ -143,6 +143,7 @@ def ensure_tables():
         _ensure_user_kyc_hash_columns()
         _ensure_broadcast_announcement_button_columns()
         _ensure_user_developer_columns()
+        _ensure_user_webhook_columns()
         return
 
     # Optional local fallback for fresh environments.
@@ -165,6 +166,7 @@ def ensure_tables():
     _ensure_user_kyc_hash_columns()
     _ensure_broadcast_announcement_button_columns()
     _ensure_user_developer_columns()
+    _ensure_user_webhook_columns()
 
 
 @app.on_event("shutdown")
@@ -489,6 +491,23 @@ def _ensure_user_developer_columns() -> None:
                 logging.getLogger(__name__).info("Added users.api_secret_key_hash column.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure users developer columns: %s", exc)
+
+
+def _ensure_user_webhook_columns() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("users"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("users")}
+        with engine.begin() as conn:
+            if "webhook_url" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN webhook_url VARCHAR(255) NULL"))
+                logging.getLogger(__name__).info("Added users.webhook_url column.")
+            if "webhook_secret" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN webhook_secret VARCHAR(128) NULL"))
+                logging.getLogger(__name__).info("Added users.webhook_secret column.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure users webhook columns: %s", exc)
 
 
 @app.get("/healthz")

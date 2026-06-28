@@ -13,6 +13,7 @@ from app.core.database import SessionLocal
 from app.models import DataPlan, Transaction, TransactionStatus, TransactionType
 from app.services.amigo import AmigoApiError, AmigoClient, normalize_plan_code, resolve_network_id
 from app.services.wallet import credit_wallet, get_or_create_wallet
+from app.services.outbound_webhooks import dispatch_developer_webhook
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -111,6 +112,7 @@ def _finalize_refund(db: Session, tx: Transaction, reason: str) -> None:
     tx.failure_reason = reason[:255]
     credit_wallet(db, wallet, Decimal(tx.amount), tx.reference, "Auto refund after pending reconciliation failure")
     tx.status = TransactionStatus.REFUNDED
+    dispatch_developer_webhook(tx, tx.user)
 
 
 def _tx_age_seconds(tx: Transaction) -> int:
@@ -185,11 +187,15 @@ def reconcile_pending_data_once(limit: int = 50) -> dict[str, int]:
                         or response.get("transaction_id")
                         or tx.external_reference
                     )
+                    db.commit()
+                    logger.info("Reconciled pending tx %s -> SUCCESS", tx.reference)
                     try:
                         from app.services.referrals import trigger_referral_data_activity
                         trigger_referral_data_activity(db, tx)
+                        db.commit()
                     except Exception as ref_exc:
-                        logger.error("Failed to trigger referral activity in reconcile worker: %s", ref_exc)
+                        logger.error("Failed to trigger referral activity for reconciled tx %s: %s", tx.reference, ref_exc)
+                    dispatch_developer_webhook(tx, tx.user)
                     moved_success += 1
                 elif outcome == TransactionStatus.FAILED.value:
                     msg = str(response.get("message") or "Provider rejected transaction")

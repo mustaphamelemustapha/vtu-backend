@@ -42,6 +42,8 @@ class User(Base, TimestampMixin):
     developer_status = Column(String(32), default="none", nullable=False, server_default='none')
     api_public_key = Column(String(64), unique=True, nullable=True, index=True)
     api_secret_key_hash = Column(String(128), nullable=True)
+    webhook_url = Column(String(255), nullable=True)
+    webhook_secret = Column(String(128), nullable=True)
 
     referred_by = relationship(
         "User",
