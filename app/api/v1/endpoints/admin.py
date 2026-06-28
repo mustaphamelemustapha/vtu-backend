@@ -42,6 +42,32 @@ settings = get_settings()
 _ANALYTICS_CACHE: Dict[str, Any] = {}
 ANALYTICS_CACHE_TTL = 60  # seconds
 
+_GENERIC_CACHE: Dict[str, Any] = {}
+
+def cache_endpoint(ttl_seconds: int = 15):
+    def decorator(func):
+        from functools import wraps
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            key_parts = [func.__name__]
+            for k, v in sorted(kwargs.items()):
+                if k not in ('db', 'admin', 'background_tasks', 'request'):
+                    key_parts.append(f"{k}={v}")
+            cache_key = "::".join(key_parts)
+            
+            cached = _GENERIC_CACHE.get(cache_key)
+            if cached and (time.time() - cached['time']) < ttl_seconds:
+                return cached['data']
+                
+            result = func(*args, **kwargs)
+            _GENERIC_CACHE[cache_key] = {
+                'time': time.time(),
+                'data': result
+            }
+            return result
+        return wrapper
+    return decorator
+
 _SENSITIVE_META_KEYS = {
     "api_key",
     "apikey",
@@ -472,6 +498,7 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
     return result
 
 @router.get("/transactions", response_model=AdminTransactionsResponse)
+@cache_endpoint(ttl_seconds=15)
 def list_all_transactions(
     admin=Depends(require_admin),
     db: Session = Depends(get_db),
@@ -785,6 +812,7 @@ def get_transaction_details(
 
 
 @router.get("/users", response_model=AdminUsersResponse)
+@cache_endpoint(ttl_seconds=15)
 def list_users(
     admin=Depends(require_admin),
     db: Session = Depends(get_db),
@@ -958,6 +986,7 @@ def get_user_details(
 
 
 @router.get("/wallets")
+@cache_endpoint(ttl_seconds=15)
 def list_wallets(
     admin=Depends(require_admin),
     db: Session = Depends(get_db),
@@ -1414,6 +1443,7 @@ def fail_and_refund_pending_transactions_bulk(
 
 
 @router.get("/reports", response_model=AdminReportsResponse)
+@cache_endpoint(ttl_seconds=15)
 def list_reports(
     admin=Depends(require_admin),
     db: Session = Depends(get_db),
@@ -1599,7 +1629,8 @@ def update_pricing(payload: PricingRuleUpdate, admin=Depends(require_admin), db:
 
 
 @router.get("/pricing", response_model=PricingRulesResponse)
-def list_pricing(admin=Depends(require_admin), db: Session = Depends(get_db)):
+@cache_endpoint(ttl_seconds=60)
+def get_pricing_rules(admin=Depends(require_admin), db: Session = Depends(get_db)):
     rows = db.query(PricingRule).order_by(PricingRule.network.asc(), PricingRule.role.asc()).all()
     items = []
     for row in rows:
@@ -1726,7 +1757,8 @@ def adjust_user_wallet(
 
 
 @router.get("/services/toggles", response_model=list[ServiceToggleOut])
-def get_service_toggles(admin=Depends(require_admin), db: Session = Depends(get_db)):
+@cache_endpoint(ttl_seconds=60)
+def list_service_toggles(admin=Depends(require_admin), db: Session = Depends(get_db)):
     toggles = db.query(ServiceToggle).all()
     return toggles
 
@@ -1755,7 +1787,8 @@ def update_service_toggle(
 
 
 @router.get("/data-plans")
-def get_all_data_plans(admin=Depends(require_admin), db: Session = Depends(get_db)):
+@cache_endpoint(ttl_seconds=60)
+def get_data_plans(admin=Depends(require_admin), db: Session = Depends(get_db)):
     plans = db.query(DataPlan).order_by(DataPlan.network.asc(), DataPlan.plan_name.asc()).all()
     result = []
     for p in plans:
@@ -1900,7 +1933,8 @@ def update_data_plan(
 
 
 @router.get("/referrals", response_model=AdminReferralsResponse)
-def get_all_referrals(
+@cache_endpoint(ttl_seconds=15)
+def list_referrals(
     page: int = 1, page_size: int = 50, admin=Depends(require_admin), db: Session = Depends(get_db)
 ):
     query = db.query(Referral)
@@ -1915,6 +1949,7 @@ def get_all_referrals(
 
 
 @router.get("/audit-logs", response_model=AdminAuditLogsResponse)
+@cache_endpoint(ttl_seconds=15)
 def get_audit_logs(
     page: int = 1,
     page_size: int = 50,
