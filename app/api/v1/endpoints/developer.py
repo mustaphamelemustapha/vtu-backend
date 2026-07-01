@@ -33,6 +33,7 @@ from app.providers.smeplug_provider import SMEPlugProvider
 from app.services.amigo import AmigoClient, AmigoApiError, resolve_network_id, normalize_plan_code
 from app.services.bills import get_bills_provider
 from app.dependencies import get_current_user
+from app.middlewares.rate_limit import limiter
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -255,18 +256,27 @@ def get_data_purchase_status(ref: str, user: User = Depends(get_developer_user),
     if not ref:
         raise HTTPException(status_code=422, detail="Missing required 'ref' query parameter.")
         
+    internal_ref = f"DEV_{user.id}_{ref}"
+        
     # Scope: only see own client transactions
-    tx = db.query(Transaction).filter(Transaction.user_id == user.id, Transaction.reference == ref).first()
+    tx = db.query(Transaction).filter(Transaction.user_id == user.id, Transaction.reference == internal_ref).first()
     if not tx:
         # Fallback to check ServiceTransaction (e.g. for airtime)
-        tx_service = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == user.id, ServiceTransaction.reference == ref).first()
+        tx_service = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == user.id, ServiceTransaction.reference == internal_ref).first()
         if not tx_service:
             raise HTTPException(status_code=404, detail="No purchase with that reference is owned by your client.")
+        
+        status_str = "failed"
+        if tx_service.status == TransactionStatus.SUCCESS.value:
+            status_str = "delivered"
+        elif tx_service.status == TransactionStatus.PENDING.value:
+            status_str = "pending"
+            
         return {
             "success": True,
             "data": {
-                "reference": tx_service.reference,
-                "status": "delivered" if tx_service.status == TransactionStatus.SUCCESS.value else "failed",
+                "reference": ref,
+                "status": status_str,
                 "network": tx_service.provider,
                 "mobile_number": tx_service.customer,
                 "plan": None,
@@ -279,11 +289,17 @@ def get_data_purchase_status(ref: str, user: User = Depends(get_developer_user),
             }
         }
         
+    status_str = "failed"
+    if tx.status == TransactionStatus.SUCCESS:
+        status_str = "delivered"
+    elif tx.status == TransactionStatus.PENDING:
+        status_str = "pending"
+        
     return {
         "success": True,
         "data": {
-            "reference": tx.reference,
-            "status": "delivered" if tx.status == TransactionStatus.SUCCESS else "failed",
+            "reference": ref,
+            "status": status_str,
             "network": tx.network,
             "mobile_number": tx.recipient_phone,
             "plan": tx.data_plan_code,
@@ -327,9 +343,10 @@ def list_data_plans(user: User = Depends(get_developer_user), db: Session = Depe
 
 
 @router.post("/data/purchase", response_model=DeveloperPurchaseResponse)
-def developer_buy_data(payload: DeveloperDataPurchaseRequest, user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
+@limiter.limit("30/minute")
+def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
     # 1. Idempotency Check
-    client_ref = f"DEV_DATA_{payload.reference.strip()}"
+    client_ref = f"DEV_{user.id}_{payload.reference.strip()}"
     existing = db.query(Transaction).filter(Transaction.user_id == user.id, Transaction.reference == client_ref).first()
     if existing:
         return {
@@ -444,15 +461,16 @@ def developer_buy_data(payload: DeveloperDataPurchaseRequest, user: User = Depen
 
     return {
         "status": final_status,
-        "reference": client_ref,
+        "reference": payload.reference.strip(),
         "amount": price,
         "message": provider_res.get("error") if final_status == "failed" else "Transaction successful" if final_status == "success" else "Processing"
     }
 
 
 @router.post("/airtime/purchase", response_model=DeveloperPurchaseResponse)
-def developer_buy_airtime(payload: DeveloperAirtimePurchaseRequest, user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
-    client_ref = f"DEV_AIRTIME_{payload.reference.strip()}"
+@limiter.limit("30/minute")
+def developer_buy_airtime(request: Request, payload: DeveloperAirtimePurchaseRequest, user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
+    client_ref = f"DEV_{user.id}_{payload.reference.strip()}"
     existing = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == user.id, ServiceTransaction.reference == client_ref).first()
     if existing:
         return {
@@ -549,7 +567,7 @@ def developer_buy_airtime(payload: DeveloperAirtimePurchaseRequest, user: User =
 
     return {
         "status": final_status,
-        "reference": client_ref,
+        "reference": payload.reference.strip(),
         "amount": charge_amount,
         "message": provider_res.get("error") if final_status == "failed" else "Transaction successful" if final_status == "success" else "Processing"
     }

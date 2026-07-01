@@ -44,11 +44,17 @@ def dispatch_developer_webhook(transaction: Union[Transaction, ServiceTransactio
     # Handle enum values if needed
     status_str = transaction.status.value if hasattr(transaction.status, "value") else str(transaction.status)
 
+    # Strip developer prefix if it exists
+    original_ref = transaction.reference
+    prefix = f"DEV_{user.id}_"
+    if original_ref.startswith(prefix):
+        original_ref = original_ref[len(prefix):]
+
     # Build the payload
     payload = {
         "event": "transaction.updated",
         "data": {
-            "reference": transaction.reference,
+            "reference": original_ref,
             "status": "delivered" if status_str == "success" else "failed",
             "amount": float(transaction.amount),
             "network": transaction.provider or getattr(transaction, "network", None),
