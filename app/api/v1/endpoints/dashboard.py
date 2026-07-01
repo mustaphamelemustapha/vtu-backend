@@ -31,7 +31,7 @@ def get_dashboard_summary(
         partial_failures.append("wallet")
 
     try:
-        transactions = list_transactions(user=user, db=db)
+        transactions = list_transactions(limit=50, user=user, db=db)
     except Exception:
         partial_failures.append("transactions")
 
