@@ -51,9 +51,10 @@ if database_url.startswith("postgresql"):
 
     # Guardrails for production stability: too-small pools cause frequent 503
     # under normal concurrent requests (auth + dashboard bootstrap + polling).
-    pool_size = max(5, configured_pool_size)
-    max_overflow = max(5, configured_max_overflow)
-    pool_timeout = max(8, configured_pool_timeout)
+    # Increased to prevent slow external API calls (e.g. Amigo) from exhausting the pool.
+    pool_size = max(30, configured_pool_size)
+    max_overflow = max(20, configured_max_overflow)
+    pool_timeout = max(30, configured_pool_timeout)
 
     if (
         pool_size != configured_pool_size
