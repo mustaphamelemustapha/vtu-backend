@@ -27,9 +27,9 @@ def main() -> int:
             connection = engine.connect()
             break
         except OperationalError as e:
-            print(f"Database connection attempt {attempt + 1}/{max_retries} failed: {e}", file=sys.stderr)
+            print(f"Database connection attempt {attempt + 1}/{max_retries} failed: {e}")
             if attempt < max_retries - 1:
-                print(f"Retrying in {retry_delay} seconds...", file=sys.stderr)
+                print(f"Retrying in {retry_delay} seconds...")
                 time.sleep(retry_delay)
             else:
                 print("Max connection retries reached. Failing migration.", file=sys.stderr)
