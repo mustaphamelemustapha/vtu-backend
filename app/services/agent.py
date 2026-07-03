@@ -503,7 +503,7 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
     tx_ref = f"AG-RWD-{campaign.id}-{user.id}-{int(_utcnow().timestamp())}"
     
     try:
-        credit_wallet(db, wallet, campaign.reward_amount, tx_ref, f"Reward claim for {campaign.title}")
+        credit_wallet(db, wallet, campaign.reward_amount, tx_ref, f"Reward claim for {campaign.title}", commit=False)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to credit wallet: {str(e)}")
         
