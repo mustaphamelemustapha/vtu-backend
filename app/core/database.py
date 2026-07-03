@@ -51,10 +51,10 @@ if database_url.startswith("postgresql"):
 
     # Guardrails for production stability: too-small pools cause frequent 503
     # under normal concurrent requests (auth + dashboard bootstrap + polling).
-    # Increased to prevent slow external API calls (e.g. Amigo) from exhausting the pool.
-    pool_size = max(30, configured_pool_size)
-    max_overflow = max(20, configured_max_overflow)
-    pool_timeout = max(30, configured_pool_timeout)
+    # NOTE: Set to 5 and 10 to respect Supabase 15 connection limit.
+    pool_size = max(5, configured_pool_size)
+    max_overflow = max(10, configured_max_overflow)
+    pool_timeout = max(15, configured_pool_timeout)
 
     if (
         pool_size != configured_pool_size

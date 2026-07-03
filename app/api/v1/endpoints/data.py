@@ -448,6 +448,14 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
     db.add(transaction)
     db.commit()
 
+    # -----------------------------
+    # Release DB connection to avoid pool starvation on slow HTTP requests
+    # -----------------------------
+    tx_id = transaction.id
+    user_id = user.id
+    fcm_token = user.fcm_token
+    db.close()
+
     # 3. ROUTE TO PROVIDER
     provider_res = {"status": "pending", "error": "Provider routing failed"}
     network_key = str(plan.network or "").lower()
@@ -461,7 +469,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
             sme_network_map = {"mtn": 1, "airtel": 2, "9mobile": 3, "glo": 4}
             net_id = sme_network_map.get(network_key, 2)
             provider_res = sme.purchase_network_data(net_id, phone, plan.provider_plan_id or plan.plan_code, reference)
-            transaction.provider = provider_name
+            transaction_provider = provider_name
 
         elif provider_name == "amigo" or (not provider_name and network_key in {"mtn", "glo", "airtel", "9mobile"}):
             amigo = AmigoClient()
@@ -472,7 +480,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                 "plan": normalize_plan_code(plan.plan_code),
                 "Ported_number": True
             }
-            transaction.provider = "amigo"
+            transaction_provider = "amigo"
             try:
                 res = amigo.purchase_data(amigo_payload, idempotency_key=reference)
                 if res.get("success") or str(res.get("status")).lower() in {"delivered", "success", "successful"}:
@@ -493,7 +501,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
 
         elif provider_name == "clubkonnect" or (not provider_name and network_key == "9mobile"):
             bills = get_bills_provider()
-            transaction.provider = "clubkonnect"
+            transaction_provider = "clubkonnect"
             res = bills.purchase_data(network_key, phone, plan.provider_plan_id or plan.plan_code, amount=float(price), request_id=reference)
             if res.ok:
                 provider_res = {"status": "success", "provider_reference": res.external_reference}
@@ -506,10 +514,11 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
         elif network_key == "airtel":
             sme = SMEPlugProvider()
             provider_res = sme.purchase_network_data(2, phone, plan.provider_plan_id or plan.plan_code, reference)
-            transaction.provider = "smeplug"
+            transaction_provider = "smeplug"
 
         else:
             provider_res = {"status": "failed", "error": f"No provider configured for network: {network_key}"}
+            transaction_provider = provider_name
 
     except Exception as exc:
         logger.error("Data purchase provider exception: %s", exc)
@@ -517,65 +526,78 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
             provider_res = {"status": "pending", "error": f"Provider timeout/error: {str(exc)}"}
         else:
             provider_res = {"status": "failed", "error": str(exc)}
+        transaction_provider = provider_name
 
     duration_ms = (time.time() - start_time) * 1000
     
-    # 4. HANDLE RESULT
-    final_status = provider_res.get("status", "pending")
-    transaction.status = TransactionStatus.SUCCESS if final_status == "success" else (TransactionStatus.FAILED if final_status == "failed" else TransactionStatus.PENDING)
-    transaction.external_reference = provider_res.get("provider_reference")
-    
-    if final_status == "failed":
-        transaction.failure_reason = _safe_reason(provider_res.get("error"))
-        credit_wallet(db, wallet, price, reference, f"Refund: {plan.plan_name} purchase failed")
-        transaction.status = TransactionStatus.REFUNDED
+    # RE-ACQUIRE DB CONNECTION
+    from app.core.database import SessionLocal
+    db2 = SessionLocal()
+    try:
+        transaction = db2.query(Transaction).get(tx_id)
+        user = db2.query(User).get(user_id)
+        wallet = get_or_create_wallet(db2, user_id)
+        
+        transaction.provider = transaction_provider
 
-    db.commit()
+        # 4. HANDLE RESULT
+        final_status = provider_res.get("status", "pending")
+        transaction.status = TransactionStatus.SUCCESS if final_status == "success" else (TransactionStatus.FAILED if final_status == "failed" else TransactionStatus.PENDING)
+        transaction.external_reference = provider_res.get("provider_reference")
+        
+        if final_status == "failed":
+            transaction.failure_reason = _safe_reason(provider_res.get("error"))
+            credit_wallet(db2, wallet, price, reference, f"Refund: {plan.plan_name} purchase failed")
+            transaction.status = TransactionStatus.REFUNDED
 
-    if final_status == "success":
-        try:
-            from app.services.referrals import record_referral_data_activity
-            mb_size = _parse_size_gb(plan.data_size) * 1024.0
-            record_referral_data_activity(db, user=user, tx_type="data", amount=price, data_mb=mb_size)
-            db.commit()
-        except Exception as ref_exc:
-            logger.error("Failed to record referral activity: %s", ref_exc)
+        db2.commit()
 
-    from app.services.push_notification import PushNotificationService
-    if final_status == "success" and user.fcm_token:
-        PushNotificationService.send_to_token(
-            token=user.fcm_token,
-            title="Data Purchase Successful",
-            body=f"Your purchase of {plan.plan_name} for {phone} was successful.",
-            data={"type": "transaction", "reference": reference, "status": "success"}
+        if final_status == "success":
+            try:
+                from app.services.referrals import record_referral_data_activity
+                mb_size = _parse_size_gb(plan.data_size) * 1024.0
+                record_referral_data_activity(db2, user=user, tx_type="data", amount=price, data_mb=mb_size)
+                db2.commit()
+            except Exception as ref_exc:
+                logger.error("Failed to record referral activity: %s", ref_exc)
+
+        from app.services.push_notification import PushNotificationService
+        if final_status == "success" and fcm_token:
+            PushNotificationService.send_to_token(
+                token=fcm_token,
+                title="Data Purchase Successful",
+                body=f"Your purchase of {plan.plan_name} for {phone} was successful.",
+                data={"type": "transaction", "reference": reference, "status": "success"}
+            )
+        elif final_status == "failed" and fcm_token:
+            PushNotificationService.send_to_token(
+                token=fcm_token,
+                title="Data Purchase Failed",
+                body=f"Your purchase of {plan.plan_name} for {phone} failed and you have been refunded.",
+                data={"type": "transaction", "reference": reference, "status": "failed"}
+            )
+
+        # Log API call
+        api_log = ApiLog(
+            user_id=user_id,
+            service=transaction.provider or "data",
+            endpoint="/data/purchase",
+            status_code=200,
+            duration_ms=duration_ms,
+            reference=reference,
+            success=1 if final_status == "success" else 0
         )
-    elif final_status == "failed" and user.fcm_token:
-        PushNotificationService.send_to_token(
-            token=user.fcm_token,
-            title="Data Purchase Failed",
-            body=f"Your purchase of {plan.plan_name} for {phone} failed and you have been refunded.",
-            data={"type": "transaction", "reference": reference, "status": "failed"}
-        )
+        db2.add(api_log)
+        db2.commit()
 
-    # Log API call (Using correct ApiLog fields: user_id, service, endpoint, status_code, duration_ms, reference, success)
-    api_log = ApiLog(
-        user_id=user.id,
-        service=transaction.provider or "data",
-        endpoint="/data/purchase",
-        status_code=200,
-        duration_ms=duration_ms,
-        reference=reference,
-        success=1 if final_status == "success" else 0
-    )
-    db.add(api_log)
-    db.commit()
-
-    return {
-        "status": final_status,
-        "message": provider_res.get("error") if final_status == "failed" else "Transaction successful" if final_status == "success" else "Transaction is processing",
-        "reference": reference,
-        "provider_reference": transaction.external_reference
-    }
+        return {
+            "status": final_status,
+            "message": provider_res.get("error") if final_status == "failed" else "Transaction successful" if final_status == "success" else "Transaction is processing",
+            "reference": reference,
+            "provider_reference": transaction.external_reference
+        }
+    finally:
+        db2.close()
 
 
 @router.post("/sync", dependencies=[Depends(require_admin)])

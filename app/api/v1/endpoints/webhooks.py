@@ -1,4 +1,5 @@
 import logging
+import json
 from fastapi import APIRouter, Depends, Request, HTTPException
 from sqlalchemy.orm import Session
 from decimal import Decimal
@@ -20,17 +21,20 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+async def get_raw_body(request: Request) -> bytes:
+    return await request.body()
+
 @router.post("/paystack/webhook")
-async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
+def paystack_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), db: Session = Depends(get_db)):
     signature = request.headers.get("x-paystack-signature")
     if not signature:
         raise HTTPException(status_code=401, detail="Missing signature")
 
-    body = await request.body()
+    body = raw_body
     if not verify_paystack_signature(body, signature):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
-    payload = await request.json()
+    payload = json.loads(raw_body)
     event = payload.get("event")
     data = payload.get("data", {})
 
@@ -122,7 +126,7 @@ async def paystack_webhook(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/smeplug")
-async def smeplug_webhook(request: Request, db: Session = Depends(get_db)):
+def smeplug_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), db: Session = Depends(get_db)):
     """
     SMEPlug Webhook Handler
     
@@ -146,7 +150,7 @@ async def smeplug_webhook(request: Request, db: Session = Depends(get_db)):
         if configured_secret not in {bearer, token_header.strip()}:
             raise HTTPException(status_code=401, detail="Invalid SMEPlug webhook token")
 
-    payload = await request.json()
+    payload = json.loads(raw_body)
     logger.info("SMEPlug Webhook received: %s", payload)
     
     tx_data = payload.get("transaction") or payload.get("data") or payload
@@ -208,16 +212,16 @@ async def smeplug_webhook(request: Request, db: Session = Depends(get_db)):
     return {"status": "ok"}
 
 @router.post("/monnify")
-async def monnify_webhook(request: Request, db: Session = Depends(get_db)):
+def monnify_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), db: Session = Depends(get_db)):
     signature = request.headers.get("monnify-signature")
     if not signature:
         raise HTTPException(status_code=401, detail="Missing signature")
 
-    body = await request.body()
+    body = raw_body
     if not verify_monnify_signature(body, signature):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
-    payload = await request.json()
+    payload = json.loads(raw_body)
     event_type = payload.get("eventType")
     data = payload.get("eventData", {}) or payload.get("data", {})
 
@@ -373,9 +377,9 @@ async def monnify_webhook(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/billstack")
-async def billstack_webhook(request: Request, db: Session = Depends(get_db)):
+def billstack_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), db: Session = Depends(get_db)):
     signature = request.headers.get("x-billstack-signature") or request.headers.get("billstack-signature")
-    body = await request.body()
+    body = raw_body
     
     # Verify signature only if billstack_webhook_secret is explicitly configured
     if settings.billstack_webhook_secret:
@@ -386,7 +390,7 @@ async def billstack_webhook(request: Request, db: Session = Depends(get_db)):
         is_valid = verify_billstack_signature(body, signature)
         logger.info("Billstack Webhook: Signature present. Verification result: %s", is_valid)
 
-    payload = await request.json()
+    payload = json.loads(raw_body)
     logger.info("Billstack Webhook received: %s", payload)
 
     event = payload.get("event")

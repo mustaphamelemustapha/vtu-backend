@@ -248,66 +248,87 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
     db.commit()
     db.refresh(tx)
 
+    tx_id = tx.id
+    user_id = user.id
+    fcm_token = user.fcm_token
+    db.close()
+
     provider = get_bills_provider()
     try:
         result = provider.purchase_airtime(tx.provider or "", tx.customer or "", float(base_amount))
     except Exception as exc:
-        if _is_transport_error(exc):
-            logger.warning("Airtime provider confirmation delayed ref=%s error=%s", reference, exc)
-            _mark_pending_confirmation(db, tx, {"provider_error": str(exc)})
-            return {"reference": reference, "status": tx.status, "message": _PENDING_CONFIRMATION_MESSAGE}
-        logger.exception("Airtime purchase failed with non-transport provider error ref=%s", reference)
-        tx.failure_reason = str(exc) or "Provider failed"
-        credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed airtime purchase")
+        from app.core.database import SessionLocal
+        db2 = SessionLocal()
+        try:
+            tx = db2.query(ServiceTransaction).get(tx_id)
+            wallet = get_or_create_wallet(db2, user_id)
+            if _is_transport_error(exc):
+                logger.warning("Airtime provider confirmation delayed ref=%s error=%s", reference, exc)
+                _mark_pending_confirmation(db2, tx, {"provider_error": str(exc)})
+                return {"reference": reference, "status": tx.status, "message": _PENDING_CONFIRMATION_MESSAGE}
+            logger.exception("Airtime purchase failed with non-transport provider error ref=%s", reference)
+            tx.failure_reason = str(exc) or "Provider failed"
+            credit_wallet(db2, wallet, charge_amount, reference, "Auto refund for failed airtime purchase")
+            tx.status = TransactionStatus.REFUNDED.value
+            db2.commit()
+            raise HTTPException(status_code=502, detail=tx.failure_reason)
+        finally:
+            db2.close()
+
+    from app.core.database import SessionLocal
+    db2 = SessionLocal()
+    try:
+        tx = db2.query(ServiceTransaction).get(tx_id)
+        wallet = get_or_create_wallet(db2, user_id)
+        
+        provider_status = _provider_status(result)
+        if provider_status in _PROVIDER_PENDING_STATUS:
+            tx.status = TransactionStatus.PENDING.value
+            tx.external_reference = result.external_reference
+            if result.meta:
+                tx.meta = {**(tx.meta or {}), **result.meta}
+            tx.failure_reason = result.message or _PENDING_CONFIRMATION_MESSAGE
+            db2.commit()
+            return {"reference": reference, "status": tx.status, "message": tx.failure_reason}
+        if result.success:
+            tx.status = TransactionStatus.SUCCESS.value
+            tx.external_reference = result.external_reference
+            if result.meta:
+                tx.meta = {**(tx.meta or {}), **result.meta}
+            db2.commit()
+            if fcm_token:
+                try:
+                    from app.services.push_notification import PushNotificationService
+                    PushNotificationService.send_to_token(
+                        token=fcm_token,
+                        title="Airtime Purchase Successful",
+                        body=f"Your purchase of ₦{float(base_amount)} {payload.network.upper()} airtime for {payload.phone_number} was successful.",
+                        data={"type": "transaction", "reference": reference, "status": "success"}
+                    )
+                except Exception as e:
+                    logger.warning("Failed to send push notification: %s", e)
+            return {"reference": reference, "status": tx.status}
+
+        tx.failure_reason = result.message or "Provider failed"
+        if result.meta:
+            tx.meta = {**(tx.meta or {}), **result.meta}
+        credit_wallet(db2, wallet, charge_amount, reference, "Auto refund for failed airtime purchase")
         tx.status = TransactionStatus.REFUNDED.value
-        db.commit()
-        raise HTTPException(status_code=502, detail=tx.failure_reason)
-    provider_status = _provider_status(result)
-    if provider_status in _PROVIDER_PENDING_STATUS:
-        tx.status = TransactionStatus.PENDING.value
-        tx.external_reference = result.external_reference
-        if result.meta:
-            tx.meta = {**(tx.meta or {}), **result.meta}
-        tx.failure_reason = result.message or _PENDING_CONFIRMATION_MESSAGE
-        db.commit()
-        return {"reference": reference, "status": tx.status, "message": tx.failure_reason}
-    if result.success:
-        tx.status = TransactionStatus.SUCCESS.value
-        tx.external_reference = result.external_reference
-        if result.meta:
-            tx.meta = {**(tx.meta or {}), **result.meta}
-        db.commit()
-        if user.fcm_token:
+        db2.commit()
+        if fcm_token:
             try:
                 from app.services.push_notification import PushNotificationService
                 PushNotificationService.send_to_token(
-                    token=user.fcm_token,
-                    title="Airtime Purchase Successful",
-                    body=f"Your purchase of ₦{float(base_amount)} {payload.network.upper()} airtime for {payload.phone_number} was successful.",
-                    data={"type": "transaction", "reference": reference, "status": "success"}
+                    token=fcm_token,
+                    title="Airtime Purchase Failed",
+                    body=f"Your purchase of ₦{float(base_amount)} {payload.network.upper()} airtime for {payload.phone_number} failed. A refund of ₦{float(charge_amount)} has been credited to your wallet.",
+                    data={"type": "transaction", "reference": reference, "status": "refunded"}
                 )
             except Exception as e:
                 logger.warning("Failed to send push notification: %s", e)
-        return {"reference": reference, "status": tx.status}
-
-    tx.failure_reason = result.message or "Provider failed"
-    if result.meta:
-        tx.meta = {**(tx.meta or {}), **result.meta}
-    credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed airtime purchase")
-    tx.status = TransactionStatus.REFUNDED.value
-    db.commit()
-    if user.fcm_token:
-        try:
-            from app.services.push_notification import PushNotificationService
-            PushNotificationService.send_to_token(
-                token=user.fcm_token,
-                title="Airtime Purchase Failed",
-                body=f"Your purchase of ₦{float(base_amount)} {payload.network.upper()} airtime for {payload.phone_number} failed. A refund of ₦{float(charge_amount)} has been credited to your wallet.",
-                data={"type": "transaction", "reference": reference, "status": "refunded"}
-            )
-        except Exception as e:
-            logger.warning("Failed to send push notification: %s", e)
-    raise HTTPException(status_code=502, detail=tx.failure_reason)
+        raise HTTPException(status_code=502, detail=tx.failure_reason)
+    finally:
+        db2.close()
 
 
 @router.post("/cable/purchase")
@@ -365,6 +386,11 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
     db.commit()
     db.refresh(tx)
 
+    tx_id = tx.id
+    user_id = user.id
+    fcm_token = user.fcm_token
+    db.close()
+
     provider = get_bills_provider()
     try:
         result = provider.purchase_cable(
@@ -375,62 +401,78 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
             payload.phone_number.strip(),
         )
     except Exception as exc:
-        if _is_transport_error(exc):
-            logger.warning("Cable provider confirmation delayed ref=%s error=%s", reference, exc)
-            _mark_pending_confirmation(db, tx, {"provider_error": str(exc)})
-            return {"reference": reference, "status": tx.status, "message": _PENDING_CONFIRMATION_MESSAGE}
-        logger.exception("Cable purchase failed with non-transport provider error ref=%s", reference)
-        tx.failure_reason = str(exc) or "Provider failed"
-        credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed cable purchase")
+        from app.core.database import SessionLocal
+        db2 = SessionLocal()
+        try:
+            tx = db2.query(ServiceTransaction).get(tx_id)
+            wallet = get_or_create_wallet(db2, user_id)
+            if _is_transport_error(exc):
+                logger.warning("Cable provider confirmation delayed ref=%s error=%s", reference, exc)
+                _mark_pending_confirmation(db2, tx, {"provider_error": str(exc)})
+                return {"reference": reference, "status": tx.status, "message": _PENDING_CONFIRMATION_MESSAGE}
+            logger.exception("Cable purchase failed with non-transport provider error ref=%s", reference)
+            tx.failure_reason = str(exc) or "Provider failed"
+            credit_wallet(db2, wallet, charge_amount, reference, "Auto refund for failed cable purchase")
+            tx.status = TransactionStatus.REFUNDED.value
+            db2.commit()
+            raise HTTPException(status_code=502, detail=tx.failure_reason)
+        finally:
+            db2.close()
+
+    from app.core.database import SessionLocal
+    db2 = SessionLocal()
+    try:
+        tx = db2.query(ServiceTransaction).get(tx_id)
+        wallet = get_or_create_wallet(db2, user_id)
+
+        provider_status = _provider_status(result)
+        if provider_status in _PROVIDER_PENDING_STATUS:
+            tx.status = TransactionStatus.PENDING.value
+            tx.external_reference = result.external_reference
+            if result.meta:
+                tx.meta = {**(tx.meta or {}), **result.meta}
+            tx.failure_reason = result.message or _PENDING_CONFIRMATION_MESSAGE
+            db2.commit()
+            return {"reference": reference, "status": tx.status, "message": tx.failure_reason}
+        if result.success:
+            tx.status = TransactionStatus.SUCCESS.value
+            tx.external_reference = result.external_reference
+            if result.meta:
+                tx.meta = {**(tx.meta or {}), **result.meta}
+            db2.commit()
+            if fcm_token:
+                try:
+                    from app.services.push_notification import PushNotificationService
+                    PushNotificationService.send_to_token(
+                        token=fcm_token,
+                        title="Cable Subscription Successful",
+                        body=f"Your subscription of {payload.package_code} for {payload.provider.upper()} ({payload.smartcard_number}) was successful.",
+                        data={"type": "transaction", "reference": reference, "status": "success"}
+                    )
+                except Exception as e:
+                    logger.warning("Failed to send push notification: %s", e)
+            return {"reference": reference, "status": tx.status}
+
+        tx.failure_reason = result.message or "Provider failed"
+        if result.meta:
+            tx.meta = {**(tx.meta or {}), **result.meta}
+        credit_wallet(db2, wallet, charge_amount, reference, "Auto refund for failed cable purchase")
         tx.status = TransactionStatus.REFUNDED.value
-        db.commit()
-        raise HTTPException(status_code=502, detail=tx.failure_reason)
-    provider_status = _provider_status(result)
-    if provider_status in _PROVIDER_PENDING_STATUS:
-        tx.status = TransactionStatus.PENDING.value
-        tx.external_reference = result.external_reference
-        if result.meta:
-            tx.meta = {**(tx.meta or {}), **result.meta}
-        tx.failure_reason = result.message or _PENDING_CONFIRMATION_MESSAGE
-        db.commit()
-        return {"reference": reference, "status": tx.status, "message": tx.failure_reason}
-    if result.success:
-        tx.status = TransactionStatus.SUCCESS.value
-        tx.external_reference = result.external_reference
-        if result.meta:
-            tx.meta = {**(tx.meta or {}), **result.meta}
-        db.commit()
-        if user.fcm_token:
+        db2.commit()
+        if fcm_token:
             try:
                 from app.services.push_notification import PushNotificationService
                 PushNotificationService.send_to_token(
-                    token=user.fcm_token,
-                    title="Cable Subscription Successful",
-                    body=f"Your subscription of {payload.package_code} for {payload.provider.upper()} ({payload.smartcard_number}) was successful.",
-                    data={"type": "transaction", "reference": reference, "status": "success"}
+                    token=fcm_token,
+                    title="Cable Subscription Failed",
+                    body=f"Your subscription of {payload.package_code} for {payload.provider.upper()} failed. A refund of ₦{float(charge_amount)} has been credited to your wallet.",
+                    data={"type": "transaction", "reference": reference, "status": "refunded"}
                 )
             except Exception as e:
                 logger.warning("Failed to send push notification: %s", e)
-        return {"reference": reference, "status": tx.status}
-
-    tx.failure_reason = result.message or "Provider failed"
-    if result.meta:
-        tx.meta = {**(tx.meta or {}), **result.meta}
-    credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed cable purchase")
-    tx.status = TransactionStatus.REFUNDED.value
-    db.commit()
-    if user.fcm_token:
-        try:
-            from app.services.push_notification import PushNotificationService
-            PushNotificationService.send_to_token(
-                token=user.fcm_token,
-                title="Cable Subscription Failed",
-                body=f"Your subscription of {payload.package_code} for {payload.provider.upper()} failed. A refund of ₦{float(charge_amount)} has been credited to your wallet.",
-                data={"type": "transaction", "reference": reference, "status": "refunded"}
-            )
-        except Exception as e:
-            logger.warning("Failed to send push notification: %s", e)
-    raise HTTPException(status_code=502, detail=tx.failure_reason)
+        raise HTTPException(status_code=502, detail=tx.failure_reason)
+    finally:
+        db2.close()
 
 
 @router.get("/cable/packages")
@@ -556,6 +598,11 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
     db.commit()
     db.refresh(tx)
 
+    tx_id = tx.id
+    user_id = user.id
+    fcm_token = user.fcm_token
+    db.close()
+
     provider = get_bills_provider()
     try:
         result = provider.purchase_electricity(
@@ -566,66 +613,82 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
             payload.phone_number.strip(),
         )
     except Exception as exc:
-        if _is_transport_error(exc):
-            logger.warning("Electricity provider confirmation delayed ref=%s error=%s", reference, exc)
-            _mark_pending_confirmation(db, tx, {"provider_error": str(exc)})
-            return {"reference": reference, "status": tx.status, "message": _PENDING_CONFIRMATION_MESSAGE, "token": (tx.meta or {}).get("token")}
-        logger.exception("Electricity purchase failed with non-transport provider error ref=%s", reference)
-        tx.failure_reason = str(exc) or "Provider failed"
-        credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed electricity purchase")
+        from app.core.database import SessionLocal
+        db2 = SessionLocal()
+        try:
+            tx = db2.query(ServiceTransaction).get(tx_id)
+            wallet = get_or_create_wallet(db2, user_id)
+            if _is_transport_error(exc):
+                logger.warning("Electricity provider confirmation delayed ref=%s error=%s", reference, exc)
+                _mark_pending_confirmation(db2, tx, {"provider_error": str(exc)})
+                return {"reference": reference, "status": tx.status, "message": _PENDING_CONFIRMATION_MESSAGE, "token": (tx.meta or {}).get("token")}
+            logger.exception("Electricity purchase failed with non-transport provider error ref=%s", reference)
+            tx.failure_reason = str(exc) or "Provider failed"
+            credit_wallet(db2, wallet, charge_amount, reference, "Auto refund for failed electricity purchase")
+            tx.status = TransactionStatus.REFUNDED.value
+            db2.commit()
+            raise HTTPException(status_code=502, detail=tx.failure_reason)
+        finally:
+            db2.close()
+
+    from app.core.database import SessionLocal
+    db2 = SessionLocal()
+    try:
+        tx = db2.query(ServiceTransaction).get(tx_id)
+        wallet = get_or_create_wallet(db2, user_id)
+
+        provider_status = _provider_status(result)
+        if provider_status in _PROVIDER_PENDING_STATUS:
+            tx.status = TransactionStatus.PENDING.value
+            tx.external_reference = result.external_reference
+            if result.meta:
+                tx.meta = {**(tx.meta or {}), **result.meta}
+            tx.failure_reason = result.message or _PENDING_CONFIRMATION_MESSAGE
+            db2.commit()
+            return {"reference": reference, "status": tx.status, "token": (tx.meta or {}).get("token"), "message": tx.failure_reason}
+        if result.success:
+            tx.status = TransactionStatus.SUCCESS.value
+            tx.external_reference = result.external_reference
+            if result.meta:
+                tx.meta = {**(tx.meta or {}), **result.meta}
+            db2.commit()
+            if fcm_token:
+                try:
+                    from app.services.push_notification import PushNotificationService
+                    token_str = (tx.meta or {}).get("token") or ""
+                    body_msg = f"Your purchase of ₦{float(base_amount)} electricity for meter {payload.meter_number} was successful."
+                    if token_str:
+                        body_msg += f" Token: {token_str}"
+                    PushNotificationService.send_to_token(
+                        token=fcm_token,
+                        title="Electricity Purchase Successful",
+                        body=body_msg,
+                        data={"type": "transaction", "reference": reference, "status": "success"}
+                    )
+                except Exception as e:
+                    logger.warning("Failed to send push notification: %s", e)
+            return {"reference": reference, "status": tx.status, "token": (tx.meta or {}).get("token")}
+
+        tx.failure_reason = result.message or "Provider failed"
+        if result.meta:
+            tx.meta = {**(tx.meta or {}), **result.meta}
+        credit_wallet(db2, wallet, charge_amount, reference, "Auto refund for failed electricity purchase")
         tx.status = TransactionStatus.REFUNDED.value
-        db.commit()
-        raise HTTPException(status_code=502, detail=tx.failure_reason)
-    provider_status = _provider_status(result)
-    if provider_status in _PROVIDER_PENDING_STATUS:
-        tx.status = TransactionStatus.PENDING.value
-        tx.external_reference = result.external_reference
-        if result.meta:
-            tx.meta = {**(tx.meta or {}), **result.meta}
-        tx.failure_reason = result.message or _PENDING_CONFIRMATION_MESSAGE
-        db.commit()
-        return {"reference": reference, "status": tx.status, "token": (tx.meta or {}).get("token"), "message": tx.failure_reason}
-    if result.success:
-        tx.status = TransactionStatus.SUCCESS.value
-        tx.external_reference = result.external_reference
-        if result.meta:
-            tx.meta = {**(tx.meta or {}), **result.meta}
-        db.commit()
-        if user.fcm_token:
+        db2.commit()
+        if fcm_token:
             try:
                 from app.services.push_notification import PushNotificationService
-                token_str = (tx.meta or {}).get("token") or ""
-                body_msg = f"Your purchase of ₦{float(base_amount)} electricity for meter {payload.meter_number} was successful."
-                if token_str:
-                    body_msg += f" Token: {token_str}"
                 PushNotificationService.send_to_token(
-                    token=user.fcm_token,
-                    title="Electricity Purchase Successful",
-                    body=body_msg,
-                    data={"type": "transaction", "reference": reference, "status": "success"}
+                    token=fcm_token,
+                    title="Electricity Purchase Failed",
+                    body=f"Your purchase of ₦{float(base_amount)} electricity for meter {payload.meter_number} failed. A refund of ₦{float(charge_amount)} has been credited to your wallet.",
+                    data={"type": "transaction", "reference": reference, "status": "refunded"}
                 )
             except Exception as e:
                 logger.warning("Failed to send push notification: %s", e)
-        return {"reference": reference, "status": tx.status, "token": (tx.meta or {}).get("token")}
-
-    tx.failure_reason = result.message or "Provider failed"
-    if result.meta:
-        tx.meta = {**(tx.meta or {}), **result.meta}
-    credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed electricity purchase")
-    tx.status = TransactionStatus.REFUNDED.value
-    db.commit()
-    if user.fcm_token:
-        try:
-            from app.services.push_notification import PushNotificationService
-            PushNotificationService.send_to_token(
-                token=user.fcm_token,
-                title="Electricity Purchase Failed",
-                body=f"Your purchase of ₦{float(base_amount)} electricity for meter {payload.meter_number} failed. A refund of ₦{float(charge_amount)} has been credited to your wallet.",
-                data={"type": "transaction", "reference": reference, "status": "refunded"}
-            )
-        except Exception as e:
-            logger.warning("Failed to send push notification: %s", e)
-    raise HTTPException(status_code=502, detail=tx.failure_reason)
+        raise HTTPException(status_code=502, detail=tx.failure_reason)
+    finally:
+        db2.close()
 
 
 @router.get("/electricity/discos")
@@ -788,6 +851,11 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
     db.commit()
     db.refresh(tx)
 
+    tx_id = tx.id
+    user_id = user.id
+    fcm_token = user.fcm_token
+    db.close()
+
     try:
         result = provider.purchase_exam_pin(
             tx.provider or "",
@@ -796,63 +864,79 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
             selected_exam_type,
         )
     except Exception as exc:
-        if _is_transport_error(exc):
-            logger.warning("Exam provider confirmation delayed ref=%s error=%s", reference, exc)
-            _mark_pending_confirmation(db, tx, {"provider_error": str(exc)})
-            return {"reference": reference, "status": tx.status, "pins": (tx.meta or {}).get("pins", []), "message": _PENDING_CONFIRMATION_MESSAGE}
-        logger.exception("Exam purchase failed with non-transport provider error ref=%s", reference)
-        tx.failure_reason = str(exc) or "Provider failed"
-        credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed exam pin purchase")
+        from app.core.database import SessionLocal
+        db2 = SessionLocal()
+        try:
+            tx = db2.query(ServiceTransaction).get(tx_id)
+            wallet = get_or_create_wallet(db2, user_id)
+            if _is_transport_error(exc):
+                logger.warning("Exam provider confirmation delayed ref=%s error=%s", reference, exc)
+                _mark_pending_confirmation(db2, tx, {"provider_error": str(exc)})
+                return {"reference": reference, "status": tx.status, "pins": (tx.meta or {}).get("pins", []), "message": _PENDING_CONFIRMATION_MESSAGE}
+            logger.exception("Exam purchase failed with non-transport provider error ref=%s", reference)
+            tx.failure_reason = str(exc) or "Provider failed"
+            credit_wallet(db2, wallet, charge_amount, reference, "Auto refund for failed exam pin purchase")
+            tx.status = TransactionStatus.REFUNDED.value
+            db2.commit()
+            raise HTTPException(status_code=502, detail=tx.failure_reason)
+        finally:
+            db2.close()
+
+    from app.core.database import SessionLocal
+    db2 = SessionLocal()
+    try:
+        tx = db2.query(ServiceTransaction).get(tx_id)
+        wallet = get_or_create_wallet(db2, user_id)
+
+        provider_status = _provider_status(result)
+        if provider_status in _PROVIDER_PENDING_STATUS:
+            tx.status = TransactionStatus.PENDING.value
+            tx.external_reference = result.external_reference
+            if result.meta:
+                tx.meta = {**(tx.meta or {}), **result.meta}
+            tx.failure_reason = result.message or _PENDING_CONFIRMATION_MESSAGE
+            db2.commit()
+            return {"reference": reference, "status": tx.status, "pins": (tx.meta or {}).get("pins", []), "message": tx.failure_reason}
+        if result.success:
+            tx.status = TransactionStatus.SUCCESS.value
+            tx.external_reference = result.external_reference
+            if result.meta:
+                tx.meta = {**(tx.meta or {}), **result.meta}
+            db2.commit()
+            if fcm_token:
+                try:
+                    from app.services.push_notification import PushNotificationService
+                    pins = (tx.meta or {}).get("pins") or []
+                    body_msg = f"Your purchase of {payload.quantity} {payload.exam.upper()} PIN(s) was successful."
+                    if pins:
+                        body_msg += f" PINs: {', '.join(pins)}"
+                    PushNotificationService.send_to_token(
+                        token=fcm_token,
+                        title="Exam PIN Purchase Successful",
+                        body=body_msg,
+                        data={"type": "transaction", "reference": reference, "status": "success"}
+                    )
+                except Exception as e:
+                    logger.warning("Failed to send push notification: %s", e)
+            return {"reference": reference, "status": tx.status, "pins": (tx.meta or {}).get("pins", [])}
+
+        tx.failure_reason = result.message or "Provider failed"
+        if result.meta:
+            tx.meta = {**(tx.meta or {}), **result.meta}
+        credit_wallet(db2, wallet, charge_amount, reference, "Auto refund for failed exam pin purchase")
         tx.status = TransactionStatus.REFUNDED.value
-        db.commit()
-        raise HTTPException(status_code=502, detail=tx.failure_reason)
-    provider_status = _provider_status(result)
-    if provider_status in _PROVIDER_PENDING_STATUS:
-        tx.status = TransactionStatus.PENDING.value
-        tx.external_reference = result.external_reference
-        if result.meta:
-            tx.meta = {**(tx.meta or {}), **result.meta}
-        tx.failure_reason = result.message or _PENDING_CONFIRMATION_MESSAGE
-        db.commit()
-        return {"reference": reference, "status": tx.status, "pins": (tx.meta or {}).get("pins", []), "message": tx.failure_reason}
-    if result.success:
-        tx.status = TransactionStatus.SUCCESS.value
-        tx.external_reference = result.external_reference
-        if result.meta:
-            tx.meta = {**(tx.meta or {}), **result.meta}
-        db.commit()
-        if user.fcm_token:
+        db2.commit()
+        if fcm_token:
             try:
                 from app.services.push_notification import PushNotificationService
-                pins = (tx.meta or {}).get("pins") or []
-                body_msg = f"Your purchase of {payload.quantity} {payload.exam.upper()} PIN(s) was successful."
-                if pins:
-                    body_msg += f" PINs: {', '.join(pins)}"
                 PushNotificationService.send_to_token(
-                    token=user.fcm_token,
-                    title="Exam PIN Purchase Successful",
-                    body=body_msg,
-                    data={"type": "transaction", "reference": reference, "status": "success"}
+                    token=fcm_token,
+                    title="Exam PIN Purchase Failed",
+                    body=f"Your purchase of {payload.quantity} {payload.exam.upper()} PIN(s) failed. A refund of ₦{float(charge_amount)} has been credited to your wallet.",
+                    data={"type": "transaction", "reference": reference, "status": "refunded"}
                 )
             except Exception as e:
                 logger.warning("Failed to send push notification: %s", e)
-        return {"reference": reference, "status": tx.status, "pins": (tx.meta or {}).get("pins", [])}
-
-    tx.failure_reason = result.message or "Provider failed"
-    if result.meta:
-        tx.meta = {**(tx.meta or {}), **result.meta}
-    credit_wallet(db, wallet, charge_amount, reference, "Auto refund for failed exam pin purchase")
-    tx.status = TransactionStatus.REFUNDED.value
-    db.commit()
-    if user.fcm_token:
-        try:
-            from app.services.push_notification import PushNotificationService
-            PushNotificationService.send_to_token(
-                token=user.fcm_token,
-                title="Exam PIN Purchase Failed",
-                body=f"Your purchase of {payload.quantity} {payload.exam.upper()} PIN(s) failed. A refund of ₦{float(charge_amount)} has been credited to your wallet.",
-                data={"type": "transaction", "reference": reference, "status": "refunded"}
-            )
-        except Exception as e:
-            logger.warning("Failed to send push notification: %s", e)
-    raise HTTPException(status_code=502, detail=tx.failure_reason)
+        raise HTTPException(status_code=502, detail=tx.failure_reason)
+    finally:
+        db2.close()

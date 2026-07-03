@@ -42,9 +42,9 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str
-    db_pool_size: int = 30
-    db_max_overflow: int = 20
-    db_pool_timeout: int = 30
+    db_pool_size: int = 5
+    db_max_overflow: int = 5
+    db_pool_timeout: int = 15
     db_pool_recycle: int = 1200
     db_pool_pre_ping: bool = True
 
