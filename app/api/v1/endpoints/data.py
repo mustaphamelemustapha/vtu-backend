@@ -454,21 +454,29 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
     tx_id = transaction.id
     user_id = user.id
     fcm_token = user.fcm_token
+    
+    plan_network = str(plan.network or "").lower()
+    plan_provider = str(plan.provider or "").strip().lower()
+    plan_provider_plan_id = plan.provider_plan_id
+    plan_plan_code = plan.plan_code
+    plan_plan_name = plan.plan_name
+    plan_data_size = plan.data_size
+    
     db.close()
 
     # 3. ROUTE TO PROVIDER
     provider_res = {"status": "pending", "error": "Provider routing failed"}
-    network_key = str(plan.network or "").lower()
+    network_key = plan_network
     
     start_time = time.time()
     try:
-        provider_name = str(plan.provider or "").strip().lower()
+        provider_name = plan_provider
 
         if provider_name in ("smeplug", "sim"):
             sme = SMEPlugProvider()
             sme_network_map = {"mtn": 1, "airtel": 2, "9mobile": 3, "glo": 4}
             net_id = sme_network_map.get(network_key, 2)
-            provider_res = sme.purchase_network_data(net_id, phone, plan.provider_plan_id or plan.plan_code, reference)
+            provider_res = sme.purchase_network_data(net_id, phone, plan_provider_plan_id or plan_plan_code, reference)
             transaction_provider = provider_name
 
         elif provider_name == "amigo" or (not provider_name and network_key in {"mtn", "glo", "airtel", "9mobile"}):
@@ -477,7 +485,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
             amigo_payload = {
                 "network": amigo_network_id,
                 "mobile_number": phone,
-                "plan": normalize_plan_code(plan.plan_code),
+                "plan": normalize_plan_code(plan_plan_code),
                 "Ported_number": True
             }
             transaction_provider = "amigo"
@@ -502,7 +510,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
         elif provider_name == "clubkonnect" or (not provider_name and network_key == "9mobile"):
             bills = get_bills_provider()
             transaction_provider = "clubkonnect"
-            res = bills.purchase_data(network_key, phone, plan.provider_plan_id or plan.plan_code, amount=float(price), request_id=reference)
+            res = bills.purchase_data(network_key, phone, plan_provider_plan_id or plan_plan_code, amount=float(price), request_id=reference)
             if res.ok:
                 provider_res = {"status": "success", "provider_reference": res.external_reference}
             elif res.is_pending:
@@ -513,7 +521,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
         # Legacy fallback for Airtel if no provider was specified
         elif network_key == "airtel":
             sme = SMEPlugProvider()
-            provider_res = sme.purchase_network_data(2, phone, plan.provider_plan_id or plan.plan_code, reference)
+            provider_res = sme.purchase_network_data(2, phone, plan_provider_plan_id or plan_plan_code, reference)
             transaction_provider = "smeplug"
 
         else:
@@ -547,7 +555,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
         
         if final_status == "failed":
             transaction.failure_reason = _safe_reason(provider_res.get("error"))
-            credit_wallet(db2, wallet, price, reference, f"Refund: {plan.plan_name} purchase failed")
+            credit_wallet(db2, wallet, price, reference, f"Refund: {plan_plan_name} purchase failed")
             transaction.status = TransactionStatus.REFUNDED
 
         db2.commit()
@@ -555,7 +563,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
         if final_status == "success":
             try:
                 from app.services.referrals import record_referral_data_activity
-                mb_size = _parse_size_gb(plan.data_size) * 1024.0
+                mb_size = _parse_size_gb(plan_data_size) * 1024.0
                 record_referral_data_activity(db2, user=user, tx_type="data", amount=price, data_mb=mb_size)
                 db2.commit()
             except Exception as ref_exc:
@@ -566,14 +574,14 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
             PushNotificationService.send_to_token(
                 token=fcm_token,
                 title="Data Purchase Successful",
-                body=f"Your purchase of {plan.plan_name} for {phone} was successful.",
+                body=f"Your purchase of {plan_plan_name} for {phone} was successful.",
                 data={"type": "transaction", "reference": reference, "status": "success"}
             )
         elif final_status == "failed" and fcm_token:
             PushNotificationService.send_to_token(
                 token=fcm_token,
                 title="Data Purchase Failed",
-                body=f"Your purchase of {plan.plan_name} for {phone} failed and you have been refunded.",
+                body=f"Your purchase of {plan_plan_name} for {phone} failed and you have been refunded.",
                 data={"type": "transaction", "reference": reference, "status": "failed"}
             )
 
