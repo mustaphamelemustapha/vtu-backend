@@ -18,13 +18,17 @@ from app.services.pending_reconcile import (
     start_pending_reconcile_worker,
     stop_pending_reconcile_worker,
 )
-
+import os
+from fastapi.staticfiles import StaticFiles
 
 settings = get_settings()
 
 configure_logging()
 
+os.makedirs("uploads/profile_images", exist_ok=True)
+
 app = FastAPI(title=settings.app_name)
+app.mount("/static", StaticFiles(directory="uploads"), name="static")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 _started_at = time.time()
@@ -144,6 +148,7 @@ def ensure_tables():
         _ensure_broadcast_announcement_button_columns()
         _ensure_user_developer_columns()
         _ensure_user_webhook_columns()
+        _ensure_user_profile_image_url_column()
         return
 
     # Optional local fallback for fresh environments.
@@ -167,6 +172,7 @@ def ensure_tables():
     _ensure_broadcast_announcement_button_columns()
     _ensure_user_developer_columns()
     _ensure_user_webhook_columns()
+    _ensure_user_profile_image_url_column()
 
 
 @app.on_event("shutdown")
@@ -508,6 +514,20 @@ def _ensure_user_webhook_columns() -> None:
                 logging.getLogger(__name__).info("Added users.webhook_secret column.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure users webhook columns: %s", exc)
+
+
+def _ensure_user_profile_image_url_column() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("users"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("users")}
+        if "profile_image_url" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN profile_image_url VARCHAR(512) NULL"))
+            logging.getLogger(__name__).info("Added users.profile_image_url column.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure users profile_image_url column: %s", exc)
 
 
 @app.get("/healthz")

@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     # Redis (optional)
     redis_url: Optional[str] = None
 
+    # Cloudinary (optional)
+    cloudinary_url: Optional[str] = None
+
     # Paystack
     paystack_secret_key: str
     paystack_webhook_secret: str

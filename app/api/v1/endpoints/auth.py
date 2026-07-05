@@ -1,7 +1,12 @@
 from datetime import datetime, timedelta, timezone
 import logging
 import secrets
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, UploadFile, File
+import shutil
+import os
+import uuid
+import cloudinary
+import cloudinary.uploader
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
@@ -307,14 +312,56 @@ def app_config():
 
 
 @router.post("/fcm-token", response_model=Message)
-def update_fcm_token(
-    payload: FCMTokenRequest,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    user.fcm_token = payload.fcm_token
+@limiter.limit("5/minute")
+def register_fcm_token(request: Request, payload: FCMTokenRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    current_user.fcm_token = payload.fcm_token
     db.commit()
-    return Message(message="FCM token updated successfully")
+    return Message(message="FCM token registered")
+
+
+@router.post("/profile/image", response_model=UserOut)
+@limiter.limit("5/minute")
+def upload_profile_image(
+    request: Request,
+    image: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not image.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File provided is not an image.")
+
+    extension = image.filename.split(".")[-1] if "." in image.filename else "jpg"
+    
+    if settings.cloudinary_url:
+        # Upload to Cloudinary
+        try:
+            result = cloudinary.uploader.upload(
+                image.file,
+                folder="vtu_profiles",
+                public_id=f"{current_user.id}_{uuid.uuid4().hex[:8]}",
+                overwrite=True,
+                resource_type="image"
+            )
+            image_url = result.get("secure_url")
+        except Exception as e:
+            logger.error(f"Cloudinary upload failed: {e}")
+            raise HTTPException(status_code=500, detail="Failed to upload image to cloud storage.")
+    else:
+        # Fallback to local storage
+        filename = f"{uuid.uuid4().hex}.{extension}"
+        file_path = os.path.join("uploads", "profile_images", filename)
+
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(image.file, buffer)
+
+        host_url = str(request.base_url).rstrip("/")
+        image_url = f"{host_url}/static/profile_images/{filename}"
+
+    current_user.profile_image_url = image_url
+    db.commit()
+    db.refresh(current_user)
+
+    return current_user
 
 
 @router.post("/me/acknowledge-agent-upgrade", response_model=Message)

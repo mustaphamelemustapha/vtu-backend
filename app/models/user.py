@@ -18,6 +18,7 @@ class User(Base, TimestampMixin):
     email = Column(String(255), unique=True, nullable=False, index=True)
     phone_number = Column(String(32), nullable=True, index=True)
     full_name = Column(String(255), nullable=False)
+    profile_image_url = Column(String(512), nullable=True)
     hashed_password = Column(String(255), nullable=False)
     role = Column(Enum(UserRole), nullable=False, default=UserRole.USER)
     is_active = Column(Boolean, default=True, nullable=False)
