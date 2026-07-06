@@ -7,10 +7,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from app.core.database import get_db
 from app.core.config import get_settings
+from app.core.security import verify_pin
 from app.dependencies import get_current_user, require_admin
 from app.models import User, Transaction, TransactionType, TransactionStatus
-from app.schemas.wallet import WalletOut, FundWalletRequest, LedgerOut, BankTransferAccountsResponse, CreateBankTransferAccountsRequest, BankAccountOut
-from app.services.wallet import get_or_create_wallet, credit_wallet
+from sqlalchemy import or_
+from app.schemas.wallet import WalletOut, FundWalletRequest, LedgerOut, BankTransferAccountsResponse, CreateBankTransferAccountsRequest, BankAccountOut, TransferVerifyRequest, TransferVerifyResponse, TransferRequest
+from app.services.wallet import get_or_create_wallet, credit_wallet, verify_transfer_recipient, execute_wallet_transfer
 from app.services.referrals import record_referral_first_deposit_reward
 from app.services.paystack import (
     create_paystack_checkout,
@@ -825,3 +827,43 @@ router.post("/smeplug/webhook", include_in_schema=False)(smeplug_webhook)
 router.post("/smeplug", include_in_schema=False)(smeplug_webhook)
 router.post("/monnify", include_in_schema=False)(monnify_webhook)
 router.post("/billstack", include_in_schema=False)(billstack_webhook)
+
+@router.post("/transfer/verify", response_model=TransferVerifyResponse)
+@limiter.limit("10/minute")
+def verify_transfer(request: Request, payload: TransferVerifyRequest, db: Session = Depends(get_db)):
+    recipient = verify_transfer_recipient(db, payload.identifier)
+    if not recipient:
+        raise HTTPException(status_code=404, detail="Recipient not found. Check the username, email, or phone number.")
+    
+    # Mask identifier for privacy
+    def mask(text: str) -> str:
+        if "@" in text:
+            name, ext = text.split("@", 1)
+            return f"{name[:2]}***@{ext}"
+        if len(text) > 4:
+            return f"{text[:2]}***{text[-2:]}"
+        return text
+
+    return TransferVerifyResponse(
+        full_name=recipient.full_name,
+        username=mask(recipient.username)
+    )
+
+@router.post("/transfer")
+@limiter.limit("5/minute")
+def execute_transfer(request: Request, payload: TransferRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if payload.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than zero.")
+        
+    recipient = verify_transfer_recipient(db, payload.identifier)
+    if not recipient:
+        raise HTTPException(status_code=404, detail="Recipient not found.")
+        
+    if recipient.id == user.id:
+        raise HTTPException(status_code=400, detail="You cannot transfer to yourself.")
+        
+    success = execute_wallet_transfer(db, sender=user, recipient=recipient, amount=payload.amount)
+    if not success:
+        raise HTTPException(status_code=400, detail="Insufficient wallet balance.")
+        
+    return {"status": "success", "message": f"Successfully transferred NGN{payload.amount:,.2f} to {recipient.full_name}"}

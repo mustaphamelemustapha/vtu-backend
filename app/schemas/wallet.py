@@ -45,3 +45,14 @@ class BankTransferAccountsResponse(BaseModel):
     requires_kyc: bool = False
     requires_phone: bool = False
     message: str | None = None
+
+class TransferVerifyRequest(BaseModel):
+    identifier: str
+
+class TransferVerifyResponse(BaseModel):
+    full_name: str
+    username: str
+
+class TransferRequest(BaseModel):
+    identifier: str
+    amount: Decimal

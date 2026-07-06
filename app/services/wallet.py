@@ -1,7 +1,8 @@
 from decimal import Decimal
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from fastapi import HTTPException
-from app.models import Wallet, WalletLedger, LedgerType
+from app.models import Wallet, WalletLedger, LedgerType, User, Transaction, TransactionType, TransactionStatus
 
 
 def _find_matching_ledger(db: Session, *, wallet: Wallet, amount: Decimal, reference: str, description: str, entry_type: LedgerType) -> WalletLedger | None:
@@ -156,3 +157,73 @@ def debit_wallet(db: Session, wallet: Wallet, amount: Decimal, reference: str, d
         import logging
         logging.getLogger(__name__).warning("Failed to send debit wallet push notification: %s", push_exc)
     return entry
+
+def verify_transfer_recipient(db: Session, identifier: str) -> User | None:
+    return db.query(User).filter(
+        or_(
+            User.username == identifier,
+            User.email == identifier,
+            User.phone_number == identifier
+        )
+    ).first()
+
+def execute_wallet_transfer(db: Session, sender: User, recipient: User, amount: Decimal) -> bool:
+    sender_wallet = get_or_create_wallet(db, sender.id, commit=False)
+    if sender_wallet.balance < amount:
+        return False
+        
+    # Debit Sender
+    sender_wallet.balance -= amount
+    import uuid
+    ref = f"TRF_{uuid.uuid4().hex[:12].upper()}"
+    
+    sender_ledger = WalletLedger(
+        wallet_id=sender_wallet.id,
+        amount=amount,
+        entry_type=LedgerType.DEBIT,
+        reference=ref,
+        description=f"Transfer to {recipient.full_name}"
+    )
+    db.add(sender_ledger)
+    
+    sender_tx = Transaction(
+        user_id=sender.id,
+        reference=ref,
+        amount=amount,
+        status=TransactionStatus.SUCCESS,
+        tx_type=TransactionType.WALLET_TRANSFER,
+        description=f"Wallet Transfer to {recipient.full_name}"
+    )
+    db.add(sender_tx)
+    
+    # Credit Receiver
+    receiver_wallet = get_or_create_wallet(db, recipient.id, commit=False)
+    receiver_wallet.balance += amount
+    
+    receiver_ledger = WalletLedger(
+        wallet_id=receiver_wallet.id,
+        amount=amount,
+        entry_type=LedgerType.CREDIT,
+        reference=ref + "_RX",
+        description=f"Received from {sender.full_name}"
+    )
+    db.add(receiver_ledger)
+    
+    receiver_tx = Transaction(
+        user_id=recipient.id,
+        reference=ref + "_RX",
+        amount=amount,
+        status=TransactionStatus.SUCCESS,
+        tx_type=TransactionType.WALLET_FUND,
+        provider="transfer",
+        description=f"Wallet Transfer from {sender.full_name}"
+    )
+    db.add(receiver_tx)
+    
+    try:
+        db.commit()
+        return True
+    except Exception as e:
+        db.rollback()
+        # In a real app, log error
+        raise e
