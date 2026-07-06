@@ -845,8 +845,7 @@ def verify_transfer(request: Request, payload: TransferVerifyRequest, db: Sessio
         return text
 
     return TransferVerifyResponse(
-        full_name=recipient.full_name,
-        username=mask(recipient.username)
+        full_name=recipient.full_name
     )
 
 @router.post("/transfer")

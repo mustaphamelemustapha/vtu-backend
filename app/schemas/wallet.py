@@ -51,7 +51,6 @@ class TransferVerifyRequest(BaseModel):
 
 class TransferVerifyResponse(BaseModel):
     full_name: str
-    username: str
 
 class TransferRequest(BaseModel):
     identifier: str

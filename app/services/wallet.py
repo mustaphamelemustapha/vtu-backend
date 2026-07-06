@@ -161,7 +161,6 @@ def debit_wallet(db: Session, wallet: Wallet, amount: Decimal, reference: str, d
 def verify_transfer_recipient(db: Session, identifier: str) -> User | None:
     return db.query(User).filter(
         or_(
-            User.username == identifier,
             User.email == identifier,
             User.phone_number == identifier
         )
