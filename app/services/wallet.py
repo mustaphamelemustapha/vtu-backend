@@ -190,8 +190,7 @@ def execute_wallet_transfer(db: Session, sender: User, recipient: User, amount: 
         reference=ref,
         amount=amount,
         status=TransactionStatus.SUCCESS,
-        tx_type=TransactionType.WALLET_TRANSFER,
-        description=f"Wallet Transfer to {recipient.full_name}"
+        tx_type=TransactionType.WALLET_TRANSFER
     )
     db.add(sender_tx)
     
@@ -214,8 +213,7 @@ def execute_wallet_transfer(db: Session, sender: User, recipient: User, amount: 
         amount=amount,
         status=TransactionStatus.SUCCESS,
         tx_type=TransactionType.WALLET_FUND,
-        provider="transfer",
-        description=f"Wallet Transfer from {sender.full_name}"
+        provider="transfer"
     )
     db.add(receiver_tx)
     
