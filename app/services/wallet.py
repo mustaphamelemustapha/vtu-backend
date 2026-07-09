@@ -168,11 +168,19 @@ def verify_transfer_recipient(db: Session, identifier: str) -> User | None:
 
 def execute_wallet_transfer(db: Session, sender: User, recipient: User, amount: Decimal) -> bool:
     sender_wallet = get_or_create_wallet(db, sender.id, commit=False)
-    if sender_wallet.balance < amount:
+    
+    # 1. Atomically debit sender
+    rows_updated = db.query(Wallet).filter(
+        Wallet.id == sender_wallet.id,
+        Wallet.balance >= amount,
+        Wallet.is_locked == False
+    ).update(
+        {Wallet.balance: Wallet.balance - amount},
+        synchronize_session=False
+    )
+    if rows_updated == 0:
         return False
         
-    # Debit Sender
-    sender_wallet.balance -= amount
     import uuid
     ref = f"TRF_{uuid.uuid4().hex[:12].upper()}"
     
@@ -194,9 +202,15 @@ def execute_wallet_transfer(db: Session, sender: User, recipient: User, amount: 
     )
     db.add(sender_tx)
     
-    # Credit Receiver
+    # 2. Atomically credit receiver
     receiver_wallet = get_or_create_wallet(db, recipient.id, commit=False)
-    receiver_wallet.balance += amount
+    db.query(Wallet).filter(
+        Wallet.id == receiver_wallet.id,
+        Wallet.is_locked == False
+    ).update(
+        {Wallet.balance: Wallet.balance + amount},
+        synchronize_session=False
+    )
     
     receiver_ledger = WalletLedger(
         wallet_id=receiver_wallet.id,
