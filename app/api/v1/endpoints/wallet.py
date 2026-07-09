@@ -295,42 +295,12 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
     ).all()
 
     if not db_monnify:
-        try:
-            resp = reserve_monnify_account(
-                account_reference=account_reference,
-                account_name=f"MMTECHGLOBE/{user.full_name}",
-                customer_email=user.email,
-                customer_name=user.full_name,
-                get_all_available_banks=True,
-            )
-            accounts_data = _parse_reserved_accounts(resp)
-            if accounts_data:
-                body = resp.get("responseBody") or resp.get("data") or resp.get("response") or {}
-                reservation_ref = body.get("reservationReference") or secrets.token_hex(8)
-                for acc in accounts_data:
-                    bank_slug = acc["bank_name"].lower().replace(" ", "_")
-                    db_acc = VirtualAccount(
-                        user_id=user.id,
-                        provider=VirtualAccountProvider.MONNIFY,
-                        account_number=acc["account_number"],
-                        account_name=acc["account_name"],
-                        bank_name=acc["bank_name"],
-                        bank_code=acc.get("bank_code", "000"),
-                        customer_reference=f"{account_reference}_monnify_{bank_slug}",
-                        reservation_reference=f"{reservation_ref}_{bank_slug}",
-                        status=VirtualAccountStatus.ACTIVE,
-                    )
-                    db.add(db_acc)
-                db.commit()
-                all_accounts.extend(accounts_data)
-            else:
-                requires_kyc = True
-                messages.append("Monnify account generation is pending.")
-        except Exception as exc:
-            db.rollback()
-            logger.warning("Auto-generate Monnify account failed: %s", exc)
-            requires_kyc = True
-            messages.append(f"Monnify: {exc}")
+        # Since Monnify now strictly requires BVN or NIN, auto-generating here 
+        # without KYC will always fail and exhaust database connections.
+        # We skip the API call and just flag requires_kyc = True. The frontend 
+        # will prompt the user and hit the POST endpoint with the raw BVN/NIN.
+        requires_kyc = True
+        messages.append("Please provide your BVN or NIN to generate your Monnify account.")
     else:
         for db_acc in db_monnify:
             all_accounts.append({
