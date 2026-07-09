@@ -8,4 +8,4 @@ def get_real_ip(request: Request) -> str:
         return forwarded.split(",")[0].strip()
     return get_remote_address(request)
 
-limiter = Limiter(key_func=get_real_ip, default_limits=["100/minute"])
+limiter = Limiter(key_func=get_real_ip, default_limits=["30/minute"])
