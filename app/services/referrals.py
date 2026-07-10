@@ -206,6 +206,7 @@ def record_referral_first_deposit_reward(
         db.query(Referral)
         .filter(Referral.id == referral.id)
         .with_for_update()
+        .populate_existing()
         .first()
         or referral
     )
@@ -257,11 +258,17 @@ def record_referral_data_activity(db: Session, *, user: User, tx_type: str, amou
     from app.models.agent import AgentStat
     from sqlalchemy.orm.attributes import flag_modified
     
-    # 1. Update Agent Stats
-    stat = db.query(AgentStat).filter(AgentStat.agent_id == user.id).first()
+    # 1. Update Agent Stats with lock to prevent race conditions
+    stat = db.query(AgentStat).filter(AgentStat.agent_id == user.id).with_for_update().first()
     if not stat:
         stat = AgentStat(agent_id=user.id)
         db.add(stat)
+        db.flush()
+        # Lock the newly created stat
+        stat = db.query(AgentStat).filter(AgentStat.agent_id == user.id).with_for_update().first()
+        
+    # Refresh the user object to ensure we have the latest role (in case a concurrent request just upgraded them)
+    db.refresh(user)
         
     if tx_type == TransactionType.DATA or tx_type == "data":
         # Approximate MB if not provided
@@ -281,63 +288,11 @@ def record_referral_data_activity(db: Session, *, user: User, tx_type: str, amou
         user.role = UserRole.RESELLER
         user.agent_upgrade_seen = False
 
-        # Grant reward automatically (₦2000 welcome reward)
-        reward_amount = Decimal("2000.00")
-        
-        # 1. Credit the user themselves
-        from app.services.wallet import get_or_create_wallet, credit_wallet
-        user_wallet = get_or_create_wallet(db, user.id, commit=False)
-        user_tx_ref = f"AG-RWD-50GB-{user.id}-{int(_utcnow().timestamp())}"
-        user_description = f"Welcome reward for hitting 50GB agent threshold"
-        
-        credit_wallet(db, user_wallet, reward_amount, user_tx_ref, user_description, commit=False)
-        
-        user_tx = Transaction(
-            user_id=user.id,
-            reference=user_tx_ref,
-            amount=reward_amount,
-            status=TransactionStatus.SUCCESS,
-            tx_type=TransactionType.WALLET_FUND,
-            failure_reason="Agent Reward",
-        )
-        db.add(user_tx)
-
-        # 2. Check if this user was referred and is pending qualification to reward the referrer
-        referral = db.query(Referral).filter(
-            Referral.referred_user_id == user.id,
-            Referral.status == ReferralStatus.PENDING
-        ).first()
-        
-        if referral:
-            referrer = db.query(User).filter(User.id == referral.referrer_id).first()
-            if referrer:
-                wallet = get_or_create_wallet(db, referrer.id, commit=False)
-                tx_ref = f"AG-REF-RWD-{referral.id}-{int(_utcnow().timestamp())}"
-                description = f"Referral reward for {user.full_name or user.email} hitting 50GB"
-                
-                # Credit wallet directly
-                credit_wallet(db, wallet, reward_amount, tx_ref, description, commit=False)
-                
-                # Record Transaction
-                tx = Transaction(
-                    user_id=referrer.id,
-                    reference=tx_ref,
-                    amount=reward_amount,
-                    status=TransactionStatus.SUCCESS,
-                    tx_type=TransactionType.WALLET_FUND,
-                    external_reference=f"REF-{referral.id}",
-                    failure_reason="Agent Referral Reward",
-                )
-                db.add(tx)
-                
-                # Update referral
-                referral.qualified_at = _utcnow()
-                referral.rewarded_at = _utcnow()
-                referral.status = ReferralStatus.REWARDED
-                referral.reward_amount = reward_amount
-                referral.reward_transaction_reference = tx_ref
+        # Note: The automatic ₦2000 reward for the user has been removed. 
+        # Users now claim their reward manually via the Agent Campaign system.
 
         db.flush()
+
         
     return referral
 
