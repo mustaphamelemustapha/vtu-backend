@@ -2,10 +2,10 @@ import secrets
 import re
 import logging
 from decimal import Decimal
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-from app.core.database import get_db
+from app.core.database import get_db, SessionLocal
 from app.core.config import get_settings
 from app.core.security import verify_pin
 from app.dependencies import get_current_user, require_admin
@@ -224,13 +224,117 @@ def get_ledger(user: User = Depends(get_current_user), db: Session = Depends(get
     return entries
 
 
+def _generate_virtual_accounts_bg(user_id: int, generate_paystack: bool, generate_billstack: bool):
+    try:
+        with SessionLocal() as db:
+            user = db.query(User).filter(User.id == user_id).first()
+            if not user:
+                return
+
+            account_reference = _transfer_account_reference(user)
+            first = (user.full_name or "").strip().split(" ")[0] or "Mele"
+            last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
+
+            if generate_paystack and settings.paystack_dedicated_enabled:
+                phone = _to_paystack_phone(user.phone_number)
+                try:
+                    dedicated = get_or_create_dedicated_account(
+                        email=user.email,
+                        first_name=first,
+                        last_name=last,
+                        phone=phone,
+                    )
+                    paystack_accs = _parse_paystack_dedicated_account(dedicated)
+                    if paystack_accs:
+                        # Remove PENDING stubs
+                        db.query(VirtualAccount).filter(
+                            VirtualAccount.user_id == user.id,
+                            VirtualAccount.provider == VirtualAccountProvider.PAYSTACK
+                        ).delete()
+                        for acc in paystack_accs:
+                            bank_slug = acc["bank_name"].lower().replace(" ", "_")
+                            db_acc = VirtualAccount(
+                                user_id=user.id,
+                                provider=VirtualAccountProvider.PAYSTACK,
+                                account_number=acc["account_number"],
+                                account_name=acc["account_name"],
+                                bank_name=acc["bank_name"],
+                                bank_code="000",
+                                customer_reference=f"{account_reference}_paystack_{bank_slug}",
+                                reservation_reference=f"paystack_{user.id}_{bank_slug}_{secrets.token_hex(4)}",
+                                status=VirtualAccountStatus.ACTIVE,
+                            )
+                            db.add(db_acc)
+                        db.commit()
+                except Exception as exc:
+                    db.rollback()
+                    logger.warning("Background Paystack generation failed for user %s: %s", user.id, exc)
+                    # Delete the pending stub so it can be retried later
+                    db.query(VirtualAccount).filter(
+                        VirtualAccount.user_id == user.id,
+                        VirtualAccount.provider == VirtualAccountProvider.PAYSTACK,
+                        VirtualAccount.status == VirtualAccountStatus.PENDING
+                    ).delete()
+                    db.commit()
+
+            if generate_billstack and settings.billstack_enabled:
+                try:
+                    resp = generate_billstack_virtual_account(
+                        email=user.email,
+                        reference=f"{account_reference}_billstack_{settings.billstack_preferred_bank.lower()}",
+                        phone=user.phone_number or "",
+                        first_name=first,
+                        last_name=last,
+                        bank=settings.billstack_preferred_bank,
+                    )
+                    if resp.get("status") is True:
+                        # Remove PENDING stubs
+                        db.query(VirtualAccount).filter(
+                            VirtualAccount.user_id == user.id,
+                            VirtualAccount.provider == VirtualAccountProvider.BILLSTACK
+                        ).delete()
+                        
+                        data = resp.get("data", {})
+                        accounts = data.get("account") or []
+                        reservation_ref = data.get("reference") or secrets.token_hex(8)
+                        for acc in accounts:
+                            db_acc = VirtualAccount(
+                                user_id=user.id,
+                                provider=VirtualAccountProvider.BILLSTACK,
+                                account_number=acc["account_number"],
+                                account_name=acc["account_name"],
+                                bank_name=acc["bank_name"],
+                                bank_code=acc.get("bank_id", "000"),
+                                customer_reference=f"{account_reference}_billstack_{settings.billstack_preferred_bank.lower()}",
+                                reservation_reference=reservation_ref,
+                                status=VirtualAccountStatus.ACTIVE,
+                            )
+                            db.add(db_acc)
+                        db.commit()
+                    else:
+                        raise ValueError("Billstack status is False")
+                except Exception as exc:
+                    db.rollback()
+                    logger.warning("Background Billstack generation failed for user %s: %s", user.id, exc)
+                    db.query(VirtualAccount).filter(
+                        VirtualAccount.user_id == user.id,
+                        VirtualAccount.provider == VirtualAccountProvider.BILLSTACK,
+                        VirtualAccount.status == VirtualAccountStatus.PENDING
+                    ).delete()
+                    db.commit()
+    except Exception as e:
+        logger.error("Error in background account generation task: %s", e)
+
 @router.get("/bank-transfer-accounts", response_model=BankTransferAccountsResponse)
-def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_bank_transfer_accounts(background_tasks: BackgroundTasks, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     all_accounts = []
     requires_kyc = False
     requires_phone = False
     messages = []
     account_reference = _transfer_account_reference(user)
+    
+    needs_paystack_bg = False
+    needs_billstack_bg = False
 
     # 1. Fetch/Create Paystack Dedicated Account if Enabled
     if settings.paystack_dedicated_enabled:
@@ -240,53 +344,29 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
         ).all()
         if db_paystack:
             for db_acc in db_paystack:
-                all_accounts.append({
-                    "bank_name": db_acc.bank_name,
-                    "account_number": db_acc.account_number,
-                    "account_name": db_acc.account_name,
-                })
+                if db_acc.status == VirtualAccountStatus.ACTIVE and db_acc.account_number:
+                    all_accounts.append({
+                        "bank_name": db_acc.bank_name,
+                        "account_number": db_acc.account_number,
+                        "account_name": db_acc.account_name,
+                    })
         else:
-            phone = _to_paystack_phone(user.phone_number)
-            try:
-                first = (user.full_name or "").strip().split(" ")[0] or "Mele"
-                last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
-                dedicated = get_or_create_dedicated_account(
-                    email=user.email,
-                    first_name=first,
-                    last_name=last,
-                    phone=phone,
-                )
-                paystack_accs = _parse_paystack_dedicated_account(dedicated)
-                if paystack_accs:
-                    for acc in paystack_accs:
-                        bank_slug = acc["bank_name"].lower().replace(" ", "_")
-                        db_acc = VirtualAccount(
-                            user_id=user.id,
-                            provider=VirtualAccountProvider.PAYSTACK,
-                            account_number=acc["account_number"],
-                            account_name=acc["account_name"],
-                            bank_name=acc["bank_name"],
-                            bank_code="000",
-                            customer_reference=f"{account_reference}_paystack_{bank_slug}",
-                            reservation_reference=f"paystack_{user.id}_{bank_slug}_{secrets.token_hex(4)}",
-                            status=VirtualAccountStatus.ACTIVE,
-                        )
-                        db.add(db_acc)
-                    db.commit()
-                    all_accounts.extend(paystack_accs)
-            except PaystackError as exc:
-                detail = str(exc)
-                lower_detail = detail.lower()
-                if (not phone) and ("phone" in lower_detail or "mobile" in lower_detail):
-                    requires_phone = True
-                else:
-                    requires_kyc = True
-                messages.append(f"Paystack: {detail}")
-            except Exception as exc:
-                db.rollback()
-                logger.warning("Auto-generate Paystack account failed: %s", exc)
-                requires_kyc = True
-                messages.append(f"Paystack: {exc}")
+            # Insert a PENDING stub so we don't spawn multiple bg tasks
+            pending_acc = VirtualAccount(
+                user_id=user.id,
+                provider=VirtualAccountProvider.PAYSTACK,
+                account_number="",
+                account_name="Pending...",
+                bank_name="Paystack Generation",
+                bank_code="000",
+                customer_reference=f"pending_{secrets.token_hex(4)}",
+                reservation_reference=f"pending_{secrets.token_hex(4)}",
+                status=VirtualAccountStatus.PENDING,
+            )
+            db.add(pending_acc)
+            db.commit()
+            needs_paystack_bg = True
+            messages.append("Your Paystack account is being generated...")
 
     # 2. Fetch/Create Monnify Reserved Account
     db_monnify = db.query(VirtualAccount).filter(
@@ -317,54 +397,33 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
         ).all()
 
         if not db_billstack:
-            try:
-                first = (user.full_name or "").strip().split(" ")[0] or "Mele"
-                last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
-                resp = generate_billstack_virtual_account(
-                    email=user.email,
-                    reference=f"{account_reference}_billstack_{settings.billstack_preferred_bank.lower()}",
-                    phone=user.phone_number or "",
-                    first_name=first,
-                    last_name=last,
-                    bank=settings.billstack_preferred_bank,
-                )
-                if resp.get("status") is True:
-                    data = resp.get("data", {})
-                    accounts = data.get("account") or []
-                    reservation_ref = data.get("reference") or secrets.token_hex(8)
-                    for acc in accounts:
-                        db_acc = VirtualAccount(
-                            user_id=user.id,
-                            provider=VirtualAccountProvider.BILLSTACK,
-                            account_number=acc["account_number"],
-                            account_name=acc["account_name"],
-                            bank_name=acc["bank_name"],
-                            bank_code=acc.get("bank_id", "000"),
-                            customer_reference=f"{account_reference}_billstack_{settings.billstack_preferred_bank.lower()}",
-                            reservation_reference=reservation_ref,
-                            status=VirtualAccountStatus.ACTIVE,
-                        )
-                        db.add(db_acc)
-                    db.commit()
-                    for acc in accounts:
-                        all_accounts.append({
-                            "bank_name": acc["bank_name"],
-                            "account_number": acc["account_number"],
-                            "account_name": acc["account_name"],
-                        })
-                else:
-                    messages.append("Billstack account generation is pending.")
-            except Exception as exc:
-                db.rollback()
-                logger.warning("Auto-generate Billstack account failed: %s", exc)
-                messages.append(f"Billstack: {exc}")
+            # Insert a PENDING stub
+            pending_acc = VirtualAccount(
+                user_id=user.id,
+                provider=VirtualAccountProvider.BILLSTACK,
+                account_number="",
+                account_name="Pending...",
+                bank_name="Billstack Generation",
+                bank_code="000",
+                customer_reference=f"pending_{secrets.token_hex(4)}",
+                reservation_reference=f"pending_{secrets.token_hex(4)}",
+                status=VirtualAccountStatus.PENDING,
+            )
+            db.add(pending_acc)
+            db.commit()
+            needs_billstack_bg = True
+            messages.append("Your Billstack account is being generated...")
         else:
             for db_acc in db_billstack:
-                all_accounts.append({
-                    "bank_name": db_acc.bank_name,
-                    "account_number": db_acc.account_number,
-                    "account_name": db_acc.account_name,
-                })
+                if db_acc.status == VirtualAccountStatus.ACTIVE and db_acc.account_number:
+                    all_accounts.append({
+                        "bank_name": db_acc.bank_name,
+                        "account_number": db_acc.account_number,
+                        "account_name": db_acc.account_name,
+                    })
+                    
+    if needs_paystack_bg or needs_billstack_bg:
+        background_tasks.add_task(_generate_virtual_accounts_bg, user.id, needs_paystack_bg, needs_billstack_bg)
 
     # Sort accounts: Palmpay first, then Moniepoint/Monnify, then others
     def sort_key(acc):
