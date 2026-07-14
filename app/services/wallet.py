@@ -93,7 +93,8 @@ def credit_wallet(
                     token=wallet.user.fcm_token,
                     title="Wallet Credited ₦" + f"{amount:,.2f}",
                     body=body_msg,
-                    data={"type": "wallet", "reference": reference, "action": "credit"}
+                    data={"type": "wallet", "reference": reference, "action": "credit"},
+                    sound_type="balance_success"
                 )
         except Exception as push_exc:
             import logging

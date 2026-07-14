@@ -42,34 +42,59 @@ class PushNotificationService:
             logger.error(f"Failed to initialize Firebase Admin: {e}")
 
     @classmethod
-    def send_to_token(cls, token: str, title: str, body: str, data: dict = None) -> bool:
+    def send_to_token(cls, token: str, title: str, body: str, data: dict = None, sound_type: str = "default") -> bool:
         cls._initialize()
         if not cls._initialized or not token:
             return False
 
         try:
-            android_config = messaging.AndroidConfig(
-                priority="high",
-                notification=messaging.AndroidNotification(
-                    sound="default",
-                    click_action="FLUTTER_NOTIFICATION_CLICK",
-                    default_sound=True,
-                    default_vibrate_timings=True,
-                )
-            )
-            apns_config = messaging.APNSConfig(
-                payload=messaging.APNSPayload(
-                    aps=messaging.Aps(
-                        sound="default",
-                        badge=1,
-                        content_available=True,
+            if data is None:
+                data = {}
+            data["sound_type"] = sound_type
+
+            if sound_type == "balance_success":
+                android_config = messaging.AndroidConfig(
+                    priority="high",
+                    notification=messaging.AndroidNotification(
+                        sound="balance_success",
+                        channel_id="custom_sound_channel",
+                        click_action="FLUTTER_NOTIFICATION_CLICK",
+                        default_sound=False,
+                        default_vibrate_timings=True,
                     )
                 )
-            )
+                apns_config = messaging.APNSConfig(
+                    payload=messaging.APNSPayload(
+                        aps=messaging.Aps(
+                            sound="balance_success.wav",
+                            badge=1,
+                            content_available=True,
+                        )
+                    )
+                )
+            else:
+                android_config = messaging.AndroidConfig(
+                    priority="high",
+                    notification=messaging.AndroidNotification(
+                        sound="default",
+                        click_action="FLUTTER_NOTIFICATION_CLICK",
+                        default_sound=True,
+                        default_vibrate_timings=True,
+                    )
+                )
+                apns_config = messaging.APNSConfig(
+                    payload=messaging.APNSPayload(
+                        aps=messaging.Aps(
+                            sound="default",
+                            badge=1,
+                            content_available=True,
+                        )
+                    )
+                )
 
             message = messaging.Message(
                 notification=messaging.Notification(title=title, body=body),
-                data=data or {},
+                data=data,
                 token=token,
                 android=android_config,
                 apns=apns_config,
