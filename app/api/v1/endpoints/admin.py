@@ -1922,7 +1922,7 @@ def update_data_plan(
     )
     db.add(audit_log)
     db.commit()
-    # _invalidate_plans_cache()
+    _invalidate_plans_cache()
     return {
         "status": "ok",
         "id": plan.id,
