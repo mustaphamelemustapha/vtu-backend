@@ -1625,6 +1625,16 @@ def update_pricing(payload: PricingRuleUpdate, admin=Depends(require_admin), db:
     )
     db.add(audit_log)
     db.commit()
+
+    # Clear pricing cache
+    keys_to_delete = [k for k in _GENERIC_CACHE.keys() if k.startswith("get_pricing_rules")]
+    for k in keys_to_delete:
+        _GENERIC_CACHE.pop(k, None)
+        
+    # Invalidate data plans cache if data pricing changed
+    if tx_type == "data":
+        _invalidate_plans_cache()
+
     return {"status": "ok", "network": network}
 
 
