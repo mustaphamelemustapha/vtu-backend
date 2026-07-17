@@ -1794,12 +1794,32 @@ def update_service_toggle(
     db.commit()
     db.refresh(toggle)
     return toggle
+import re
 
+def _parse_size_mb(size_str: str) -> float:
+    if not size_str:
+        return 0.0
+    s = str(size_str).upper()
+    match = re.search(r"([\d\.]+)\s*(MB|GB|TB)", s)
+    if not match:
+        return 0.0
+    val = float(match.group(1))
+    unit = match.group(2)
+    if unit == "GB":
+        return val * 1024
+    if unit == "TB":
+        return val * 1024 * 1024
+    return val
 
 @router.get("/data-plans")
 @cache_endpoint(ttl_seconds=60)
 def get_data_plans(admin=Depends(require_admin), db: Session = Depends(get_db)):
-    plans = db.query(DataPlan).order_by(DataPlan.network.asc(), DataPlan.plan_name.asc()).all()
+    plans = db.query(DataPlan).all()
+    plans.sort(key=lambda p: (
+        not p.is_active,
+        p.network or "",
+        _parse_size_mb(p.data_size)
+    ))
     result = []
     for p in plans:
         result.append({
