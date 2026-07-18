@@ -141,12 +141,17 @@ class AmigoClient:
     def get_balance(self) -> float | str:
         try:
             res = self._request("GET", "wallet/")
-            if "balance" not in res and "wallet_balance" not in res:
-                return f"Amigo Raw: {res}"
             
-            raw_bal = str(res.get("balance", res.get("wallet_balance", "0.0")))
-            bal = "".join(c for c in raw_bal if c.isdigit() or c == ".")
-            return float(bal) if bal else 0.0
+            # Extract from {"data": {"balance": 168.50}}
+            data_dict = res.get("data", {})
+            if "balance" in data_dict:
+                return float(data_dict["balance"])
+            
+            # Fallbacks just in case the format changes
+            if "balance" in res:
+                return float(res["balance"])
+                
+            return f"Amigo Raw: {res}"
         except Exception as e:
             logger.error(f"Amigo get_balance error: {e}")
             return f"Amigo Error: {e}"
