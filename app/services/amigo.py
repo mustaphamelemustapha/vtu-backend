@@ -137,3 +137,11 @@ class AmigoClient:
         # payload expected keys: network, mobile_number, plan, Ported_number (optional)
         # Amigo expects JSON body
         return self._request("POST", "/data/", payload, idempotency_key=idempotency_key)
+
+    def get_balance(self) -> float:
+        try:
+            res = self._request("GET", "wallet/")
+            return float(res.get("balance", 0.0))
+        except Exception as e:
+            logger.error(f"Amigo get_balance error: {e}")
+            return 0.0

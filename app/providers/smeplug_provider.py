@@ -26,6 +26,22 @@ class SMEPlugProvider:
         except Exception:
             return None
 
+    def get_balance(self) -> float:
+        url = f"{self.base_url}/account/balance"
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                response = client.get(url, headers=self._get_headers())
+                data = self._json_or_none(response)
+                if isinstance(data, dict):
+                    if "data" in data and isinstance(data["data"], dict) and "balance" in data["data"]:
+                        return float(data["data"]["balance"])
+                    elif "balance" in data:
+                        return float(data["balance"])
+            return 0.0
+        except Exception as e:
+            logger.error(f"SMEPlug get_balance error: {e}")
+            return 0.0
+
     def fetch_plans(self) -> dict:
         url = f"{self.base_url}/data/plans"
         try:
