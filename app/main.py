@@ -321,6 +321,33 @@ def _ensure_data_plan_promo_columns() -> None:
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure data_plans promo columns: %s", exc)
 
+def _ensure_data_plan_fallback_columns() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("data_plans"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("data_plans")}
+        statements: list[str] = []
+        
+        if "fallback_provider" not in cols:
+            statements.append("ALTER TABLE data_plans ADD COLUMN fallback_provider VARCHAR(64)")
+        if "fallback_provider_plan_id" not in cols:
+            statements.append("ALTER TABLE data_plans ADD COLUMN fallback_provider_plan_id VARCHAR(64)")
+
+        if not statements:
+            return
+
+        with engine.begin() as conn:
+            for statement in statements:
+                conn.execute(text(statement))
+            if "fallback_provider" not in cols:
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_data_plans_fallback_provider ON data_plans (fallback_provider)"))
+            if "fallback_provider_plan_id" not in cols:
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_data_plans_fallback_provider_plan_id ON data_plans (fallback_provider_plan_id)"))
+        logging.getLogger(__name__).info("Added data_plans fallback_provider columns.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure data_plans fallback columns: %s", exc)
+
 
 def _ensure_data_plan_text_lengths() -> None:
     try:
