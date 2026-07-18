@@ -13,6 +13,7 @@ from app.models.service_toggle import ServiceToggle
 from app.models.admin_audit_log import AdminAuditLog
 from app.models.virtual_account import VirtualAccount, VirtualAccountProvider, VirtualAccountStatus
 from app.models.agent import RewardCampaign, CampaignType, AgentReward, AgentRewardStatus, AgentStat
+from app.models.system_setting import SystemSetting
 
 __all__ = [
     "User",
@@ -46,4 +47,5 @@ __all__ = [
     "AgentReward",
     "AgentRewardStatus",
     "AgentStat",
+    "SystemSetting",
 ]
