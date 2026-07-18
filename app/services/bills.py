@@ -714,10 +714,15 @@ class ClubKonnectBillsProvider:
     def get_balance(self) -> float:
         try:
             res = self._request("APIWalletBalanceV1.asp", {})
+            raw_bal = ""
             if "Balance" in res:
-                return float(res["Balance"])
+                raw_bal = str(res["Balance"])
             elif "balance" in res:
-                return float(res["balance"])
+                raw_bal = str(res["balance"])
+            
+            if raw_bal:
+                bal = "".join(c for c in raw_bal if c.isdigit() or c == ".")
+                return float(bal) if bal else 0.0
             return 0.0
         except Exception as e:
             logger.error(f"ClubKonnect get_balance error: {e}")

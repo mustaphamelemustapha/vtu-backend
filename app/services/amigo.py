@@ -141,7 +141,9 @@ class AmigoClient:
     def get_balance(self) -> float:
         try:
             res = self._request("GET", "wallet/")
-            return float(res.get("balance", 0.0))
+            bal = str(res.get("balance", "0.0"))
+            bal = "".join(c for c in bal if c.isdigit() or c == ".")
+            return float(bal) if bal else 0.0
         except Exception as e:
             logger.error(f"Amigo get_balance error: {e}")
             return 0.0
