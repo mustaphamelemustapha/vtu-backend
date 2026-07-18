@@ -16,6 +16,7 @@ from app.core.config import get_settings
 from app.api.v1.endpoints.wallet import _maybe_reward_first_deposit, _safe_ref, _resolve_paystack_transfer_user
 from app.models.virtual_account import VirtualAccount, VirtualAccountProvider
 from app.services.paystack import verify_paystack_signature
+from app.services.push_notification import PushNotificationService
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -206,6 +207,15 @@ def smeplug_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), d
         db.commit()
         logger.info("SMEPlug Webhook: Transaction %s marked as FAILED and REFUNDED", customer_reference)
         dispatch_developer_webhook(transaction, transaction.user)
+        
+        # Send push notification for refund
+        if transaction.user and transaction.user.fcm_token:
+            PushNotificationService.send_push_notification(
+                token=transaction.user.fcm_token,
+                title="Data Purchase Failed",
+                body=f"Your Airtel data purchase failed. Your wallet has been refunded ₦{transaction.amount}.",
+                data={"transaction_id": transaction.id, "type": "refund"}
+            )
     else:
         logger.info("SMEPlug Webhook: Transaction %s status is %s, keeping pending", customer_reference, status)
 
