@@ -138,7 +138,7 @@ class AmigoClient:
         # Amigo expects JSON body
         return self._request("POST", "/data/", payload, idempotency_key=idempotency_key)
 
-    def get_balance(self) -> float:
+    def get_balance(self) -> float | str:
         try:
             res = self._request("GET", "wallet/")
             bal = str(res.get("balance", "0.0"))
@@ -146,4 +146,4 @@ class AmigoClient:
             return float(bal) if bal else 0.0
         except Exception as e:
             logger.error(f"Amigo get_balance error: {e}")
-            return 0.0
+            return f"Amigo Error: {e}"

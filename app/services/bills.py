@@ -711,7 +711,7 @@ class ClubKonnectBillsProvider:
             raise RuntimeError(f"ClubKonnect HTTP {res.status_code}: {message}")
         return data
 
-    def get_balance(self) -> float:
+    def get_balance(self) -> float | str:
         try:
             res = self._request("APIWalletBalanceV1.asp", {})
             raw_bal = ""
@@ -726,7 +726,7 @@ class ClubKonnectBillsProvider:
             return 0.0
         except Exception as e:
             logger.error(f"ClubKonnect get_balance error: {e}")
-            return 0.0
+            return f"CK Error: {e}"
 
     @staticmethod
     def _status_code_and_text(data: dict) -> tuple[int | None, str]:

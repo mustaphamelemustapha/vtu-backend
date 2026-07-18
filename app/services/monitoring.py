@@ -18,30 +18,33 @@ def check_provider_balances(db: Session) -> dict:
         amigo = AmigoClient()
         am_bal = amigo.get_balance()
         results["amigo"] = am_bal
-        if am_bal < THRESHOLD:
+        if isinstance(am_bal, (int, float)) and am_bal < THRESHOLD:
             _alert_admins(db, "Amigo", am_bal)
     except Exception as e:
         logger.error(f"Monitoring Amigo failed: {e}")
+        results["amigo"] = f"Error: {e}"
 
     # 2. SMEPlug
     try:
         sme = SMEPlugProvider()
         sme_bal = sme.get_balance()
         results["smeplug"] = sme_bal
-        if sme_bal < THRESHOLD:
+        if isinstance(sme_bal, (int, float)) and sme_bal < THRESHOLD:
             _alert_admins(db, "SMEPlug", sme_bal)
     except Exception as e:
         logger.error(f"Monitoring SMEPlug failed: {e}")
+        results["smeplug"] = f"Error: {e}"
 
     # 3. ClubKonnect
     try:
         ck = ClubKonnectBillsProvider()
         ck_bal = ck.get_balance()
         results["clubkonnect"] = ck_bal
-        if ck_bal < THRESHOLD:
+        if isinstance(ck_bal, (int, float)) and ck_bal < THRESHOLD:
             _alert_admins(db, "ClubKonnect", ck_bal)
     except Exception as e:
         logger.error(f"Monitoring ClubKonnect failed: {e}")
+        results["clubkonnect"] = f"Error: {e}"
 
     return results
 
