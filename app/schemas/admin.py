@@ -170,6 +170,12 @@ class DataPlanUpdate(BaseModel):
     clear_cashback_amount: bool = False
     cashback_label: Optional[str] = None
     clear_cashback_label: bool = False
+    
+    # Fallback provider fields
+    fallback_provider: Optional[str] = None
+    clear_fallback_provider: bool = False
+    fallback_provider_plan_id: Optional[str] = None
+    clear_fallback_provider_plan_id: bool = False
 
 
 class AdminDataPlanOut(BaseModel):
@@ -179,18 +185,20 @@ class AdminDataPlanOut(BaseModel):
     plan_name: str
     data_size: str
     validity: str
-    base_price: Decimal
-    display_price: Optional[Decimal] = None
-    agent_price: Optional[Decimal] = None
+    base_price: float
+    display_price: Optional[float] = None
+    agent_price: Optional[float] = None
     is_active: bool
+    provider: Optional[str] = None
+    provider_plan_id: Optional[str] = None
+    fallback_provider: Optional[str] = None
+    fallback_provider_plan_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
-    
-    # New promo fields
     promo_active: bool = False
-    promo_old_price: Optional[Decimal] = None
+    promo_old_price: Optional[float] = None
     promo_label: Optional[str] = None
-    cashback_amount: Optional[Decimal] = None
+    cashback_amount: Optional[float] = None
     cashback_label: Optional[str] = None
 
     class Config:

@@ -1933,6 +1933,22 @@ def update_data_plan(
         plan.cashback_label = payload.cashback_label
         changes["cashback_label"] = payload.cashback_label
 
+    if payload.clear_fallback_provider:
+        if plan.fallback_provider is not None:
+            plan.fallback_provider = None
+            changes["fallback_provider"] = None
+    elif payload.fallback_provider is not None:
+        plan.fallback_provider = payload.fallback_provider
+        changes["fallback_provider"] = payload.fallback_provider
+
+    if payload.clear_fallback_provider_plan_id:
+        if plan.fallback_provider_plan_id is not None:
+            plan.fallback_provider_plan_id = None
+            changes["fallback_provider_plan_id"] = None
+    elif payload.fallback_provider_plan_id is not None:
+        plan.fallback_provider_plan_id = payload.fallback_provider_plan_id
+        changes["fallback_provider_plan_id"] = payload.fallback_provider_plan_id
+
     if not changes:
         return {
             "status": "no_change",

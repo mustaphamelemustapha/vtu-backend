@@ -461,6 +461,8 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
     plan_plan_code = plan.plan_code
     plan_plan_name = plan.plan_name
     plan_data_size = plan.data_size
+    plan_fallback_provider = str(plan.fallback_provider or "").strip().lower() if plan.fallback_provider else None
+    plan_fallback_provider_plan_id = plan.fallback_provider_plan_id
     
     db.close()
 
@@ -469,72 +471,80 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
     network_key = plan_network
     
     start_time = time.time()
-    try:
-        provider_name = plan_provider
 
-        if provider_name in ("smeplug", "sim"):
-            sme = SMEPlugProvider()
-            sme_network_map = {"mtn": 1, "airtel": 2, "9mobile": 3, "glo": 4}
-            net_id = sme_network_map.get(network_key, 2)
-            provider_res = sme.purchase_network_data(net_id, phone, plan_provider_plan_id or plan_plan_code, reference)
-            transaction_provider = provider_name
+    def _execute_provider(p_name, p_plan_id):
+        p_res = {"status": "pending", "error": "Provider routing failed"}
+        tx_provider = p_name
+        try:
+            if p_name in ("smeplug", "sim"):
+                sme = SMEPlugProvider()
+                sme_network_map = {"mtn": 1, "airtel": 2, "9mobile": 3, "glo": 4}
+                net_id = sme_network_map.get(network_key, 2)
+                p_res = sme.purchase_network_data(net_id, phone, p_plan_id or plan_plan_code, reference)
+                tx_provider = "smeplug"
 
-        elif provider_name == "amigo" or (not provider_name and network_key in {"mtn", "glo", "airtel", "9mobile"}):
-            amigo = AmigoClient()
-            amigo_network_id = resolve_network_id(network_key)
-            amigo_payload = {
-                "network": amigo_network_id,
-                "mobile_number": phone,
-                "plan": normalize_plan_code(plan_plan_code),
-                "Ported_number": True
-            }
-            transaction_provider = "amigo"
-            try:
-                res = amigo.purchase_data(amigo_payload, idempotency_key=reference)
-                if res.get("success") or str(res.get("status")).lower() in {"delivered", "success", "successful"}:
-                    provider_res = {"status": "success", "provider_reference": str(res.get("reference") or "")}
-                elif str(res.get("status")).lower() in {"pending", "processing"}:
-                    provider_res = {"status": "pending", "provider_reference": str(res.get("reference") or "")}
+            elif p_name == "amigo" or (not p_name and network_key in {"mtn", "glo", "airtel", "9mobile"}):
+                amigo = AmigoClient()
+                amigo_network_id = resolve_network_id(network_key)
+                amigo_payload = {
+                    "network": amigo_network_id,
+                    "mobile_number": phone,
+                    "plan": normalize_plan_code(plan_plan_code),
+                    "Ported_number": True
+                }
+                tx_provider = "amigo"
+                try:
+                    res = amigo.purchase_data(amigo_payload, idempotency_key=reference)
+                    if res.get("success") or str(res.get("status")).lower() in {"delivered", "success", "successful"}:
+                        p_res = {"status": "success", "provider_reference": str(res.get("reference") or "")}
+                    elif str(res.get("status")).lower() in {"pending", "processing"}:
+                        p_res = {"status": "pending", "provider_reference": str(res.get("reference") or "")}
+                    else:
+                        p_res = {"status": "failed", "error": res.get("message") or "Amigo reported failure"}
+                except AmigoApiError as e:
+                    err_msg = str(e)
+                    if _is_ambiguous_provider_error(e) or "coming soon" in err_msg.lower() or "network must be" in err_msg.lower():
+                        logger.warning("Amigo reported ambiguous/coming-soon error for reference %s. Marking as pending for safety: %s", reference, err_msg)
+                        p_res = {"status": "pending", "error": err_msg}
+                    else:
+                        p_res = {"status": "failed", "error": err_msg}
+
+            elif p_name == "clubkonnect" or (not p_name and network_key == "9mobile"):
+                bills = get_bills_provider()
+                tx_provider = "clubkonnect"
+                res = bills.purchase_data(network_key, phone, p_plan_id or plan_plan_code, amount=float(price), request_id=reference)
+                if res.ok:
+                    p_res = {"status": "success", "provider_reference": res.external_reference}
+                elif res.is_pending:
+                    p_res = {"status": "pending", "provider_reference": res.external_reference}
                 else:
-                    provider_res = {"status": "failed", "error": res.get("message") or "Amigo reported failure"}
-            except AmigoApiError as e:
-                err_msg = str(e)
-                # CRITICAL: If Amigo says "coming soon" or connection times out,
-                # we must NOT mark as failed (to prevent automatic refund).
-                if _is_ambiguous_provider_error(e) or "coming soon" in err_msg.lower() or "network must be" in err_msg.lower():
-                    logger.warning("Amigo reported ambiguous/coming-soon error for reference %s. Marking as pending for safety: %s", reference, err_msg)
-                    provider_res = {"status": "pending", "error": err_msg}
-                else:
-                    provider_res = {"status": "failed", "error": err_msg}
+                    p_res = {"status": "failed", "error": res.message}
+                    
+            elif network_key == "airtel":
+                sme = SMEPlugProvider()
+                p_res = sme.purchase_network_data(2, phone, p_plan_id or plan_plan_code, reference)
+                tx_provider = "smeplug"
 
-        elif provider_name == "clubkonnect" or (not provider_name and network_key == "9mobile"):
-            bills = get_bills_provider()
-            transaction_provider = "clubkonnect"
-            res = bills.purchase_data(network_key, phone, plan_provider_plan_id or plan_plan_code, amount=float(price), request_id=reference)
-            if res.ok:
-                provider_res = {"status": "success", "provider_reference": res.external_reference}
-            elif res.is_pending:
-                provider_res = {"status": "pending", "provider_reference": res.external_reference}
             else:
-                provider_res = {"status": "failed", "error": res.message}
+                p_res = {"status": "failed", "error": f"No provider configured for network: {network_key}"}
+
+        except Exception as exc:
+            logger.error("Data purchase provider exception: %s", exc)
+            if _is_ambiguous_provider_error(exc):
+                p_res = {"status": "pending", "error": f"Provider timeout/error: {str(exc)}"}
+            else:
+                p_res = {"status": "failed", "error": str(exc)}
                 
-        # Legacy fallback for Airtel if no provider was specified
-        elif network_key == "airtel":
-            sme = SMEPlugProvider()
-            provider_res = sme.purchase_network_data(2, phone, plan_provider_plan_id or plan_plan_code, reference)
-            transaction_provider = "smeplug"
+        return p_res, tx_provider
 
-        else:
-            provider_res = {"status": "failed", "error": f"No provider configured for network: {network_key}"}
-            transaction_provider = provider_name
-
-    except Exception as exc:
-        logger.error("Data purchase provider exception: %s", exc)
-        if _is_ambiguous_provider_error(exc):
-            provider_res = {"status": "pending", "error": f"Provider timeout/error: {str(exc)}"}
-        else:
-            provider_res = {"status": "failed", "error": str(exc)}
-        transaction_provider = provider_name
+    provider_res, transaction_provider = _execute_provider(plan_provider, plan_provider_plan_id)
+    
+    # Fallback Routing
+    if provider_res.get("status") == "failed" and plan_fallback_provider:
+        logger.warning(f"Primary provider {plan_provider} failed for {reference} ({provider_res.get('error')}). Routing to fallback: {plan_fallback_provider}")
+        # Optionally append a suffix to reference so the second provider doesn't treat it as duplicate if it's the same provider
+        # But we'll just use the same reference as it's a completely different provider API.
+        provider_res, transaction_provider = _execute_provider(plan_fallback_provider, plan_fallback_provider_plan_id)
 
     duration_ms = (time.time() - start_time) * 1000
     
