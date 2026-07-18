@@ -4,7 +4,7 @@ from app.models.user import User, UserRole
 from app.services.push_notification import PushNotificationService
 from app.services.amigo import AmigoClient
 from app.providers.smeplug_provider import SMEPlugProvider
-from app.services.bills import ClubKonnectClient
+from app.services.bills import ClubKonnectBillsProvider
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def check_provider_balances(db: Session) -> dict:
 
     # 3. ClubKonnect
     try:
-        ck = ClubKonnectClient()
+        ck = ClubKonnectBillsProvider()
         ck_bal = ck.get_balance()
         results["clubkonnect"] = ck_bal
         if ck_bal < THRESHOLD:
