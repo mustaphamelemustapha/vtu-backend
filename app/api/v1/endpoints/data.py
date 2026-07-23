@@ -346,6 +346,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                     provider_plan_id=plan.provider_plan_id,
                     cashback_amount=cashback_amount,
                     cashback_label=cashback_label,
+                    data_type=getattr(plan, "data_type", None),
                 )
             )
         except Exception as e:

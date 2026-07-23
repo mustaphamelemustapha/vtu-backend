@@ -1814,7 +1814,6 @@ def _parse_size_mb(size_str: str) -> float:
     return val
 
 @router.get("/data-plans")
-@cache_endpoint(ttl_seconds=60)
 def get_data_plans(admin=Depends(require_admin), db: Session = Depends(get_db)):
     plans = db.query(DataPlan).all()
     plans.sort(key=lambda p: (
