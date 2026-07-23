@@ -159,6 +159,8 @@ class DataPlanUpdate(BaseModel):
     clear_agent_price: bool = False
     provider: Optional[str] = None
     provider_plan_id: Optional[str] = None
+    data_type: Optional[str] = None
+    clear_data_type: bool = False
     
     # New promo fields
     promo_active: Optional[bool] = None

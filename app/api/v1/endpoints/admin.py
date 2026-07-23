@@ -1881,6 +1881,14 @@ def update_data_plan(
         plan.is_active = payload.is_active
         changes["is_active"] = payload.is_active
 
+    if payload.clear_data_type:
+        if plan.data_type is not None:
+            plan.data_type = None
+            changes["data_type"] = None
+    elif payload.data_type is not None:
+        plan.data_type = payload.data_type
+        changes["data_type"] = payload.data_type
+
     if payload.clear_display_price:
         if plan.display_price is not None:
             plan.display_price = None
