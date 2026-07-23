@@ -1846,6 +1846,7 @@ def get_data_plans(admin=Depends(require_admin), db: Session = Depends(get_db)):
             "cashback_label": getattr(p, "cashback_label", None),
             "fallback_provider": getattr(p, "fallback_provider", None),
             "fallback_provider_plan_id": getattr(p, "fallback_provider_plan_id", None),
+            "data_type": getattr(p, "data_type", None),
         })
     return result
 
