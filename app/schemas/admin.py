@@ -176,6 +176,10 @@ class DataPlanUpdate(BaseModel):
     clear_fallback_provider: bool = False
     fallback_provider_plan_id: Optional[str] = None
     clear_fallback_provider_plan_id: bool = False
+    
+    # Data type category
+    data_type: Optional[str] = None
+    clear_data_type: bool = False
 
 
 class AdminDataPlanOut(BaseModel):
@@ -193,6 +197,7 @@ class AdminDataPlanOut(BaseModel):
     provider_plan_id: Optional[str] = None
     fallback_provider: Optional[str] = None
     fallback_provider_plan_id: Optional[str] = None
+    data_type: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     promo_active: bool = False

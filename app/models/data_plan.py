@@ -22,6 +22,7 @@ class DataPlan(Base, TimestampMixin):
     provider_plan_id = Column(String(64), nullable=True, index=True)
     fallback_provider = Column(String(64), nullable=True, index=True)
     fallback_provider_plan_id = Column(String(64), nullable=True, index=True)
+    data_type = Column(String(64), nullable=True, index=True)
 
     # Marketing/Promotion Fields
     promo_active = Column(Boolean, default=False, nullable=False)

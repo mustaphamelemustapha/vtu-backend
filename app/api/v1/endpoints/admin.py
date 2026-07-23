@@ -1953,6 +1953,14 @@ def update_data_plan(
         plan.fallback_provider_plan_id = payload.fallback_provider_plan_id
         changes["fallback_provider_plan_id"] = payload.fallback_provider_plan_id
 
+    if payload.clear_data_type:
+        if plan.data_type is not None:
+            plan.data_type = None
+            changes["data_type"] = None
+    elif payload.data_type is not None:
+        plan.data_type = payload.data_type
+        changes["data_type"] = payload.data_type
+
     if not changes:
         return {
             "status": "no_change",

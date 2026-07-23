@@ -19,6 +19,7 @@ class DataPlanOut(BaseModel):
     promo_limit: Optional[int] = None
     provider: Optional[str] = None
     provider_plan_id: Optional[str] = None
+    data_type: Optional[str] = None
     cashback_amount: Optional[Decimal] = None
     cashback_label: Optional[str] = None
 

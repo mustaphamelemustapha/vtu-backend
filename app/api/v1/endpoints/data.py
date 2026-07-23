@@ -22,7 +22,7 @@ from app.services.amigo import (
     canonical_plan_code,
     normalize_plan_code,
     resolve_network_id,
-    split_plan_code,
+     split_plan_code,
 )
 from app.providers.smeplug_provider import SMEPlugProvider
 from app.services.bills import get_bills_provider
@@ -503,10 +503,11 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                         p_res = {"status": "failed", "error": res.get("message") or "Amigo reported failure"}
                 except AmigoApiError as e:
                     err_msg = str(e)
-                    if _is_ambiguous_provider_error(e) or "coming soon" in err_msg.lower() or "network must be" in err_msg.lower():
-                        logger.warning("Amigo reported ambiguous/coming-soon error for reference %s. Marking as pending for safety: %s", reference, err_msg)
+                    if _is_ambiguous_provider_error(e):
+                        logger.warning("Amigo reported ambiguous error for reference %s. Marking as pending for safety: %s", reference, err_msg)
                         p_res = {"status": "pending", "error": err_msg}
                     else:
+                        logger.warning("Amigo reported hard failure for reference %s. Failing immediately: %s", reference, err_msg)
                         p_res = {"status": "failed", "error": err_msg}
 
             elif p_name == "clubkonnect" or (not p_name and network_key == "9mobile"):
