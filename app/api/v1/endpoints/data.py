@@ -152,6 +152,16 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
     
     canonical_code = canonical_plan_code(clean_provider, network, plan_code)
 
+    inferred_type = None
+    if clean_plan_name:
+        name_lower = clean_plan_name.lower()
+        if "sme" in name_lower:
+            inferred_type = "SME"
+        elif "cg" in name_lower or "corporate" in name_lower:
+            inferred_type = "CG"
+        elif "gifting" in name_lower or "direct" in name_lower:
+            inferred_type = "Gifting"
+
     plan = db.query(DataPlan).filter(DataPlan.plan_code == canonical_code).first()
 
     if not plan:
@@ -164,6 +174,7 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
             base_price=Decimal(str(item.get("price") or "0")),
             provider=clean_provider,
             provider_plan_id=clean_provider_plan_id,
+            data_type=inferred_type,
             is_active=True,
         )
         db.add(plan)
@@ -176,6 +187,8 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
     plan.base_price = Decimal(str(item.get("price") or plan.base_price))
     plan.provider = clean_provider or plan.provider
     plan.provider_plan_id = clean_provider_plan_id or plan.provider_plan_id
+    if inferred_type and not plan.data_type:
+        plan.data_type = inferred_type
     return True
 
 # --- ENDPOINTS ---
