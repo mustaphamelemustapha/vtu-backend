@@ -157,7 +157,7 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
         name_lower = clean_plan_name.lower()
         if "sme" in name_lower:
             inferred_type = "SME"
-        elif "cg" in name_lower or "corporate" in name_lower:
+        elif "cg" in name_lower or "c.g" in name_lower or "corporate" in name_lower or "cooperate" in name_lower:
             inferred_type = "CG"
         elif "gifting" in name_lower or "direct" in name_lower:
             inferred_type = "Gifting"

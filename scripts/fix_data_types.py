@@ -19,7 +19,7 @@ def fix_data_types():
             inferred_type = None
             if "sme" in name_lower:
                 inferred_type = "SME"
-            elif "cg" in name_lower or "corporate" in name_lower:
+            elif "cg" in name_lower or "c.g" in name_lower or "corporate" in name_lower or "cooperate" in name_lower:
                 inferred_type = "CG"
             elif "gifting" in name_lower or "direct" in name_lower:
                 inferred_type = "Gifting"
