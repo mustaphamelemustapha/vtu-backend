@@ -282,3 +282,86 @@ def _send_via_smtp(
         if username and password:
             server.login(username, password)
         server.send_message(msg)
+
+
+def _build_welcome_email_html(email: str, password: str, name: str) -> str:
+    display_name = name if name and name.strip() else "there"
+    return f"""
+    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
+      <h2 style="margin: 0 0 16px; color: #0f766e;">Welcome to MELE DATA! 🚀</h2>
+      <p style="margin: 0 0 14px;">
+        Hi {display_name},
+      </p>
+      <p style="margin: 0 0 14px;">
+        Thank you for registering with MELE DATA. We are thrilled to have you on board! 
+        You can now log in to your account and start enjoying fast, reliable, and affordable VTU services.
+      </p>
+      <div style="background-color: #f8fafc; padding: 16px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px;">
+        <h3 style="margin: 0 0 12px; font-size: 16px; color: #334155;">Your Login Credentials</h3>
+        <p style="margin: 0 0 8px;"><strong>Email:</strong> {email}</p>
+        <p style="margin: 0 0 0;"><strong>Password:</strong> <span style="font-family: monospace; background: #e2e8f0; padding: 2px 6px; border-radius: 4px;">{password}</span></p>
+      </div>
+      <p style="margin: 0 0 16px;">
+        Please keep these credentials safe. You can log in via our mobile app or website.
+      </p>
+      <p style="margin: 0 0 16px;">
+        <a href="{_resolve_frontend_base_url()}/login" style="display:inline-block;background:#0f766e;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:bold;">
+          Log In Now
+        </a>
+      </p>
+      <p style="margin: 0; font-size: 14px; color: #64748b;">
+        Best regards,<br>
+        The MELE DATA Team
+      </p>
+    </div>
+    """.strip()
+
+
+def send_welcome_email(to_email: str, password: str, name: str = "") -> None:
+    settings = get_settings()
+    subject = "Welcome to MELE DATA!"
+    html = _build_welcome_email_html(to_email, password, name)
+    to_email = _sanitize_email(to_email)
+
+    provider = (settings.email_provider or "console").lower()
+    if provider == "console":
+        print(f"[email][console] to={to_email} subject={subject} password={password}")
+        return
+
+    if provider == "resend":
+        _send_via_resend(
+            api_key=settings.resend_api_key,
+            email_from=_sanitize_email_from(settings.email_from),
+            to_email=to_email,
+            subject=subject,
+            html=html,
+        )
+        return
+
+    if provider == "brevo":
+        from_name, from_email = _parse_from(settings.email_from)
+        _send_via_brevo(
+            api_key=settings.brevo_api_key,
+            from_name=from_name,
+            from_email=from_email,
+            to_email=to_email,
+            subject=subject,
+            html=html,
+        )
+        return
+
+    if provider == "smtp":
+        _send_via_smtp(
+            host=settings.smtp_host,
+            port=settings.smtp_port,
+            username=settings.smtp_username,
+            password=settings.smtp_password,
+            use_tls=settings.smtp_use_tls,
+            email_from=_sanitize_email_from(settings.email_from),
+            to_email=to_email,
+            subject=subject,
+            html=html,
+        )
+        return
+
+    raise ValueError(f"Unsupported EMAIL_PROVIDER: {settings.email_provider}")

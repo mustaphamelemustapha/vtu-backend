@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import logging
 import secrets
-from fastapi import APIRouter, Depends, HTTPException, status, Request, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, Request, UploadFile, File, BackgroundTasks
 import shutil
 import os
 import uuid
@@ -18,7 +18,7 @@ from app.schemas.auth import RegisterRequest, LoginRequest, TokenPair, RefreshRe
 from app.schemas.user import UserOut
 from app.dependencies import get_current_user
 from app.services.wallet import get_or_create_wallet
-from app.services.email import send_password_reset_email
+from app.services.email import send_password_reset_email, send_transaction_pin_reset_email, send_welcome_email
 from app.services.referrals import ensure_user_referral_code, attach_signup_referral
 
 settings = get_settings()
@@ -59,7 +59,7 @@ def _normalize_phone(value: str | None) -> str | None:
 
 @router.post("/register", response_model=UserOut)
 @limiter.limit("10/minute")
-def register(request: Request, payload: RegisterRequest, db: Session = Depends(get_db)):
+def register(request: Request, payload: RegisterRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     existing = db.query(User).filter(User.email == payload.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -88,6 +88,7 @@ def register(request: Request, payload: RegisterRequest, db: Session = Depends(g
     db.refresh(user)
 
     get_or_create_wallet(db, user.id)
+    background_tasks.add_task(send_welcome_email, user.email, payload.password, user.full_name)
     return user
 
 
