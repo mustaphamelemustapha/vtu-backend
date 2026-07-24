@@ -436,3 +436,95 @@ def send_admin_low_balance_email(to_email: str, provider: str, balance: float) -
         return
 
     raise ValueError(f"Unsupported EMAIL_PROVIDER: {settings.email_provider}")
+
+
+def _build_daily_report_email_html(stats: dict) -> str:
+    date_str = stats.get('date', '')
+    total_sales = stats.get('total_sales', 0)
+    total_funding = stats.get('total_funding', 0)
+    new_users = stats.get('new_users', 0)
+    pending_txs = stats.get('pending_txs', 0)
+
+    return f"""
+    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+      <h2 style="color: #2563eb; margin-bottom: 20px;">📊 Daily Performance Report - {date_str}</h2>
+      
+      <p style="font-size: 16px; margin-bottom: 20px;">
+        Here is the summary of your VTU platform's performance for today.
+      </p>
+
+      <table style="width: 100%; border-collapse: collapse; margin-bottom: 24px;">
+        <tr>
+          <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; font-weight: bold; width: 60%;">Total Successful Sales</td>
+          <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; color: #15803d; font-weight: bold; text-align: right;">₦{total_sales:,.2f}</td>
+        </tr>
+        <tr>
+          <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; font-weight: bold;">Total Wallet Deposits</td>
+          <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; color: #15803d; font-weight: bold; text-align: right;">₦{total_funding:,.2f}</td>
+        </tr>
+        <tr>
+          <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; font-weight: bold;">New Registered Users</td>
+          <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; font-weight: bold; text-align: right;">{new_users}</td>
+        </tr>
+        <tr>
+          <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #b91c1c;">Pending Transactions</td>
+          <td style="padding: 12px; border-bottom: 1px solid #e2e8f0; font-weight: bold; color: #b91c1c; text-align: right;">{pending_txs}</td>
+        </tr>
+      </table>
+
+      <p style="font-size: 14px; color: #64748b; margin-top: 30px;">
+        This is an automated system report from MELE DATA. Keep up the great work!
+      </p>
+    </div>
+    """.strip()
+
+
+def send_admin_daily_report_email(to_email: str, stats: dict) -> None:
+    settings = get_settings()
+    date_str = stats.get('date', '')
+    subject = f"Daily Report: ₦{stats.get('total_sales', 0):,.2f} Sales on {date_str}"
+    html = _build_daily_report_email_html(stats)
+    to_email = _sanitize_email(to_email)
+
+    email_provider = (settings.email_provider or "console").lower()
+    if email_provider == "console":
+        print(f"[email][console] to={to_email} subject={subject}")
+        return
+
+    if email_provider == "resend":
+        _send_via_resend(
+            api_key=settings.resend_api_key,
+            email_from=_sanitize_email_from(settings.email_from),
+            to_email=to_email,
+            subject=subject,
+            html=html,
+        )
+        return
+
+    if email_provider == "brevo":
+        from_name, from_email = _parse_from(settings.email_from)
+        _send_via_brevo(
+            api_key=settings.brevo_api_key,
+            from_name=from_name,
+            from_email=from_email,
+            to_email=to_email,
+            subject=subject,
+            html=html,
+        )
+        return
+
+    if email_provider == "smtp":
+        _send_via_smtp(
+            host=settings.smtp_host,
+            port=settings.smtp_port,
+            username=settings.smtp_username,
+            password=settings.smtp_password,
+            use_tls=settings.smtp_use_tls,
+            email_from=_sanitize_email_from(settings.email_from),
+            to_email=to_email,
+            subject=subject,
+            html=html,
+        )
+        return
+
+    raise ValueError(f"Unsupported EMAIL_PROVIDER: {settings.email_provider}")
