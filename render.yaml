@@ -5,3 +5,10 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: bash scripts/render_start.sh
     autoDeploy: true
+
+  - type: cron
+    name: vtu-balance-monitor
+    env: python
+    schedule: "0 * * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: python3 scripts/cron_check_balances.py

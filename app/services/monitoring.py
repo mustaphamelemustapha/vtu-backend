@@ -74,15 +74,14 @@ def _check_and_update_funding(db: Session, setting_key: str, provider_name: str,
     db.commit()
 
 
+from app.services.email import send_admin_low_balance_email
+
 def _alert_admins(db: Session, provider_name: str, balance: float, alert_type: str = "low_balance"):
-    # Find all admins with FCM tokens
-    admins = db.query(User).filter(
-        User.role == UserRole.ADMIN,
-        User.fcm_token.isnot(None)
-    ).all()
+    # Find all admins
+    admins = db.query(User).filter(User.role == UserRole.ADMIN).all()
 
     if not admins:
-        logger.warning(f"No admins with FCM tokens to alert for {provider_name} {alert_type}.")
+        logger.warning(f"No admins found to alert for {provider_name} {alert_type}.")
         return
 
     if alert_type == "funded":
@@ -93,13 +92,23 @@ def _alert_admins(db: Session, provider_name: str, balance: float, alert_type: s
         body = f"Your {provider_name} wallet balance has dropped to ₦{balance:,.2f}. Please fund it immediately to avoid transaction failures."
     
     for admin in admins:
-        try:
-            PushNotificationService.send_to_token(
-                token=admin.fcm_token,
-                title=title,
-                body=body,
-                data={"type": "low_balance_alert", "provider": provider_name}
-            )
-            logger.info(f"Sent low balance push to admin {admin.email} for {provider_name}")
-        except Exception as e:
-            logger.error(f"Failed to send push to admin {admin.email}: {e}")
+        # Send Push Notification if FCM token exists
+        if admin.fcm_token:
+            try:
+                PushNotificationService.send_to_token(
+                    token=admin.fcm_token,
+                    title=title,
+                    body=body,
+                    data={"type": "low_balance_alert", "provider": provider_name}
+                )
+                logger.info(f"Sent low balance push to admin {admin.email} for {provider_name}")
+            except Exception as e:
+                logger.error(f"Failed to send push to admin {admin.email}: {e}")
+        
+        # Send Email Alert if it is a low balance alert
+        if alert_type == "low_balance" and admin.email:
+            try:
+                send_admin_low_balance_email(admin.email, provider_name, balance)
+                logger.info(f"Sent low balance email to admin {admin.email} for {provider_name}")
+            except Exception as e:
+                logger.error(f"Failed to send email to admin {admin.email}: {e}")

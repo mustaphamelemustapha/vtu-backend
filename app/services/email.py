@@ -365,3 +365,74 @@ def send_welcome_email(to_email: str, password: str, name: str = "") -> None:
         return
 
     raise ValueError(f"Unsupported EMAIL_PROVIDER: {settings.email_provider}")
+
+
+def _build_low_balance_email_html(provider: str, balance: float) -> str:
+    return f"""
+    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
+      <h2 style="margin: 0 0 16px; color: #dc2626;">🚨 Low Balance Alert: {provider}</h2>
+      <p style="margin: 0 0 14px; font-size: 16px;">
+        Your <strong>{provider}</strong> API wallet balance has dropped to critically low levels.
+      </p>
+      <div style="background-color: #fef2f2; padding: 20px; border-radius: 8px; border: 1px solid #f87171; margin-bottom: 20px; text-align: center;">
+        <h3 style="margin: 0 0 8px; font-size: 14px; color: #991b1b; text-transform: uppercase; letter-spacing: 1px;">Current Balance</h3>
+        <p style="margin: 0; font-size: 32px; font-weight: bold; color: #b91c1c;">₦{balance:,.2f}</p>
+      </div>
+      <p style="margin: 0 0 16px; font-weight: bold;">
+        Please log into the {provider} dashboard and fund your wallet immediately to prevent your users from experiencing failed transactions!
+      </p>
+      <p style="margin: 0; font-size: 14px; color: #64748b;">
+        This is an automated system alert from MELE DATA.
+      </p>
+    </div>
+    """.strip()
+
+
+def send_admin_low_balance_email(to_email: str, provider: str, balance: float) -> None:
+    settings = get_settings()
+    subject = f"URGENT: Low Balance on {provider} (₦{balance:,.2f})"
+    html = _build_low_balance_email_html(provider, balance)
+    to_email = _sanitize_email(to_email)
+
+    email_provider = (settings.email_provider or "console").lower()
+    if email_provider == "console":
+        print(f"[email][console] to={to_email} subject={subject} balance={balance}")
+        return
+
+    if email_provider == "resend":
+        _send_via_resend(
+            api_key=settings.resend_api_key,
+            email_from=_sanitize_email_from(settings.email_from),
+            to_email=to_email,
+            subject=subject,
+            html=html,
+        )
+        return
+
+    if email_provider == "brevo":
+        from_name, from_email = _parse_from(settings.email_from)
+        _send_via_brevo(
+            api_key=settings.brevo_api_key,
+            from_name=from_name,
+            from_email=from_email,
+            to_email=to_email,
+            subject=subject,
+            html=html,
+        )
+        return
+
+    if email_provider == "smtp":
+        _send_via_smtp(
+            host=settings.smtp_host,
+            port=settings.smtp_port,
+            username=settings.smtp_username,
+            password=settings.smtp_password,
+            use_tls=settings.smtp_use_tls,
+            email_from=_sanitize_email_from(settings.email_from),
+            to_email=to_email,
+            subject=subject,
+            html=html,
+        )
+        return
+
+    raise ValueError(f"Unsupported EMAIL_PROVIDER: {settings.email_provider}")
