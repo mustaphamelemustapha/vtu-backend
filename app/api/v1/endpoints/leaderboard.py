@@ -32,11 +32,11 @@ def get_leaderboard(
         .filter(Transaction.status == TransactionStatus.SUCCESS)
         .filter(Transaction.created_at >= start_of_month)
         .filter(Transaction.tx_type.in_([
-            TransactionType.DATA, 
-            TransactionType.AIRTIME, 
-            TransactionType.CABLE, 
-            TransactionType.ELECTRICITY, 
-            TransactionType.EXAM
+            TransactionType.DATA.value, 
+            TransactionType.AIRTIME.value, 
+            TransactionType.CABLE.value, 
+            TransactionType.ELECTRICITY.value, 
+            TransactionType.EXAM.value
         ]))
         .filter(User.role == "user") # Optionally exclude admins, but strings vs enums can be tricky. Let's just exclude admins if role exists.
         .group_by(User.id)
@@ -71,11 +71,11 @@ def get_leaderboard(
             .filter(Transaction.status == TransactionStatus.SUCCESS)
             .filter(Transaction.created_at >= start_of_month)
             .filter(Transaction.tx_type.in_([
-            TransactionType.DATA, 
-            TransactionType.AIRTIME, 
-            TransactionType.CABLE, 
-            TransactionType.ELECTRICITY, 
-            TransactionType.EXAM
+            TransactionType.DATA.value, 
+            TransactionType.AIRTIME.value, 
+            TransactionType.CABLE.value, 
+            TransactionType.ELECTRICITY.value, 
+            TransactionType.EXAM.value
         ]))
             .scalar()
         )
@@ -92,11 +92,11 @@ def get_leaderboard(
             .filter(Transaction.status == TransactionStatus.SUCCESS)
             .filter(Transaction.created_at >= start_of_month)
             .filter(Transaction.tx_type.in_([
-            TransactionType.DATA, 
-            TransactionType.AIRTIME, 
-            TransactionType.CABLE, 
-            TransactionType.ELECTRICITY, 
-            TransactionType.EXAM
+            TransactionType.DATA.value, 
+            TransactionType.AIRTIME.value, 
+            TransactionType.CABLE.value, 
+            TransactionType.ELECTRICITY.value, 
+            TransactionType.EXAM.value
         ]))
             .group_by(Transaction.user_id)
             .subquery()
