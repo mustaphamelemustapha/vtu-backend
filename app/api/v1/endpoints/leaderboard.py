@@ -81,15 +81,7 @@ def get_leaderboard(
         )
         user_score = float(user_score_query or 0)
 
-        # Count how many users have a higher score
-        higher_scores_count = (
-            db.query(func.count(User.id))
-            .join(Transaction, User.id == Transaction.user_id)
-            .filter(Transaction.status == TransactionStatus.SUCCESS)
-            .group_by(User.id)
-            .having(func.sum(Transaction.amount) > user_score)
-            .count() # This won't work perfectly with group_by and having in SQLAlchemy without subquery.
-        )
+
         
         # Let's do a subquery instead
         subq = (
