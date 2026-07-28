@@ -31,7 +31,13 @@ def get_leaderboard(
         .join(Transaction, User.id == Transaction.user_id)
         .filter(Transaction.status == TransactionStatus.SUCCESS)
         .filter(Transaction.created_at >= start_of_month)
-        .filter(Transaction.tx_type != TransactionType.WALLET_FUND)
+        .filter(Transaction.tx_type.in_([
+            TransactionType.DATA, 
+            TransactionType.AIRTIME, 
+            TransactionType.CABLE, 
+            TransactionType.ELECTRICITY, 
+            TransactionType.EXAM
+        ]))
         .filter(User.role == "user") # Optionally exclude admins, but strings vs enums can be tricky. Let's just exclude admins if role exists.
         .group_by(User.id)
         .order_by(desc("score"))
@@ -64,7 +70,13 @@ def get_leaderboard(
             .filter(Transaction.user_id == user.id)
             .filter(Transaction.status == TransactionStatus.SUCCESS)
             .filter(Transaction.created_at >= start_of_month)
-            .filter(Transaction.tx_type != TransactionType.WALLET_FUND)
+            .filter(Transaction.tx_type.in_([
+            TransactionType.DATA, 
+            TransactionType.AIRTIME, 
+            TransactionType.CABLE, 
+            TransactionType.ELECTRICITY, 
+            TransactionType.EXAM
+        ]))
             .scalar()
         )
         user_score = float(user_score_query or 0)
@@ -87,7 +99,13 @@ def get_leaderboard(
             )
             .filter(Transaction.status == TransactionStatus.SUCCESS)
             .filter(Transaction.created_at >= start_of_month)
-            .filter(Transaction.tx_type != TransactionType.WALLET_FUND)
+            .filter(Transaction.tx_type.in_([
+            TransactionType.DATA, 
+            TransactionType.AIRTIME, 
+            TransactionType.CABLE, 
+            TransactionType.ELECTRICITY, 
+            TransactionType.EXAM
+        ]))
             .group_by(Transaction.user_id)
             .subquery()
         )
