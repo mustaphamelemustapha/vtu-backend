@@ -39,49 +39,76 @@ def _parse_from(value: str) -> tuple[Optional[str], str]:
     return name, email
 
 
-def _build_reset_email_html(reset_link: str) -> str:
-    # Keep HTML minimal and compatible across mail clients.
+def _get_base_email_template(title: str, preheader: str, content: str, action_url: str, action_text: str) -> str:
     return f"""
-    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
-      <h2 style="margin: 0 0 8px;">Reset your MELE DATA password</h2>
-      <p style="margin: 0 0 14px;">
-        We received a request to reset your password. If you did not request this, you can ignore this email.
-      </p>
-      <p style="margin: 0 0 16px;">
-        <a href="{reset_link}" style="display:inline-block;background:#0f766e;color:#fff;padding:10px 14px;border-radius:12px;text-decoration:none;font-weight:700;">
-          Reset Password
-        </a>
-      </p>
-      <p style="margin: 0 0 6px; color: #475569; font-size: 13px;">
-        Or copy and paste this link:
-      </p>
-      <p style="margin: 0; font-size: 13px;">
-        <a href="{reset_link}" style="color:#0f766e;">{reset_link}</a>
-      </p>
-    </div>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>{title}</title>
+      <style>
+        body {{ margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; -webkit-font-smoothing: antialiased; }}
+        .wrapper {{ width: 100%; background-color: #f8fafc; padding: 40px 0; }}
+        .container {{ max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }}
+        .header {{ background-color: #0f766e; padding: 36px 40px; text-align: center; }}
+        .header h1 {{ margin: 0; color: #ffffff; font-size: 26px; font-weight: 700; letter-spacing: -0.5px; }}
+        .content {{ padding: 40px; color: #334155; line-height: 1.6; font-size: 16px; }}
+        .content p {{ margin: 0 0 24px 0; }}
+        .btn-container {{ margin: 36px 0; text-align: center; }}
+        .btn {{ display: inline-block; background-color: #0f766e; color: #ffffff; padding: 14px 32px; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: 16px; }}
+        .footer {{ padding: 32px 40px; background-color: #f1f5f9; text-align: center; color: #64748b; font-size: 14px; border-top: 1px solid #e2e8f0; }}
+        .fallback-link {{ word-break: break-all; color: #0f766e; font-size: 14px; }}
+      </style>
+    </head>
+    <body>
+      <div style="display:none;font-size:1px;color:#f8fafc;line-height:1px;max-height:0px;max-width:0px;opacity:0;overflow:hidden;">
+        {preheader}
+      </div>
+      <div class="wrapper">
+        <div class="container">
+          <div class="header">
+            <h1>{title}</h1>
+          </div>
+          <div class="content">
+            {content}
+            <div class="btn-container">
+              <a href="{action_url}" class="btn">{action_text}</a>
+            </div>
+            <p style="font-size: 14px; color: #64748b; margin-bottom: 8px;">If the button doesn't work, copy and paste this link into your browser:</p>
+            <p class="fallback-link"><a href="{action_url}" style="color: #0f766e; text-decoration: none;">{action_url}</a></p>
+          </div>
+          <div class="footer">
+            <p style="margin: 0 0 8px 0;">© 2026 MELE DATA. All rights reserved.</p>
+            <p style="margin: 0;">Need help? <a href="mailto:support@meledata.ng" style="color: #0f766e; text-decoration: none;">Contact Support</a></p>
+          </div>
+        </div>
+      </div>
+    </body>
+    </html>
     """.strip()
+
+
+def _build_reset_email_html(reset_link: str) -> str:
+    content = "<p>Hello,</p><p>We received a request to reset your password. Click the button below to securely choose a new password.</p><p>If you didn't request a password reset, you can safely ignore this email.</p>"
+    return _get_base_email_template(
+        title="Reset your Password",
+        preheader="Instructions for resetting your MELE DATA password.",
+        content=content,
+        action_url=reset_link,
+        action_text="Reset Password"
+    )
 
 
 def _build_pin_reset_email_html(reset_link: str) -> str:
-    return f"""
-    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #0f172a;">
-      <h2 style="margin: 0 0 8px;">Reset your MELE DATA transaction PIN</h2>
-      <p style="margin: 0 0 14px;">
-        We received a request to reset your transaction PIN. If you did not request this, you can ignore this email.
-      </p>
-      <p style="margin: 0 0 16px;">
-        <a href="{reset_link}" style="display:inline-block;background:#0f766e;color:#fff;padding:10px 14px;border-radius:12px;text-decoration:none;font-weight:700;">
-          Reset Transaction PIN
-        </a>
-      </p>
-      <p style="margin: 0 0 6px; color: #475569; font-size: 13px;">
-        Or copy and paste this link:
-      </p>
-      <p style="margin: 0; font-size: 13px;">
-        <a href="{reset_link}" style="color:#0f766e;">{reset_link}</a>
-      </p>
-    </div>
-    """.strip()
+    content = "<p>Hello,</p><p>We received a request to reset your transaction PIN. Click the button below to securely set a new PIN.</p><p>If you didn't request a PIN reset, please ignore this email to keep your account secure.</p>"
+    return _get_base_email_template(
+        title="Reset your Transaction PIN",
+        preheader="Instructions for resetting your MELE DATA transaction PIN.",
+        content=content,
+        action_url=reset_link,
+        action_text="Reset Transaction PIN"
+    )
 
 
 def _resolve_frontend_base_url() -> str:
