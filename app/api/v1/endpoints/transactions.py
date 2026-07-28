@@ -83,7 +83,7 @@ def _extract_plan_name(description: str | None) -> str | None:
 
 @router.get("/me", response_model=list[TransactionOut])
 
-def list_transactions(limit: int = 200, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_transactions(limit: int = 50, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     base = db.query(Transaction).filter(Transaction.user_id == user.id).order_by(Transaction.created_at.desc()).limit(limit).all()
     recipient_phone_by_ref: dict[str, str] = {}
     ledger_description_by_ref: dict[str, str] = {}
