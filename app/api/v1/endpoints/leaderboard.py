@@ -29,10 +29,10 @@ def get_leaderboard(
             func.sum(Transaction.amount).label("score")
         )
         .join(Transaction, User.id == Transaction.user_id)
-        .filter(Transaction.status == TransactionStatus.SUCCESS)
+        .filter(Transaction.status.cast(String) == "success")
         .filter(Transaction.created_at >= start_of_month)
         .filter(Transaction.tx_type.cast(String).in_(['data', 'airtime', 'cable', 'electricity', 'exam']))
-        .filter(User.role == "user") # Optionally exclude admins, but strings vs enums can be tricky. Let's just exclude admins if role exists.
+        .filter(User.role.cast(String) == "user") # Optionally exclude admins, but strings vs enums can be tricky. Let's just exclude admins if role exists.
         .group_by(User.id)
         .order_by(desc("score"))
         .limit(10)
@@ -62,7 +62,7 @@ def get_leaderboard(
         user_score_query = (
             db.query(func.sum(Transaction.amount))
             .filter(Transaction.user_id == user.id)
-            .filter(Transaction.status == TransactionStatus.SUCCESS)
+            .filter(Transaction.status.cast(String) == "success")
             .filter(Transaction.created_at >= start_of_month)
             .filter(Transaction.tx_type.cast(String).in_(['data', 'airtime', 'cable', 'electricity', 'exam']))
             .scalar()
@@ -77,7 +77,7 @@ def get_leaderboard(
                 Transaction.user_id,
                 func.sum(Transaction.amount).label("total_amount")
             )
-            .filter(Transaction.status == TransactionStatus.SUCCESS)
+            .filter(Transaction.status.cast(String) == "success")
             .filter(Transaction.created_at >= start_of_month)
             .filter(Transaction.tx_type.cast(String).in_(['data', 'airtime', 'cable', 'electricity', 'exam']))
             .group_by(Transaction.user_id)
