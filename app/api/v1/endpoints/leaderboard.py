@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 import datetime
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
+from sqlalchemy import func, desc, text
 
 from app.core.database import get_db
 from app.dependencies import get_current_user
@@ -31,13 +31,7 @@ def get_leaderboard(
         .join(Transaction, User.id == Transaction.user_id)
         .filter(Transaction.status == TransactionStatus.SUCCESS)
         .filter(Transaction.created_at >= start_of_month)
-        .filter(Transaction.tx_type.in_([
-            TransactionType.DATA.value, 
-            TransactionType.AIRTIME.value, 
-            TransactionType.CABLE.value, 
-            TransactionType.ELECTRICITY.value, 
-            TransactionType.EXAM.value
-        ]))
+        .filter(text("transactions.tx_type IN ('data', 'airtime', 'cable', 'electricity', 'exam')"))
         .filter(User.role == "user") # Optionally exclude admins, but strings vs enums can be tricky. Let's just exclude admins if role exists.
         .group_by(User.id)
         .order_by(desc("score"))
@@ -70,13 +64,7 @@ def get_leaderboard(
             .filter(Transaction.user_id == user.id)
             .filter(Transaction.status == TransactionStatus.SUCCESS)
             .filter(Transaction.created_at >= start_of_month)
-            .filter(Transaction.tx_type.in_([
-            TransactionType.DATA.value, 
-            TransactionType.AIRTIME.value, 
-            TransactionType.CABLE.value, 
-            TransactionType.ELECTRICITY.value, 
-            TransactionType.EXAM.value
-        ]))
+            .filter(text("transactions.tx_type IN ('data', 'airtime', 'cable', 'electricity', 'exam')"))
             .scalar()
         )
         user_score = float(user_score_query or 0)
@@ -91,13 +79,7 @@ def get_leaderboard(
             )
             .filter(Transaction.status == TransactionStatus.SUCCESS)
             .filter(Transaction.created_at >= start_of_month)
-            .filter(Transaction.tx_type.in_([
-            TransactionType.DATA.value, 
-            TransactionType.AIRTIME.value, 
-            TransactionType.CABLE.value, 
-            TransactionType.ELECTRICITY.value, 
-            TransactionType.EXAM.value
-        ]))
+            .filter(text("transactions.tx_type IN ('data', 'airtime', 'cable', 'electricity', 'exam')"))
             .group_by(Transaction.user_id)
             .subquery()
         )
