@@ -133,6 +133,7 @@ class Settings(BaseSettings):
     # Autosync API
     autosync_base_url: AnyHttpUrl = "https://autosyncng.com/api"
     autosync_api_key: str = ""
+    autosync_webhook_pin: str = ""
 
     # Fraud / abuse guardrails for purchases
     fraud_guard_enabled: bool = True

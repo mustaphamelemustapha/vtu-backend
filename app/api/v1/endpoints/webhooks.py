@@ -1,5 +1,6 @@
 import logging
 import json
+import hashlib
 from fastapi import APIRouter, Depends, Request, HTTPException
 from sqlalchemy.orm import Session
 from decimal import Decimal
@@ -606,3 +607,86 @@ def billstack_webhook(request: Request, raw_body: bytes = Depends(get_raw_body),
 
     return {"status": "ok"}
 
+
+@router.post("/autosync")
+def autosync_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), db: Session = Depends(get_db)):
+    """
+    Autosync Webhook Handler
+    """
+    payload = json.loads(raw_body)
+    logger.info("Autosync Webhook received: %s", payload)
+    
+    received_hash = payload.get("hash")
+    tx_data = payload.get("transaction") or {}
+    
+    reference = tx_data.get("reference")
+    if not reference:
+        logger.warning("Autosync Webhook missing transaction reference")
+        return "error"
+        
+    pin = str(settings.autosync_webhook_pin or "").strip()
+    if not pin:
+        logger.warning("Autosync webhook PIN not configured")
+        return "error"
+        
+    expected_hash_string = f"{pin}:{reference}"
+    expected_hash = hashlib.sha256(expected_hash_string.encode('utf-8')).hexdigest()
+    
+    if received_hash != expected_hash:
+        logger.warning("Autosync Webhook: Invalid hash for ref %s", reference)
+        return "error"
+        
+    transaction = db.query(Transaction).filter(Transaction.reference == reference).first()
+    if not transaction:
+        logger.warning("Autosync Webhook: Transaction not found for ref %s", reference)
+        return "error"
+        
+    if transaction.status in {TransactionStatus.SUCCESS, TransactionStatus.REFUNDED}:
+        logger.info("Autosync Webhook: Transaction %s already in terminal state %s", reference, transaction.status)
+        return "ok"
+        
+    status = str(tx_data.get("status") or "").strip().lower()
+    
+    if status == "successful":
+        transaction.status = TransactionStatus.SUCCESS
+        if tx_data.get("provider_reference"):
+            transaction.external_reference = tx_data.get("provider_reference")
+        db.commit()
+        
+        try:
+            from app.services.referrals import trigger_referral_data_activity
+            trigger_referral_data_activity(db, transaction)
+            db.commit()
+        except Exception as ref_exc:
+            logger.error("Failed to trigger referral activity in webhook: %s", ref_exc)
+            
+        logger.info("Autosync Webhook: Transaction %s marked as SUCCESS", reference)
+        dispatch_developer_webhook(transaction, transaction.user)
+        
+    elif status == "failed":
+        transaction.status = TransactionStatus.FAILED
+        if tx_data.get("provider_reference"):
+            transaction.external_reference = tx_data.get("provider_reference")
+            
+        wallet = get_or_create_wallet(db, transaction.user_id)
+        credit_wallet(
+            db, 
+            wallet, 
+            Decimal(transaction.amount), 
+            transaction.reference, 
+            f"Refund for failed Autosync data purchase (Ref: {reference})"
+        )
+        transaction.status = TransactionStatus.REFUNDED
+        db.commit()
+        logger.info("Autosync Webhook: Transaction %s marked as FAILED and REFUNDED", reference)
+        dispatch_developer_webhook(transaction, transaction.user)
+        
+        if transaction.user and transaction.user.fcm_token:
+            PushNotificationService.send_push_notification(
+                token=transaction.user.fcm_token,
+                title="Data Purchase Failed",
+                body=f"Your data purchase failed. Your wallet has been refunded ₦{transaction.amount}.",
+                data={"transaction_id": transaction.id, "type": "refund"}
+            )
+            
+    return "ok"
