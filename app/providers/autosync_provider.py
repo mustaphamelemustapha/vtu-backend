@@ -87,7 +87,7 @@ class AutosyncProvider:
         plan_id here is the variation code from Autosync.
         data_type determines the endpoint.
         """
-        endpoint = "/v1/data/sme" if data_type.lower() == "sme" else "/v1/data"
+        endpoint = "/v1/data/sme" if data_type and data_type.lower() == "sme" else "/v1/data"
         url = f"{self.base_url}{endpoint}"
         
         # Payload based on general VTU API standards 
