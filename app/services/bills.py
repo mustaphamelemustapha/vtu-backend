@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from typing import Any
 
 import httpx
 
@@ -1121,33 +1122,45 @@ class ClubKonnectBillsProvider:
         result = self._settle_pending(self._parse_result(data, action="electricity"), "electricity", request_id=request_id)
         final_raw = (result.meta or {}).get("clubkonnect", {}).get("raw") or {}
 
-        def extract_field(d: dict, possible_keys: tuple[str, ...]) -> str:
+        def get_all_kv(d: Any) -> list[tuple[str, Any]]:
+            items = []
+            if isinstance(d, dict):
+                for k, v in d.items():
+                    items.append((str(k), v))
+                    items.extend(get_all_kv(v))
+            elif isinstance(d, list):
+                for v in d:
+                    items.extend(get_all_kv(v))
+            return items
+
+        def extract_field(d: Any, possible_keys: tuple[str, ...]) -> str:
             if not d:
                 return ""
-            for k, v in d.items():
+            for k, v in get_all_kv(d):
                 if k.lower() in possible_keys:
                     val = str(v or "").strip()
                     if val:
                         return val
             return ""
 
-        def extract_token_field(d: dict) -> str:
+        def extract_token_field(d: Any) -> str:
             if not d:
                 return ""
+            all_kv = get_all_kv(d)
             # 1. Case-insensitive check for common direct keys
-            for k, v in d.items():
+            for k, v in all_kv:
                 if k.lower() in ("token", "metertoken", "pin"):
                     val = str(v or "").strip()
                     if val:
                         return val
             # 2. Search keys containing 'token' or 'pin'
-            for k, v in d.items():
+            for k, v in all_kv:
                 if "token" in k.lower() or "pin" in k.lower():
                     val = str(v or "").strip()
                     if val:
                         return val
             # 3. Search within all string values in the dictionary for token patterns
-            for k, val in d.items():
+            for k, val in all_kv:
                 if val and isinstance(val, str):
                     val_str = val.strip()
                     # Try _TOKEN_RE first if the key name is promising
