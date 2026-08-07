@@ -792,6 +792,7 @@ class ClubKonnectBillsProvider:
             or "ERROR" in status_text
             or "FAILED" in status_text
             or "CANCEL" in status_text
+            or "REFUND" in status_text
         )
 
         meta = {
