@@ -25,6 +25,7 @@ from app.services.amigo import (
      split_plan_code,
 )
 from app.providers.smeplug_provider import SMEPlugProvider
+from app.providers.autosync_provider import AutosyncProvider
 from app.services.bills import get_bills_provider
 from app.services.fraud import enforce_purchase_limits
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
@@ -497,6 +498,17 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                 p_res = sme.purchase_network_data(net_id, phone, p_plan_id or plan_plan_code, reference)
                 tx_provider = "smeplug"
 
+            elif p_name == "autosync":
+                autosync = AutosyncProvider()
+                p_res = autosync.purchase_network_data(
+                    network=network_key, 
+                    phone=phone, 
+                    plan_id=p_plan_id or plan_plan_code, 
+                    client_request_id=reference,
+                    data_type=getattr(plan, "data_type", "Gifting")
+                )
+                tx_provider = "autosync"
+
             elif p_name == "amigo" or (not p_name and network_key in {"mtn", "glo", "airtel", "9mobile"}):
                 amigo = AmigoClient()
                 amigo_network_id = resolve_network_id(network_key)
@@ -682,5 +694,16 @@ def sync_data_plans(db: Session = Depends(get_db)):
             logger.info("ClubKonnect sync finished (9mobile).")
     except Exception as e:
         logger.error("ClubKonnect sync failed: %s", e)
+
+    # 4. Autosync 
+    try:
+        autosync = AutosyncProvider()
+        items = autosync.get_all_plans()
+        for item in items:
+            _upsert_plan_from_provider(db, item)
+        db.commit()
+        logger.info("Autosync sync finished.")
+    except Exception as e:
+        logger.error("Autosync sync failed: %s", e)
 
     return {"message": "Data plan sync completed successfully."}

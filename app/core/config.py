@@ -130,6 +130,10 @@ class Settings(BaseSettings):
     smeplug_network_airtel: int = 2
     smeplug_webhook_secret: Optional[str] = None
 
+    # Autosync API
+    autosync_base_url: AnyHttpUrl = "https://autosyncng.com/api"
+    autosync_api_key: str = ""
+
     # Fraud / abuse guardrails for purchases
     fraud_guard_enabled: bool = True
     fraud_single_tx_limit_ngn: Decimal = Decimal("50000")
