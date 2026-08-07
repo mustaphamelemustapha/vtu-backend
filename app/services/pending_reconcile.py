@@ -84,7 +84,9 @@ def _is_ambiguous_reason(reason: str | None) -> bool:
 
 
 def _should_attempt_recheck(tx: Transaction) -> bool:
-    if tx.status != TransactionStatus.PENDING or tx.tx_type != TransactionType.DATA:
+    if tx.status != TransactionStatus.PENDING:
+        return False
+    if tx.tx_type not in (TransactionType.DATA, TransactionType.AIRTIME, TransactionType.CABLE, TransactionType.ELECTRICITY):
         return False
     return True
 
@@ -256,7 +258,105 @@ def reconcile_pending_data_once(limit: int = 50) -> dict[str, int]:
     return {
         "processed": processed,
         "success": moved_success,
+        "stayed": stayed_pending,
+        "pending": stayed_pending,
+    }
+
+
+def reconcile_pending_bills_once(limit: int = 50) -> dict[str, int]:
+    db = SessionLocal()
+    processed = 0
+    moved_success = 0
+    moved_refunded = 0
+    stayed_pending = 0
+
+    try:
+        from app.services.bills import get_bills_provider
+        provider = get_bills_provider()
+
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=max(10, settings.pending_reconcile_min_age_seconds))
+        rows = (
+            db.query(Transaction)
+            .filter(
+                Transaction.tx_type.in_([TransactionType.AIRTIME, TransactionType.CABLE, TransactionType.ELECTRICITY]),
+                Transaction.status == TransactionStatus.PENDING,
+                Transaction.created_at <= cutoff,
+            )
+            .order_by(Transaction.created_at.asc())
+            .limit(max(1, limit))
+            .all()
+        )
+
+        for tx in rows:
+            if not _should_attempt_recheck(tx):
+                continue
+
+            processed += 1
+            try:
+                # Need query_transaction from BillsProvider
+                if not hasattr(provider, "query_transaction"):
+                    tx.failure_reason = f"{str(tx.failure_reason or '').strip()} [unsupported-provider]".strip()[:255]
+                    stayed_pending += 1
+                    db.commit()
+                    continue
+
+                result = provider.query_transaction(tx)
+                if result.success and not result.pending:
+                    tx.status = TransactionStatus.SUCCESS
+                    tx.failure_reason = None
+                    # Update tx.meta with result.meta (like tokens)
+                    if result.meta:
+                        tx_meta = tx.meta or {}
+                        tx_meta.update(result.meta)
+                        tx.meta = tx_meta
+                    db.commit()
+                    logger.info("Reconciled pending bill tx %s -> SUCCESS", tx.reference)
+                    dispatch_developer_webhook(tx, tx.user)
+                    moved_success += 1
+                elif result.pending:
+                    age = _tx_age_seconds(tx)
+                    if age >= max(30, int(settings.pending_reconcile_auto_success_seconds)):
+                        _finalize_refund(
+                            db,
+                            tx,
+                            "Pending bill reconciliation timeout reached without provider confirmation",
+                        )
+                        moved_refunded += 1
+                        logger.warning(
+                            "Pending bill auto-refunded after reconciliation timeout ref=%s age=%ss",
+                            tx.reference,
+                            age,
+                        )
+                    else:
+                        stayed_pending += 1
+                else:
+                    msg = str(result.message or "Provider rejected bill transaction")
+                    if _is_definitive_failure(reason=msg):
+                        _finalize_refund(db, tx, msg)
+                        moved_refunded += 1
+                    else:
+                        age = _tx_age_seconds(tx)
+                        if age >= max(30, int(settings.pending_reconcile_auto_success_seconds)):
+                            _finalize_refund(
+                                db,
+                                tx,
+                                "Pending bill reconciliation timeout reached after ambiguity",
+                            )
+                            moved_refunded += 1
+                        else:
+                            stayed_pending += 1
+                db.commit()
+            except Exception as exc:
+                stayed_pending += 1
+                logger.warning("Pending bill reconcile exception for %s: %s", tx.reference, exc)
+    finally:
+        db.close()
+
+    return {
+        "processed": processed,
+        "success": moved_success,
         "refunded": moved_refunded,
+        "stayed": stayed_pending,
         "pending": stayed_pending,
     }
 
@@ -269,9 +369,12 @@ def _reconcile_loop() -> None:
     )
     while not _stop_event.is_set():
         try:
-            stats = reconcile_pending_data_once(limit=settings.pending_reconcile_batch_size)
-            if stats["processed"] > 0:
-                logger.info("Pending reconcile stats: %s", stats)
+            stats_data = reconcile_pending_data_once(limit=settings.pending_reconcile_batch_size)
+            if stats_data["processed"] > 0:
+                logger.info("Pending data reconcile stats: %s", stats_data)
+            stats_bills = reconcile_pending_bills_once(limit=settings.pending_reconcile_batch_size)
+            if stats_bills["processed"] > 0:
+                logger.info("Pending bills reconcile stats: %s", stats_bills)
         except Exception as exc:
             logger.warning("Pending reconciliation loop failed: %s", exc)
         _stop_event.wait(timeout=max(20, settings.pending_reconcile_interval_seconds))

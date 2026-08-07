@@ -781,6 +781,8 @@ class ClubKonnectBillsProvider:
         pending = (
             (code in _CLUBKONNECT_PENDING_CODES if code is not None else False)
             or status_text in {"ORDER_RECEIVED", "ORDER_PROCESSED", "ORDER_ONHOLD", "PENDING", "TXN_HISTORY", "PROCESSING", "SUBMITTED"}
+            or "PROCESSING" in message.upper()
+            or "PENDING" in message.upper()
         )
         success = (
             (code in _CLUBKONNECT_SUCCESS_CODES if code is not None else False)
@@ -827,10 +829,11 @@ class ClubKonnectBillsProvider:
             return None
 
     def _settle_pending(self, result: ProviderResult, action: str, *, request_id: str | None = None) -> ProviderResult:
-        status = str((result.meta or {}).get("clubkonnect", {}).get("status") or "").strip().lower()
-        if status != "pending":
+        if not result.pending:
             return result
         order_id = str(result.external_reference or "").strip() or None
+        if not order_id and not request_id:
+            return result
         for delay in (0.6, 1.2):
             time.sleep(delay)
             queried = self._query_transaction(order_id=order_id, request_id=request_id)
@@ -843,6 +846,64 @@ class ClubKonnectBillsProvider:
             if not order_id:
                 order_id = str(follow_up.external_reference or "").strip() or None
         return result
+
+    def query_transaction(self, tx: object) -> ProviderResult:
+        order_id = str(getattr(tx, "external_reference", "") or "").strip() or None
+        if not order_id:
+            return ProviderResult(False, message="No external reference to query.")
+        queried = self._query_transaction(order_id=order_id)
+        if not queried:
+            return ProviderResult(False, pending=True, message="No response from provider.")
+        action = "electricity" if getattr(tx, "tx_type", None) and str(getattr(tx, "tx_type")).endswith("ELECTRICITY") else "unknown"
+        result = self._parse_result(queried, action=action)
+        # Extract token if it's an electricity transaction
+        if action == "electricity":
+            token = self._extract_token_field(queried)
+            if token:
+                if result.meta is None:
+                    result.meta = {}
+                result.meta["token"] = token
+                result.success = True
+                result.pending = False
+        return result
+
+    @staticmethod
+    def _extract_token_field(d: dict) -> str:
+        if not d:
+            return ""
+        def get_all_kv(d_in: dict | list) -> list[tuple[str, object]]:
+            items = []
+            if isinstance(d_in, dict):
+                for k, v in d_in.items():
+                    items.append((str(k), v))
+                    items.extend(get_all_kv(v))
+            elif isinstance(d_in, list):
+                for v in d_in:
+                    items.extend(get_all_kv(v))
+            return items
+        
+        all_kv = get_all_kv(d)
+        for k, v in all_kv:
+            if k.lower() in ("token", "metertoken", "pin"):
+                val = str(v or "").strip()
+                if val:
+                    return val
+        for k, v in all_kv:
+            if "token" in k.lower() or "pin" in k.lower():
+                val = str(v or "").strip()
+                if val:
+                    return val
+        for k, val in all_kv:
+            if val and isinstance(val, str):
+                val_str = val.strip()
+                if any(x in k.lower() for x in ("description", "remark", "info", "message", "detail")):
+                    token_match = _TOKEN_RE.search(val_str)
+                    if token_match:
+                        return str(token_match.group(1) or "").strip()
+                match = _GENERIC_TOKEN_RE.search(val_str)
+                if match:
+                    return str(match.group(0)).strip()
+        return ""
 
     @staticmethod
     def _network_code(network: str) -> str:
@@ -1199,7 +1260,7 @@ class ClubKonnectBillsProvider:
         if not token or not units or not address or not customer_name:
             order_id = str(result.external_reference or "").strip() or None
             if order_id or request_id:
-                for attempt in range(4):  # Poll up to 4 times (max 6s total wait)
+                for attempt in range(10):  # Poll up to 10 times (max 15s total wait)
                     time.sleep(1.5)
                     queried = self._query_transaction(order_id=order_id, request_id=request_id)
                     if queried:
@@ -1218,6 +1279,8 @@ class ClubKonnectBillsProvider:
                         
                         # Stop polling as soon as we successfully get the token!
                         if token:
+                            result.success = True
+                            result.pending = False
                             break
 
         if result.meta is None:
