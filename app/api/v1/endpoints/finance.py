@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.core.database import get_db
-from app.api.dependencies import get_current_active_user, require_admin
+from app.dependencies import get_current_active_user, require_admin
 from app.models import (
     Transaction, TransactionStatus, TransactionType,
     DataPlan, AgentReward, AgentRewardStatus,
