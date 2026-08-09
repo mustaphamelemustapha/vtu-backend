@@ -19,6 +19,7 @@ class ProviderResult:
     external_reference: str | None = None
     message: str | None = None
     meta: dict | None = None
+    pending: bool = False
 
     @property
     def ok(self) -> bool:
@@ -26,6 +27,8 @@ class ProviderResult:
 
     @property
     def is_pending(self) -> bool:
+        if self.pending:
+            return True
         # Check if explicitly pending via message or meta
         if self.message and "pending" in self.message.lower():
             return True
@@ -809,7 +812,7 @@ class ClubKonnectBillsProvider:
 
         print(f"DEBUG: ClubKonnect parse_result meta: {meta}")
         if pending and not failed:
-            return ProviderResult(False, external_reference=external_reference, message="Transaction pending", meta=meta)
+            return ProviderResult(False, external_reference=external_reference, message="Transaction pending", meta=meta, pending=True)
         if success and not failed:
             return ProviderResult(True, external_reference=external_reference, message=message or "Successful", meta=meta)
         return ProviderResult(False, external_reference=external_reference, message=message or "Provider failed", meta=meta)
@@ -1433,6 +1436,15 @@ class ClubKonnectBillsProvider:
                     flattened.extend([item for item in value if isinstance(item, dict)])
                 elif isinstance(value, dict):
                     flattened.append(value)
+        
+        # ClubKonnect's package API only returns Registration PIN for WAEC.
+        # We manually append the standard Result Checker PIN if exam is WAEC.
+        if exam_key == "waec":
+            flattened.insert(0, {
+                "code": "waec",
+                "name": "WAEC Result Checker PIN",
+                "amount": "3500.00" # Approximate standard price
+            })
 
         packages: list[dict] = []
         for row in flattened:
