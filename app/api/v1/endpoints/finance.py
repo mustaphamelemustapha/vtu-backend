@@ -75,11 +75,11 @@ def get_finance_overview(
     """
     # 1. REVENUE (Exclude WALLET_FUND and WALLET_TRANSFER)
     service_tx_types = [
-        TransactionType.DATA,
-        TransactionType.AIRTIME,
-        TransactionType.CABLE,
-        TransactionType.ELECTRICITY,
-        TransactionType.EXAM
+        TransactionType.DATA.value,
+        TransactionType.AIRTIME.value,
+        TransactionType.CABLE.value,
+        TransactionType.ELECTRICITY.value,
+        TransactionType.EXAM.value
     ]
     
     revenue_amount = (
@@ -126,7 +126,7 @@ def get_finance_overview(
         db.query(func.sum(Transaction.amount))
         .filter(
             Transaction.status == TransactionStatus.SUCCESS,
-            Transaction.tx_type.in_([TransactionType.CABLE, TransactionType.ELECTRICITY, TransactionType.EXAM])
+            Transaction.tx_type.in_([TransactionType.CABLE.value, TransactionType.ELECTRICITY.value, TransactionType.EXAM.value])
         )
         .scalar()
         or 0
