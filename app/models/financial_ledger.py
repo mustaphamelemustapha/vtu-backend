@@ -24,8 +24,8 @@ class FinancialLedger(Base, TimestampMixin):
     source = Column(String(64), nullable=True) # e.g., "manual", "system"
     source_id = Column(String(64), nullable=True)
     status = Column(String(32), nullable=False, default="completed")
-    category = Column(Enum(FinancialCategory), nullable=False, index=True)
-    entry_type = Column(Enum(EntryType), nullable=False)
+    category = Column(Enum(FinancialCategory, native_enum=False, length=64), nullable=False, index=True)
+    entry_type = Column(Enum(EntryType, native_enum=False, length=64), nullable=False)
     amount = Column(Numeric(12, 2), nullable=False)
     party = Column(String(255), nullable=True) # E.g., "Adam", "Moniepoint"
     description = Column(String(255), nullable=True)

@@ -193,17 +193,17 @@ def get_finance_overview(
         provider = get_bills_provider()
         sme_bal = provider.get_balance()
         assets_list.append({"name": "SMEPlug", "balance": float(sme_bal), "type": "PROVIDER_WALLET"})
-        total_assets += sme_bal
+        total_assets += Decimal(str(sme_bal))
         
         amigo = AmigoService()
         amigo_bal = amigo.get_balance()
         assets_list.append({"name": "Amigo", "balance": float(amigo_bal), "type": "PROVIDER_WALLET"})
-        total_assets += amigo_bal
+        total_assets += Decimal(str(amigo_bal))
         
         club = ClubKonnect()
         club_bal = club.get_balance()
         assets_list.append({"name": "ClubKonnect", "balance": float(club_bal), "type": "PROVIDER_WALLET"})
-        total_assets += club_bal
+        total_assets += Decimal(str(club_bal))
     except Exception as e:
         logger.warning(f"Could not fetch live provider balances: {e}")
         assets_list.append({"name": "Live Balances", "balance": 0.0, "type": "ERROR", "error": str(e)})
