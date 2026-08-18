@@ -285,6 +285,12 @@ def _extract_token(purchased_code: str | None) -> str | None:
     text = str(purchased_code or "").strip()
     if not text:
         return None
+        
+    # Standard STS electricity tokens are 20 digits, sometimes separated by spaces or hyphens.
+    generic_match = _GENERIC_TOKEN_RE.search(text)
+    if generic_match:
+        return str(generic_match.group(0)).strip()
+        
     token_match = _TOKEN_RE.search(text)
     if token_match:
         return str(token_match.group(1) or "").strip() or None
@@ -899,13 +905,13 @@ class ClubKonnectBillsProvider:
         for k, val in all_kv:
             if val and isinstance(val, str):
                 val_str = val.strip()
+                match = _GENERIC_TOKEN_RE.search(val_str)
+                if match:
+                    return str(match.group(0)).strip()
                 if any(x in k.lower() for x in ("description", "remark", "info", "message", "detail")):
                     token_match = _TOKEN_RE.search(val_str)
                     if token_match:
                         return str(token_match.group(1) or "").strip()
-                match = _GENERIC_TOKEN_RE.search(val_str)
-                if match:
-                    return str(match.group(0)).strip()
         return ""
 
     @staticmethod
@@ -1228,15 +1234,15 @@ class ClubKonnectBillsProvider:
             for k, val in all_kv:
                 if val and isinstance(val, str):
                     val_str = val.strip()
-                    # Try _TOKEN_RE first if the key name is promising
-                    if any(x in k.lower() for x in ("description", "remark", "info", "message", "detail")):
-                        token_match = _TOKEN_RE.search(val_str)
-                        if token_match:
-                            return str(token_match.group(1) or "").strip()
                     # Try a generic 20-digit pattern (Nigeria prepaid STS token standard) anywhere in the string
                     generic_match = _GENERIC_TOKEN_RE.search(val_str)
                     if generic_match:
                         return str(generic_match.group(0) or "").strip()
+                    # Try _TOKEN_RE if the key name is promising
+                    if any(x in k.lower() for x in ("description", "remark", "info", "message", "detail")):
+                        token_match = _TOKEN_RE.search(val_str)
+                        if token_match:
+                            return str(token_match.group(1) or "").strip()
                     # Fallback to _extract_token logic if the field mentions token or pin
                     val_lower = val_str.lower()
                     if "token" in val_lower or "pin" in val_lower:
