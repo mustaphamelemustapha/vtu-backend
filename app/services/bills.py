@@ -1286,6 +1286,12 @@ class ClubKonnectBillsProvider:
                         if not customer_name:
                             customer_name = extract_field(queried, ("customername", "customer_name", "customer"))
                         
+                        
+                        # Stop polling if the transaction failed on provider side (e.g. Refunded)
+                        parsed_queried = self._parse_result(queried, action="electricity")
+                        if not parsed_queried.success and not parsed_queried.pending:
+                            return parsed_queried
+                            
                         # Stop polling as soon as we successfully get the token!
                         if token:
                             result.success = True
