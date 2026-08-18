@@ -115,14 +115,14 @@ def _resolve_frontend_base_url() -> str:
     settings = get_settings()
     raw = (settings.frontend_base_url or "").strip().rstrip("/")
     if not raw:
-        return "https://axisvtu.com"
+        return "https://meledata.ng"
 
     # Accept both full URLs and bare hosts from env/config.
     candidate = raw if raw.startswith(("http://", "https://")) else f"https://{raw}"
     host = urlparse(candidate).netloc.lower()
     raw_lower = raw.lower()
     if "vercel.app" in host or "vercel.app" in raw_lower:
-        return "https://axisvtu.com"
+        return "https://meledata.ng"
     return candidate.rstrip("/")
 
 
