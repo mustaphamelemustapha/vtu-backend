@@ -394,6 +394,14 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
     db.add(tx)
     db.commit()
 
+    # -----------------------------
+    # Release DB connection
+    # -----------------------------
+    tx_id = tx.id
+    user_id = user.id
+    plan_name = plan.plan_name
+    db.close()
+
     # 5. Route to Provider
     provider_res = {"status": "pending", "error": "Provider routing failed"}
     start_time = time.time()
@@ -435,29 +443,39 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
 
     duration_ms = (time.time() - start_time) * 1000
 
-    # 6. Update Transaction Status
-    final_status = provider_res.get("status", "pending")
-    tx.status = TransactionStatus.SUCCESS if final_status == "success" else (TransactionStatus.FAILED if final_status == "failed" else TransactionStatus.PENDING)
-    tx.external_reference = provider_res.get("provider_reference")
-    
-    if final_status == "failed":
-        tx.failure_reason = str(provider_res.get("error"))[:255]
-        credit_wallet(db, wallet, price, client_ref, f"Refund: {plan.plan_name} API purchase failed")
-        tx.status = TransactionStatus.REFUNDED
-    db.commit()
+    # RE-ACQUIRE DB CONNECTION
+    from app.core.database import SessionLocal
+    db2 = SessionLocal()
+    try:
+        tx = db2.query(Transaction).get(tx_id)
+        user = db2.query(User).get(user_id)
+        wallet = get_or_create_wallet(db2, user_id)
 
-    # 7. Write Log
-    api_log = ApiLog(
-        user_id=user.id,
-        service=tx.provider or "data_api",
-        endpoint="/developer/data/purchase",
-        status_code=200,
-        duration_ms=Decimal(str(round(duration_ms, 2))),
-        reference=client_ref,
-        success=1 if final_status == "success" else 0
-    )
-    db.add(api_log)
-    db.commit()
+        # 6. Update Transaction Status
+        final_status = provider_res.get("status", "pending")
+        tx.status = TransactionStatus.SUCCESS if final_status == "success" else (TransactionStatus.FAILED if final_status == "failed" else TransactionStatus.PENDING)
+        tx.external_reference = provider_res.get("provider_reference")
+        
+        if final_status == "failed":
+            tx.failure_reason = str(provider_res.get("error"))[:255]
+            credit_wallet(db2, wallet, price, client_ref, f"Refund: {plan_name} API purchase failed")
+            tx.status = TransactionStatus.REFUNDED
+        db2.commit()
+
+        # 7. Write Log
+        api_log = ApiLog(
+            user_id=user.id,
+            service=tx.provider or "data_api",
+            endpoint="/developer/data/purchase",
+            status_code=200,
+            duration_ms=Decimal(str(round(duration_ms, 2))),
+            reference=client_ref,
+            success=1 if final_status == "success" else 0
+        )
+        db2.add(api_log)
+        db2.commit()
+    finally:
+        db2.close()
 
     return {
         "status": final_status,
@@ -524,6 +542,13 @@ def developer_buy_airtime(request: Request, payload: DeveloperAirtimePurchaseReq
     db.add(tx)
     db.commit()
 
+    # -----------------------------
+    # Release DB connection
+    # -----------------------------
+    tx_id = tx.id
+    user_id = user.id
+    db.close()
+
     # 3. Route to Provider
     start_time = time.time()
     provider_res = {"status": "pending", "error": "Provider confirmation pending"}
@@ -541,29 +566,39 @@ def developer_buy_airtime(request: Request, payload: DeveloperAirtimePurchaseReq
 
     duration_ms = (time.time() - start_time) * 1000
 
-    # 4. Handle Result
-    final_status = provider_res.get("status", "pending")
-    tx.status = TransactionStatus.SUCCESS.value if final_status == "success" else (TransactionStatus.FAILED.value if final_status == "failed" else TransactionStatus.PENDING.value)
-    tx.external_reference = provider_res.get("provider_reference")
+    # RE-ACQUIRE DB CONNECTION
+    from app.core.database import SessionLocal
+    db2 = SessionLocal()
+    try:
+        tx = db2.query(ServiceTransaction).get(tx_id)
+        user = db2.query(User).get(user_id)
+        wallet = get_or_create_wallet(db2, user_id)
 
-    if final_status == "failed":
-        tx.failure_reason = str(provider_res.get("error"))[:255]
-        credit_wallet(db, wallet, charge_amount, client_ref, "API Refund: Airtime purchase failed")
-        tx.status = TransactionStatus.REFUNDED.value
-    db.commit()
+        # 4. Handle Result
+        final_status = provider_res.get("status", "pending")
+        tx.status = TransactionStatus.SUCCESS.value if final_status == "success" else (TransactionStatus.FAILED.value if final_status == "failed" else TransactionStatus.PENDING.value)
+        tx.external_reference = provider_res.get("provider_reference")
 
-    # 5. Write Log
-    api_log = ApiLog(
-        user_id=user.id,
-        service="airtime_api",
-        endpoint="/developer/airtime/purchase",
-        status_code=200,
-        duration_ms=Decimal(str(round(duration_ms, 2))),
-        reference=client_ref,
-        success=1 if final_status == "success" else 0
-    )
-    db.add(api_log)
-    db.commit()
+        if final_status == "failed":
+            tx.failure_reason = str(provider_res.get("error"))[:255]
+            credit_wallet(db2, wallet, charge_amount, client_ref, "API Refund: Airtime purchase failed")
+            tx.status = TransactionStatus.REFUNDED.value
+        db2.commit()
+
+        # 5. Write Log
+        api_log = ApiLog(
+            user_id=user.id,
+            service="airtime_api",
+            endpoint="/developer/airtime/purchase",
+            status_code=200,
+            duration_ms=Decimal(str(round(duration_ms, 2))),
+            reference=client_ref,
+            success=1 if final_status == "success" else 0
+        )
+        db2.add(api_log)
+        db2.commit()
+    finally:
+        db2.close()
 
     return {
         "status": final_status,
