@@ -2103,9 +2103,18 @@ def create_data_plan(payload: DataPlanUpdate, admin: User = Depends(require_admi
         validity=payload.validity or "30 Days",
         base_price=payload.base_price or Decimal("0"),
         display_price=payload.display_price,
+        agent_price=payload.agent_price,
         is_active=payload.is_active if payload.is_active is not None else True,
         provider=payload.provider,
         provider_plan_id=payload.provider_plan_id,
+        fallback_provider=payload.fallback_provider if payload.fallback_provider != 'none' else None,
+        fallback_provider_plan_id=payload.fallback_provider_plan_id,
+        data_type=payload.data_type,
+        promo_active=payload.promo_active if payload.promo_active is not None else False,
+        promo_old_price=payload.promo_old_price,
+        promo_label=payload.promo_label,
+        cashback_amount=payload.cashback_amount,
+        cashback_label=payload.cashback_label
     )
     db.add(plan)
     db.commit()
