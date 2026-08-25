@@ -476,7 +476,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
     plan_plan_code = plan.plan_code
     plan_plan_name = plan.plan_name
     plan_data_size = plan.data_size
-    plan_fallback_provider = str(plan.fallback_provider or "").strip().lower() if plan.fallback_provider else None
+    plan_fallback_provider = str(plan.fallback_provider or "").strip().lower() if plan.fallback_provider and plan.fallback_provider.lower() != "none" else None
     plan_fallback_provider_plan_id = plan.fallback_provider_plan_id
     
     db.close()
@@ -515,7 +515,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                 amigo_payload = {
                     "network": amigo_network_id,
                     "mobile_number": phone,
-                    "plan": normalize_plan_code(plan_plan_code),
+                    "plan": normalize_plan_code(p_plan_id or plan_plan_code),
                     "Ported_number": True
                 }
                 tx_provider = "amigo"
@@ -572,6 +572,8 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
         # Optionally append a suffix to reference so the second provider doesn't treat it as duplicate if it's the same provider
         # But we'll just use the same reference as it's a completely different provider API.
         provider_res, transaction_provider = _execute_provider(plan_fallback_provider, plan_fallback_provider_plan_id)
+        # We also need to remember the fallback plan id so we can update the transaction record
+        plan_provider_plan_id = plan_fallback_provider_plan_id or plan_plan_code
 
     duration_ms = (time.time() - start_time) * 1000
     
@@ -584,6 +586,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
         wallet = get_or_create_wallet(db2, user_id)
         
         transaction.provider = transaction_provider
+        transaction.provider_plan_id = plan_provider_plan_id
 
         # 4. HANDLE RESULT
         final_status = provider_res.get("status", "pending")
