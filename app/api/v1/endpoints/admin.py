@@ -224,14 +224,20 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
             "tx_count": 0
         })
 
-    total_revenue = db.query(func.sum(Transaction.amount)).filter(Transaction.status == TransactionStatus.SUCCESS).scalar() or 0
+    total_revenue = db.query(func.sum(Transaction.amount)).filter(
+        Transaction.status == TransactionStatus.SUCCESS,
+        Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
+    ).scalar() or 0
     
-    # Calculate total cost estimate across ALL transactions (so Wallet Funds correctly zero out profit)
+    # Calculate total cost estimate across ALL transactions
     total_cost_estimate = (
         db.query(func.sum(func.coalesce(DataPlan.base_price, Transaction.amount)))
         .select_from(Transaction)
         .outerjoin(DataPlan, Transaction.data_plan_code == DataPlan.plan_code)
-        .filter(Transaction.status == TransactionStatus.SUCCESS)
+        .filter(
+            Transaction.status == TransactionStatus.SUCCESS,
+            Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
+        )
         .scalar()
         or 0
     )
@@ -264,15 +270,18 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
 
     today_successful_tx = db.query(func.count(Transaction.id)).filter(
         Transaction.status == TransactionStatus.SUCCESS,
-        Transaction.created_at >= day_start_utc
+        Transaction.created_at >= day_start_utc,
+        Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
     ).scalar() or 0
     today_failed_tx = db.query(func.count(Transaction.id)).filter(
         Transaction.status.in_([TransactionStatus.FAILED, TransactionStatus.REFUNDED]),
-        Transaction.created_at >= day_start_utc
+        Transaction.created_at >= day_start_utc,
+        Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
     ).scalar() or 0
     today_pending_tx = db.query(func.count(Transaction.id)).filter(
         Transaction.status == TransactionStatus.PENDING,
-        Transaction.created_at >= day_start_utc
+        Transaction.created_at >= day_start_utc,
+        Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
     ).scalar() or 0
 
     if inspect(db.bind).has_table("service_transactions"):
@@ -349,6 +358,7 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
             .filter(
                 Transaction.status == TransactionStatus.SUCCESS,
                 Transaction.created_at >= months_starts[0],
+                Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
             )
             .all()
         )
@@ -441,7 +451,10 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
             "tx_count": int(values["tx_count"]),
         }
         
-    total_tx_count = db.query(func.count(Transaction.id)).filter(Transaction.status == TransactionStatus.SUCCESS).scalar() or 0
+    total_tx_count = db.query(func.count(Transaction.id)).filter(
+        Transaction.status == TransactionStatus.SUCCESS,
+        Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
+    ).scalar() or 0
     if inspect(db.bind).has_table("service_transactions"):
         total_st_count = db.query(func.count(ServiceTransaction.id)).filter(ServiceTransaction.status == TransactionStatus.SUCCESS.value).scalar() or 0
         total_tx_count += total_st_count
