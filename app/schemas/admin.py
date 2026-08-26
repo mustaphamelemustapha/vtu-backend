@@ -74,6 +74,7 @@ class AdminUserOut(BaseModel):
     is_verified: bool
     referral_count: int = 0
     developer_status: str = "none"
+    total_spending: float = 0.0
     class Config:
         orm_mode = True
 

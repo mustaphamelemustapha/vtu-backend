@@ -832,6 +832,8 @@ def list_users(
     admin=Depends(require_admin),
     db: Session = Depends(get_db),
     q: Optional[str] = None,
+    role: Optional[str] = None,
+    status: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
 ):
@@ -847,7 +849,30 @@ def list_users(
         .as_scalar()
     )
 
-    query = db.query(User, ref_subquery.label("referral_count"))
+    spending_subquery = (
+        db.query(func.coalesce(func.sum(Transaction.amount), 0))
+        .filter(
+            Transaction.user_id == User.id,
+            Transaction.status == TransactionStatus.SUCCESS
+        )
+        .correlate(User)
+        .as_scalar()
+    )
+
+    query = db.query(
+        User.id,
+        User.created_at,
+        User.email,
+        User.phone_number,
+        User.full_name,
+        User.role,
+        User.is_active,
+        User.is_verified,
+        User.developer_status,
+        ref_subquery.label("referral_count"),
+        spending_subquery.label("total_spending"),
+    )
+
     if q:
         needle = f"%{q.strip()}%"
         query = query.filter(
@@ -857,8 +882,32 @@ def list_users(
                 User.phone_number.ilike(needle),
             )
         )
+        
+    if role and role.lower() != "all":
+        try:
+            query = query.filter(User.role == UserRole(role.lower()))
+        except ValueError:
+            pass
+            
+    if status and status.lower() != "all":
+        if status.lower() == "active":
+            query = query.filter(User.is_active == True)
+        elif status.lower() == "suspended":
+            query = query.filter(User.is_active == False)
 
-    total = query.count()
+    # For count, we can use a simpler query to avoid the subqueries slowing it down
+    # But for now we rely on SQLAlchemy optimizations. 
+    # To truly optimize count, we could strip explicit select and subqueries:
+    count_query = db.query(User.id)
+    if q: count_query = count_query.filter(or_(User.email.ilike(needle), User.full_name.ilike(needle), User.phone_number.ilike(needle)))
+    if role and role.lower() != "all":
+        try: count_query = count_query.filter(User.role == UserRole(role.lower()))
+        except ValueError: pass
+    if status and status.lower() != "all":
+        if status.lower() == "active": count_query = count_query.filter(User.is_active == True)
+        elif status.lower() == "suspended": count_query = count_query.filter(User.is_active == False)
+    total = count_query.count()
+
     users = (
         query.order_by(User.id.desc())
         .offset((page - 1) * page_size)
@@ -867,19 +916,20 @@ def list_users(
     )
 
     items = []
-    for u, ref_count in users:
+    for u in users:
         items.append(
             {
                 "id": u.id,
                 "created_at": u.created_at,
                 "email": u.email,
-                "phone_number": getattr(u, "phone_number", None),
+                "phone_number": u.phone_number,
                 "full_name": u.full_name,
                 "role": u.role,
                 "is_active": u.is_active,
                 "is_verified": u.is_verified,
-                "referral_count": ref_count or 0,
-                "developer_status": getattr(u, "developer_status", "none"),
+                "referral_count": u.referral_count or 0,
+                "developer_status": u.developer_status or "none",
+                "total_spending": float(u.total_spending or 0.0),
             }
         )
 
