@@ -44,22 +44,30 @@ def _random_suffix(length: int = 7) -> str:
     return "".join(secrets.choice(_REFERRAL_ALPHABET) for _ in range(length))
 
 
-def generate_referral_code(user_id: int | None = None) -> str:
-    if user_id is not None:
-        return f"AX{_base36(user_id)}"
-    return f"AX{_random_suffix()}"
+def generate_referral_code(user_name: str | None = None) -> str:
+    prefix = "MELE"
+    if user_name:
+        import re
+        first_word = user_name.split()[0] if user_name.split() else ""
+        alpha_prefix = re.sub(r'[^A-Z]', '', first_word.upper())
+        if len(alpha_prefix) >= 2:
+            prefix = alpha_prefix[:6]
+    
+    # 3 or 4 random digits
+    suffix = "".join(secrets.choice("0123456789") for _ in range(4))
+    return f"{prefix}{suffix}"
 
 
 def ensure_user_referral_code(db: Session, user: User) -> str:
     code = normalize_referral_code(getattr(user, "referral_code", None))
     if code:
         return code
-    if getattr(user, "id", None):
-        code = generate_referral_code(int(user.id))
-    else:
-        code = generate_referral_code(None)
+    
+    user_name = getattr(user, "full_name", None)
+    code = generate_referral_code(user_name)
+
     while db.query(User).filter(User.referral_code == code).first():
-        code = generate_referral_code(None)
+        code = generate_referral_code(user_name)
     user.referral_code = code
     if getattr(user, "id", None):
         db.flush()
