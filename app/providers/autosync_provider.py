@@ -94,13 +94,20 @@ class AutosyncProvider:
         endpoint = "/v1/data/sme" if data_type and data_type.lower() == "sme" else "/v1/data"
         url = f"{self.base_url}{endpoint}"
         
-        # Payload based on general VTU API standards 
+        # Extract just the variation code in case the internal plan_code prefix is still attached (e.g. 'autosync:mtn:76' -> '76')
+        clean_variation = plan_id.split(":")[-1] if ":" in plan_id else plan_id
+        
         payload = {
-            "network": network,
+            "product_id": network,
             "phone": phone,
-            "data_plan": plan_id,
-            "reference": client_request_id
+            "variation_code": clean_variation,
+            "request_ref": client_request_id,
         }
+        
+        pin = str(settings.autosync_webhook_pin or "").strip()
+        if pin:
+            payload["pin"] = pin
+            
         
         try:
             with httpx.Client(timeout=self.timeout) as client:
