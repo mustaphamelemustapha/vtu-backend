@@ -13,8 +13,9 @@ class AutosyncProvider:
         self.timeout = 30.0
 
     def _get_headers(self):
+        token = self.api_key.strip() if self.api_key else ""
         return {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {token}" if token else "Bearer none",
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
@@ -87,6 +88,9 @@ class AutosyncProvider:
         plan_id here is the variation code from Autosync.
         data_type determines the endpoint.
         """
+        if not self.api_key:
+            return {"status": "failed", "error": "Autosync API key is not configured"}
+            
         endpoint = "/v1/data/sme" if data_type and data_type.lower() == "sme" else "/v1/data"
         url = f"{self.base_url}{endpoint}"
         
@@ -142,6 +146,9 @@ class AutosyncProvider:
             return {"status": "failed", "error": str(exc)}
 
     def query_transaction(self, reference: str) -> Dict[str, Any]:
+        if not self.api_key:
+            return {"status": "failed", "error": "Autosync API key is not configured"}
+            
         url = f"{self.base_url}/v1/transactions/{reference}"
         try:
             with httpx.Client(timeout=self.timeout) as client:
