@@ -34,6 +34,10 @@ def upgrade() -> None:
                     WHEN 'user' THEN 'customer'::userrole
                     WHEN 'reseller' THEN 'agent'::userrole
                     WHEN 'admin' THEN 'admin'::userrole
+                    WHEN 'customer' THEN 'customer'::userrole
+                    WHEN 'agent' THEN 'agent'::userrole
+                    WHEN 'ambassador' THEN 'ambassador'::userrole
+                    ELSE 'customer'::userrole
                 END
             );
         """)
@@ -61,6 +65,9 @@ def downgrade() -> None:
                     WHEN 'agent' THEN 'reseller'::userrole
                     WHEN 'admin' THEN 'admin'::userrole
                     WHEN 'ambassador' THEN 'reseller'::userrole
+                    WHEN 'user' THEN 'user'::userrole
+                    WHEN 'reseller' THEN 'reseller'::userrole
+                    ELSE 'user'::userrole
                 END
             );
         """)
