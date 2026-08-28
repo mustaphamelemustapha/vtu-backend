@@ -557,6 +557,11 @@ def get_agent_referrals(db: Session, user: User) -> list[dict]:
             "status": str(ref.status.value),
             "qualified_at": ref.qualified_at,
             "rewarded_at": ref.rewarded_at,
-            "created_at": ref.created_at
+            "created_at": ref.created_at,
+            "first_deposit_amount": ref.first_deposit_amount,
+            "is_ten_percent_paid": ref.is_ten_percent_paid,
+            "accumulated_gb": float(ref.accumulated_mb) / 1024.0 if ref.accumulated_mb else 0.0,
+            "is_50gb_milestone_reached": ref.is_50gb_milestone_reached,
+            "is_milestone_bonus_paid": ref.is_milestone_bonus_paid,
         })
     return results
