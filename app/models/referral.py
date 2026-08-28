@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, Integer, ForeignKey, String, Enum, Numeric, DateTime, Index
+from sqlalchemy import Column, Integer, ForeignKey, String, Enum, Numeric, DateTime, Index, Boolean
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 from app.models.base import TimestampMixin
@@ -20,8 +20,13 @@ class Referral(Base, TimestampMixin):
     referral_code_used = Column(String(32), nullable=False, index=True)
     first_deposit_amount = Column(Numeric(12, 2), nullable=True)
     accumulated_mb = Column(Integer, default=0, nullable=False)
-    target_mb = Column(Integer, default=51200, nullable=False)
+    target_mb = Column(Integer, default=51200, nullable=False) # 50GB
     reward_amount = Column(Numeric(12, 2), default=0, nullable=False)
+    
+    # Ambassador Tracking Fields
+    is_ten_percent_paid = Column(Boolean, default=False, nullable=False, server_default='0')
+    is_50gb_milestone_reached = Column(Boolean, default=False, nullable=False, server_default='0')
+    is_milestone_bonus_paid = Column(Boolean, default=False, nullable=False, server_default='0')
     status = Column(
         Enum(
             ReferralStatus,

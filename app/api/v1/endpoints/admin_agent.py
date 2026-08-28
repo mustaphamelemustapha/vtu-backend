@@ -197,7 +197,7 @@ def list_agent_stats(
     if page_size < 1 or page_size > 200:
         raise HTTPException(status_code=400, detail="page_size must be between 1 and 200")
 
-    query = db.query(User, AgentStat).outerjoin(AgentStat, User.id == AgentStat.agent_id).filter(User.role == UserRole.RESELLER)
+    query = db.query(User, AgentStat).outerjoin(AgentStat, User.id == AgentStat.agent_id).filter(User.role == UserRole.AGENT)
     if q:
         needle = f"%{q.strip()}%"
         query = query.filter(
@@ -235,7 +235,7 @@ def override_agent_stats(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    agent = db.query(User).filter(User.id == agent_id, User.role == UserRole.RESELLER).first()
+    agent = db.query(User).filter(User.id == agent_id, User.role == UserRole.AGENT).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found or is not a reseller")
 
@@ -304,7 +304,7 @@ def get_agent_rewards(
     if page_size < 1 or page_size > 200:
         raise HTTPException(status_code=400, detail="page_size must be between 1 and 200")
 
-    agent = db.query(User).filter(User.id == agent_id, User.role == UserRole.RESELLER).first()
+    agent = db.query(User).filter(User.id == agent_id, User.role == UserRole.AGENT).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found or is not a reseller")
 
@@ -338,7 +338,7 @@ def manual_reward_agent(
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    agent = db.query(User).filter(User.id == agent_id, User.role == UserRole.RESELLER).first()
+    agent = db.query(User).filter(User.id == agent_id, User.role == UserRole.AGENT).first()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found or is not a reseller")
 

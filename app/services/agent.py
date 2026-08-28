@@ -183,13 +183,13 @@ def get_agent_dashboard_stats(db: Session, user: User) -> dict:
         "month_data_gb": round(month_data_gb, 1),
         "month_airtime": month_airtime_naira,
         "total_transactions": total_tx_count,
-        "agent_status": agent_status if user.role == UserRole.RESELLER else "Not an Agent",
+        "agent_status": agent_status if user.role == UserRole.AGENT else "Not an Agent",
         "performance_summary": f"Great job! You've sold {round(month_data_gb, 1)}GB this month."
     }
 
 def get_active_campaigns(db: Session, user: User) -> list[dict]:
     query = db.query(RewardCampaign).filter(RewardCampaign.is_active == True)
-    if user.role == UserRole.USER:
+    if user.role == UserRole.CUSTOMER:
         query = query.filter(RewardCampaign.is_agent_only == False)
     campaigns = query.all()
 

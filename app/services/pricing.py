@@ -9,7 +9,7 @@ SERVICE_KEY_PREFIX = "svc"
 def pricing_role_for_user(user_role: UserRole) -> PricingRole:
     # Only explicit resellers get reseller pricing.
     # Admins should see the same pricing as normal users (simplifies operations).
-    return PricingRole.RESELLER if user_role == UserRole.RESELLER else PricingRole.USER
+    return PricingRole.RESELLER if user_role == UserRole.AGENT else PricingRole.USER
 
 
 def build_service_pricing_key(tx_type: str, provider: str) -> str:

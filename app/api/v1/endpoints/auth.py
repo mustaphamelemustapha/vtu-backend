@@ -73,7 +73,7 @@ def register(request: Request, payload: RegisterRequest, background_tasks: Backg
         email=payload.email,
         full_name=payload.full_name,
         hashed_password=hash_password(payload.password),
-        role=UserRole.USER,
+        role=UserRole.CUSTOMER,
         is_verified=False,
         phone_number=normalized_phone,
     )

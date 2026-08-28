@@ -179,6 +179,7 @@ def ensure_tables():
     _ensure_user_developer_columns()
     _ensure_user_webhook_columns()
     _ensure_user_profile_image_url_column()
+    _ensure_referral_ambassador_columns()
 
 
 @app.on_event("shutdown")
@@ -585,6 +586,24 @@ def _ensure_user_profile_image_url_column() -> None:
             logging.getLogger(__name__).info("Added users.profile_image_url column.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure users profile_image_url column: %s", exc)
+
+
+def _ensure_referral_ambassador_columns() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("referrals"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("referrals")}
+        with engine.begin() as conn:
+            if "is_ten_percent_paid" not in cols:
+                conn.execute(text("ALTER TABLE referrals ADD COLUMN is_ten_percent_paid BOOLEAN NOT NULL DEFAULT '0'"))
+            if "is_50gb_milestone_reached" not in cols:
+                conn.execute(text("ALTER TABLE referrals ADD COLUMN is_50gb_milestone_reached BOOLEAN NOT NULL DEFAULT '0'"))
+            if "is_milestone_bonus_paid" not in cols:
+                conn.execute(text("ALTER TABLE referrals ADD COLUMN is_milestone_bonus_paid BOOLEAN NOT NULL DEFAULT '0'"))
+            logging.getLogger(__name__).info("Ensured referrals ambassador tracking columns.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure referrals ambassador columns: %s", exc)
 
 
 @app.get("/healthz")

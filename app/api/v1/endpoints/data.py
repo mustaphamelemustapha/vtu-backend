@@ -273,7 +273,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
     
     # PERFORMANCE OPTIMIZATION: Fetch pricing rules once to avoid N+1 query timeout
     from app.models import PricingRule, PricingRole, UserRole
-    pricing_role = PricingRole.RESELLER if user.role == UserRole.RESELLER else PricingRole.USER
+    pricing_role = PricingRole.RESELLER if user.role == UserRole.AGENT else PricingRole.USER
     all_rules = db.query(PricingRule).filter(PricingRule.role == pricing_role).all()
     rule_map = {str(r.network or "").strip().lower(): r for r in all_rules}
     

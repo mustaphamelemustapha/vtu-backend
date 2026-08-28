@@ -36,6 +36,6 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
 
 
 def require_reseller_or_admin(user: User = Depends(get_current_user)) -> User:
-    if user.role not in [UserRole.RESELLER, UserRole.ADMIN]:
+    if user.role not in [UserRole.AGENT, UserRole.ADMIN]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Reseller access required")
     return user

@@ -291,9 +291,9 @@ def record_referral_data_activity(db: Session, *, user: User, tx_type: str, amou
     # Check qualification criteria: e.g. sold 50GB (51200 MB)
     target_mb = 51200.0
     referral = None
-    if float(stat.total_data_mb) >= target_mb and user.role == UserRole.USER:
+    if float(stat.total_data_mb) >= target_mb and user.role == UserRole.CUSTOMER:
         # Upgrade user to Agent (RESELLER) role
-        user.role = UserRole.RESELLER
+        user.role = UserRole.AGENT
         user.agent_upgrade_seen = False
 
         # Note: The automatic ₦2000 reward for the user has been removed. 

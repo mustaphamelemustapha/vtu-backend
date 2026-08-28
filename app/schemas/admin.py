@@ -250,3 +250,48 @@ class AdminReferralsResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class AmbassadorVendorOut(BaseModel):
+    vendor_id: int
+    vendor_name: str
+    vendor_email: str
+    initial_deposit_amount: Optional[Decimal] = None
+    is_ten_percent_paid: bool
+    accumulated_gb: Decimal
+    is_50gb_milestone_reached: bool
+    is_milestone_bonus_paid: bool
+
+class AmbassadorOut(BaseModel):
+    id: int
+    name: str
+    email: str
+    phone: Optional[str] = None
+    total_vendors_onboarded: int
+    vendors: list[AmbassadorVendorOut]
+    
+class AdminAmbassadorsResponse(BaseModel):
+    items: list[AmbassadorOut]
+    total: int
+    page: int
+    page_size: int
+
+class AdminAgentOut(BaseModel):
+    id: int
+    name: str
+    email: str
+    phone: Optional[str] = None
+    wallet_balance: Decimal
+    cumulative_sales_gb: Decimal
+    upgraded_at: Optional[datetime] = None
+
+class AdminAgentsResponse(BaseModel):
+    items: list[AdminAgentOut]
+    total: int
+    page: int
+    page_size: int
+
+class PayCommissionRequest(BaseModel):
+    ambassador_id: int
+    vendor_id: int
+    commission_type: str # '10_PERCENT' or '50GB_MILESTONE'
