@@ -249,7 +249,7 @@ def record_referral_first_deposit_reward(
     referral.qualified_at = referral.qualified_at or _utcnow()
     referral.status = ReferralStatus.QUALIFIED
     referrer = db.query(User).filter(User.id == referral.referrer_id).first()
-    if referrer:
+    if referrer and referrer.role != UserRole.AMBASSADOR:
         _grant_reward(
             db,
             referral=referral,
@@ -290,7 +290,16 @@ def record_referral_data_activity(db: Session, *, user: User, tx_type: str, amou
 
     # Check qualification criteria: e.g. sold 50GB (51200 MB)
     target_mb = 51200.0
-    referral = None
+    referral = _get_or_create_referral_row(db, referred_user=user)
+    
+    if tx_type == TransactionType.DATA or tx_type == "data":
+        if referral:
+            mb = data_mb if data_mb > 0 else (float(amount) / 250.0 * 1024.0)
+            referral.accumulated_mb = int((referral.accumulated_mb or 0) + mb)
+            if float(referral.accumulated_mb) >= target_mb:
+                referral.is_50gb_milestone_reached = True
+            db.add(referral)
+
     if float(stat.total_data_mb) >= target_mb and user.role == UserRole.CUSTOMER:
         # Upgrade user to Agent (RESELLER) role
         user.role = UserRole.AGENT
