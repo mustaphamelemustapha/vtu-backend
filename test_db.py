@@ -1,10 +1,18 @@
-import sys
-import asyncio
-from datetime import date
-from sqlalchemy.orm import Session
-from sqlalchemy import create_engine
-from app.api.v1.endpoints.admin import _as_utc_start, _as_utc_end
-from app.models import Transaction, User
+import enum
+from sqlalchemy import create_engine, Column, Integer, Enum, String
+from sqlalchemy.orm import declarative_base
 
-print("UTC start for 2026-06-28:", _as_utc_start(date(2026, 6, 28)))
-print("UTC end for 2026-06-28:", _as_utc_end(date(2026, 6, 28)))
+class UserRole(str, enum.Enum):
+    CUSTOMER = "customer"
+    AGENT = "agent"
+
+Base = declarative_base()
+
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    role = Column(Enum(UserRole), nullable=False, default=UserRole.CUSTOMER)
+
+engine = create_engine('sqlite:///:memory:')
+Base.metadata.create_all(engine)
+print(UserRole.__members__)
