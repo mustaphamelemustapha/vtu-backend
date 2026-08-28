@@ -2249,15 +2249,17 @@ def update_user_role(
     user_id = payload.user_id
     raw_role = payload.role.strip().lower()
     
-    if raw_role not in {"user", "reseller", "admin"}:
-        raise HTTPException(status_code=400, detail="Invalid role. Must be 'user', 'reseller', or 'admin'.")
+    if raw_role not in {"user", "reseller", "customer", "agent", "ambassador", "admin"}:
+        raise HTTPException(status_code=400, detail="Invalid role. Must be 'customer', 'agent', 'ambassador', or 'admin'.")
         
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail=f"User with ID {user_id} not found.")
         
-    if raw_role == "reseller":
+    if raw_role in ("reseller", "agent"):
         user.role = UserRole.AGENT
+    elif raw_role == "ambassador":
+        user.role = UserRole.AMBASSADOR
     elif raw_role == "admin":
         user.role = UserRole.ADMIN
     else:
