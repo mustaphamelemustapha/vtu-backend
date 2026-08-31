@@ -252,6 +252,11 @@ class AdminReferralsResponse(BaseModel):
     page_size: int
 
 
+class UpdateReferralCodeRequest(BaseModel):
+    user_id: int
+    new_code: str
+
+
 class AmbassadorVendorOut(BaseModel):
     vendor_id: int
     vendor_name: str
@@ -267,6 +272,7 @@ class AmbassadorOut(BaseModel):
     name: str
     email: str
     phone: Optional[str] = None
+    referral_code: str
     total_vendors_onboarded: int
     vendors: list[AmbassadorVendorOut]
     

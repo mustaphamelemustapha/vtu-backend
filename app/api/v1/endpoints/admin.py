@@ -35,6 +35,7 @@ from app.schemas.admin import (
     AdminAgentsResponse,
     AdminAmbassadorsResponse,
     PayCommissionRequest,
+    UpdateReferralCodeRequest,
 )
 from app.services.wallet import get_or_create_wallet, credit_wallet, debit_wallet
 from app.services.pricing import build_service_pricing_key, parse_pricing_key
@@ -2517,11 +2518,50 @@ def list_ambassadors(
             "name": amb.full_name or "Unknown",
             "email": amb.email,
             "phone": amb.phone_number,
+            "referral_code": amb.referral_code,
             "total_vendors_onboarded": len(vendors),
             "vendors": vendors
         })
 
     return AdminAmbassadorsResponse(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.post("/users/referral-code")
+def update_user_referral_code(
+    req: UpdateReferralCodeRequest,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == req.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    new_code = req.new_code.strip()
+    if not new_code or len(new_code) < 3:
+        raise HTTPException(status_code=400, detail="Referral code must be at least 3 characters")
+        
+    if len(new_code) > 16:
+        raise HTTPException(status_code=400, detail="Referral code must be 16 characters or less")
+        
+    existing = db.query(User).filter(func.lower(User.referral_code) == func.lower(new_code), User.id != user.id).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Referral code is already taken by another user")
+        
+    old_code = user.referral_code
+    user.referral_code = new_code
+    db.commit()
+    
+    # Optionally log the change
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action="UPDATE_REFERRAL_CODE",
+        target=user.email,
+        details={"old": old_code, "new": new_code}
+    )
+    db.add(audit_log)
+    db.commit()
+    
+    return {"message": "Referral code updated successfully", "referral_code": new_code}
 
 
 @router.post("/ambassadors/pay-commission")
