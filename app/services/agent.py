@@ -576,7 +576,7 @@ def get_agent_referrals(db: Session, user: User) -> list[dict]:
     for ref in referrals:
         referred_user_name = "Unknown User"
         if ref.referred_user:
-            referred_user_name = f"{ref.referred_user.first_name or ''} {ref.referred_user.last_name or ''}".strip() or ref.referred_user.email
+            referred_user_name = getattr(ref.referred_user, "full_name", "").strip() or getattr(ref.referred_user, "email", "Unknown User")
             
         results.append({
             "id": ref.id,
