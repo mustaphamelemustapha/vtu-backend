@@ -527,6 +527,33 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
         transaction_reference=tx_ref,
     )
     db.add(reward)
+    
+    # 3. Ambassador 50GB Milestone Bonus
+    if campaign.type == AgentCampaignType.DATA_VOLUME and float(campaign.target_value) >= 51200:
+        referral = db.query(Referral).filter(Referral.referred_user_id == user.id).first()
+        if referral and referral.is_50gb_milestone_reached and not referral.is_milestone_bonus_paid:
+            referrer = db.query(User).filter(User.id == referral.referrer_id).first()
+            if referrer and referrer.role == UserRole.AMBASSADOR:
+                from app.services.wallet import get_or_create_wallet
+                amount_bonus = Decimal('500.00')
+                amb_tx_ref = f"AMB-MIL-{campaign.id}-{referrer.id}-{int(_utcnow().timestamp())}"
+                try:
+                    amb_wallet = get_or_create_wallet(db, referrer.id, commit=False)
+                    credit_wallet(db, amb_wallet, amount_bonus, amb_tx_ref, "Ambassador 50GB Milestone Bonus", commit=False)
+                    amb_tx = Transaction(
+                        user_id=referrer.id,
+                        reference=amb_tx_ref,
+                        amount=amount_bonus,
+                        status=TransactionStatus.SUCCESS,
+                        tx_type=TransactionType.WALLET_FUND,
+                        failure_reason="Ambassador Milestone Bonus",
+                    )
+                    db.add(amb_tx)
+                    referral.is_milestone_bonus_paid = True
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning("Failed to credit ambassador milestone bonus: %s", e)
+                    
     try:
         db.commit()
     except Exception as e:

@@ -151,10 +151,12 @@ def _grant_reward(
     first_deposit_amount: Decimal,
     reward_amount: Decimal,
     source_reference: str,
+    description: str | None = None,
 ) -> str:
     reward_reference = referral.reward_transaction_reference or f"REFERRAL_DEPOSIT_REWARD_{referral.id}"
     wallet = get_or_create_wallet(db, referrer.id, commit=False)
-    description = f"Referral reward from first deposit of ₦{first_deposit_amount:.2f}"
+    if not description:
+        description = f"Referral reward from first deposit of ₦{first_deposit_amount:.2f}"
 
     existing_tx = db.query(Transaction).filter(Transaction.reference == reward_reference).first()
     if existing_tx:
@@ -249,15 +251,29 @@ def record_referral_first_deposit_reward(
     referral.qualified_at = referral.qualified_at or _utcnow()
     referral.status = ReferralStatus.QUALIFIED
     referrer = db.query(User).filter(User.id == referral.referrer_id).first()
-    if referrer and referrer.role != UserRole.AMBASSADOR:
-        _grant_reward(
-            db,
-            referral=referral,
-            referrer=referrer,
-            first_deposit_amount=amount,
-            reward_amount=reward_amount,
-            source_reference=reference,
-        )
+    if referrer:
+        if referrer.role == UserRole.AMBASSADOR:
+            if not referral.is_ten_percent_paid:
+                ambassador_reward = (amount * Decimal("0.10")).quantize(Decimal("0.01"))
+                _grant_reward(
+                    db,
+                    referral=referral,
+                    referrer=referrer,
+                    first_deposit_amount=amount,
+                    reward_amount=ambassador_reward,
+                    source_reference=reference,
+                    description="Ambassador 10% Onboarding Commission",
+                )
+                referral.is_ten_percent_paid = True
+        else:
+            _grant_reward(
+                db,
+                referral=referral,
+                referrer=referrer,
+                first_deposit_amount=amount,
+                reward_amount=reward_amount,
+                source_reference=reference,
+            )
     db.commit()
     return referral
 
