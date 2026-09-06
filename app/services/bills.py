@@ -843,7 +843,9 @@ class ClubKonnectBillsProvider:
         order_id = str(result.external_reference or "").strip() or None
         if not order_id and not request_id:
             return result
-        for delay in (0.6, 1.2):
+            
+        delays = (1.5, 2.5, 3.5) if action == "airtime" else (0.6, 1.2, 2.0)
+        for delay in delays:
             time.sleep(delay)
             queried = self._query_transaction(order_id=order_id, request_id=request_id)
             if not queried:
