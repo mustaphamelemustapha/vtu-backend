@@ -1565,6 +1565,7 @@ class AutosyncBillsProvider:
     def __init__(self):
         self.autosync = AutosyncProvider()
         self.timeout = self.autosync.timeout
+        self.pin = str(get_settings().autosync_webhook_pin or "").strip()
 
     def _parse_result(self, res_data: dict, action: str) -> ProviderResult:
         status_value = str(res_data.get("status") or "").lower()
@@ -1593,7 +1594,9 @@ class AutosyncBillsProvider:
             "amount": float(amount),
             "request_ref": _vtpass_request_id() # reuse existing ID generator or create a new one, this is fine
         }
-        
+        if self.pin:
+            payload["pin"] = self.pin
+            
         url = f"{self.autosync.base_url}/v1/airtime"
         try:
             with httpx.Client(timeout=self.timeout) as client:
@@ -1625,7 +1628,9 @@ class AutosyncBillsProvider:
             "type": "renew",
             "amount": float(amount)
         }
-        
+        if self.pin:
+            payload["pin"] = self.pin
+            
         url = f"{self.autosync.base_url}/v1/cable"
         try:
             with httpx.Client(timeout=self.timeout) as client:
@@ -1655,7 +1660,9 @@ class AutosyncBillsProvider:
             "type": str(meter_type).lower(), # prepaid or postpaid
             "amount": float(amount)
         }
-        
+        if self.pin:
+            payload["pin"] = self.pin
+            
         url = f"{self.autosync.base_url}/v1/electricity"
         try:
             with httpx.Client(timeout=self.timeout) as client:
