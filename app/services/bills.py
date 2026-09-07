@@ -1612,6 +1612,8 @@ class AutosyncBillsProvider:
             if status_value == "ok":
                res_data = {"status": "success", "provider_reference": provider_reference, "error": message}
             else:
+               logger.error(f"Autosync Airtime Error Payload: {payload}")
+               logger.error(f"Autosync Airtime Error Response: {data}")
                res_data = {"status": "failed", "provider_reference": provider_reference, "error": message}
                
         except Exception as exc:
