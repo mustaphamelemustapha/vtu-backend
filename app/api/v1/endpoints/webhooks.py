@@ -674,12 +674,14 @@ def autosync_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), 
             transaction.external_reference = tx_data.get("provider_reference")
             
         wallet = get_or_create_wallet(db, transaction.user_id)
+        service_name = getattr(transaction, "type", "transaction").capitalize()
+        
         credit_wallet(
             db, 
             wallet, 
             Decimal(transaction.amount), 
             transaction.reference, 
-            f"Refund for failed Autosync data purchase (Ref: {reference})"
+            f"Refund for failed Autosync {service_name} purchase (Ref: {reference})"
         )
         transaction.status = TransactionStatus.REFUNDED
         db.commit()
@@ -689,8 +691,8 @@ def autosync_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), 
         if transaction.user and transaction.user.fcm_token:
             PushNotificationService.send_push_notification(
                 token=transaction.user.fcm_token,
-                title="Data Purchase Failed",
-                body=f"Your data purchase failed. Your wallet has been refunded ₦{transaction.amount}.",
+                title=f"{service_name} Purchase Failed",
+                body=f"Your {service_name.lower()} purchase failed. Your wallet has been refunded ₦{transaction.amount}.",
                 data={"transaction_id": transaction.id, "type": "refund"}
             )
             
