@@ -12,6 +12,8 @@ import httpx
 
 from app.core.config import get_settings
 from app.providers.autosync_provider import AutosyncProvider
+
+@dataclass
 class ProviderResult:
     success: bool
     external_reference: str | None = None
