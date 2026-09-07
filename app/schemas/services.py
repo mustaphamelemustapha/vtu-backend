@@ -31,7 +31,7 @@ class ElectricityPurchaseRequest(BaseModel):
     meter_number: str = Field(..., min_length=5, max_length=32)
     meter_type: str = Field(..., min_length=3, max_length=16)  # prepaid|postpaid
     phone_number: str = Field(..., min_length=7, max_length=20)
-    amount: Decimal = Field(..., gt=0)
+    amount: Decimal = Field(..., ge=1000)
 
 
 class ElectricityVerifyRequest(BaseModel):
