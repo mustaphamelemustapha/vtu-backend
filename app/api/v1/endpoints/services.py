@@ -255,7 +255,12 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
 
     provider = get_bills_provider()
     try:
-        result = provider.purchase_airtime(tx.provider or "", tx.customer or "", float(base_amount))
+        result = provider.purchase_airtime(
+            tx.provider or "", 
+            tx.customer or "", 
+            float(base_amount),
+            reference=reference
+        )
     except Exception as exc:
         from app.core.database import SessionLocal
         db2 = SessionLocal()
@@ -399,6 +404,7 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
             tx.product_code or "",
             float(base_amount),
             payload.phone_number.strip(),
+            reference=reference
         )
     except Exception as exc:
         from app.core.database import SessionLocal
@@ -611,6 +617,7 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
             tx.product_code or "",
             float(base_amount),
             payload.phone_number.strip(),
+            reference=reference
         )
     except Exception as exc:
         from app.core.database import SessionLocal

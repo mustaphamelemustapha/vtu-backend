@@ -500,7 +500,7 @@ class VTPassBillsProvider:
                 return service_id, code
         return None, None
 
-    def purchase_airtime(self, network: str, phone_number: str, amount: float) -> ProviderResult:
+    def purchase_airtime(self, network: str, phone_number: str, amount: float, reference: str | None = None) -> ProviderResult:
         payload = {
             "request_id": _vtpass_request_id(),
             "serviceID": _airtime_service_id(network),
@@ -510,7 +510,7 @@ class VTPassBillsProvider:
         data = self._post("/pay", payload)
         return self._parse_result(data)
 
-    def purchase_cable(self, provider: str, smartcard_number: str, package_code: str, amount: float, phone_number: str) -> ProviderResult:
+    def purchase_cable(self, provider: str, smartcard_number: str, package_code: str, amount: float, phone_number: str, reference: str | None = None) -> ProviderResult:
         payload = {
             "request_id": _vtpass_request_id(),
             "serviceID": _cable_service_id(provider),
@@ -522,7 +522,7 @@ class VTPassBillsProvider:
         data = self._post("/pay", payload)
         return self._parse_result(data)
 
-    def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str) -> ProviderResult:
+    def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str, reference: str | None = None) -> ProviderResult:
         payload = {
             "request_id": _vtpass_request_id(),
             "serviceID": _electricity_service_id(disco),
@@ -1079,7 +1079,7 @@ class ClubKonnectBillsProvider:
                     flattened.append(merged)
         return flattened
 
-    def purchase_airtime(self, network: str, phone_number: str, amount: float) -> ProviderResult:
+    def purchase_airtime(self, network: str, phone_number: str, amount: float, reference: str | None = None) -> ProviderResult:
         request_id = _clubkonnect_request_id("AIRTIME")
         data = self._request(
             "APIAirtimeV1.asp",
@@ -1093,7 +1093,7 @@ class ClubKonnectBillsProvider:
         )
         return self._settle_pending(self._parse_result(data, action="airtime"), "airtime", request_id=request_id)
 
-    def purchase_cable(self, provider: str, smartcard_number: str, package_code: str, amount: float, phone_number: str | None = None) -> ProviderResult:
+    def purchase_cable(self, provider: str, smartcard_number: str, package_code: str, amount: float, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
         request_id = _clubkonnect_request_id("CABLE")
         data = self._request(
             "APICableTVV1.asp",
@@ -1178,7 +1178,7 @@ class ClubKonnectBillsProvider:
         error_msg = customer_name or "Unable to verify smartcard number."
         return {"ok": False, "message": error_msg}
 
-    def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str | None = None) -> ProviderResult:
+    def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
         request_id = _clubkonnect_request_id("ELEC")
         data = self._request(
             "APIElectricityV1.asp",
@@ -1579,7 +1579,10 @@ class AutosyncBillsProvider:
                 "raw": res_data
             }
         }
-        
+        token = str(res_data.get("token") or "")
+        if token:
+            meta["token"] = token
+            
         if status_value == "success" or status_value == "successful":
             return ProviderResult(True, external_reference=reference, message=message or "Successful", meta=meta)
         if status_value == "pending":
@@ -1587,12 +1590,13 @@ class AutosyncBillsProvider:
             
         return ProviderResult(False, external_reference=reference, message=message or "Provider failed", meta=meta)
 
-    def purchase_airtime(self, network: str, phone_number: str, amount: float) -> ProviderResult:
+    def purchase_airtime(self, network: str, phone_number: str, amount: float, reference: str | None = None) -> ProviderResult:
         payload = {
             "product_id": network,
             "phone": str(phone_number),
             "amount": float(amount),
-            "request_ref": _vtpass_request_id() # reuse existing ID generator or create a new one, this is fine
+            "request_ref": reference or _vtpass_request_id()
+
         }
         if self.pin:
             payload["pin"] = self.pin
@@ -1621,9 +1625,9 @@ class AutosyncBillsProvider:
             
         return self._parse_result(res_data, action="airtime")
 
-    def purchase_cable(self, provider: str, smartcard_number: str, package_code: str, amount: float, phone_number: str) -> ProviderResult:
+    def purchase_cable(self, provider: str, smartcard_number: str, package_code: str, amount: float, phone_number: str, reference: str | None = None) -> ProviderResult:
         payload = {
-            "request_ref": _vtpass_request_id(),
+            "request_ref": reference or _vtpass_request_id(),
             "iuc_number": str(smartcard_number),
             "product_id": provider, # e.g. dstv, gotv
             "variation_code": str(package_code),
@@ -1657,9 +1661,9 @@ class AutosyncBillsProvider:
             
         return self._parse_result(res_data, action="cable")
 
-    def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str) -> ProviderResult:
+    def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str, reference: str | None = None) -> ProviderResult:
         payload = {
-            "request_ref": _vtpass_request_id(),
+            "request_ref": reference or _vtpass_request_id(),
             "meter_number": str(meter_number),
             "product_id": disco, # The ID/code for the disco
             "type": str(meter_type).lower(), # prepaid or postpaid
@@ -1681,7 +1685,12 @@ class AutosyncBillsProvider:
             provider_reference = str(tx_data.get("reference") or "")
             
             if status_value == "ok":
-               res_data = {"status": "success", "provider_reference": provider_reference, "error": message}
+               res_data = {
+                   "status": "success", 
+                   "provider_reference": provider_reference, 
+                   "error": message,
+                   "token": tx_data.get("token") or tx_data.get("pin")
+               }
             else:
                logger.error(f"Autosync Electricity Error Payload: {payload}")
                logger.error(f"Autosync Electricity Error Response: {data}")
@@ -1789,17 +1798,17 @@ class MockBillsProvider:
     def _ref(self, prefix: str) -> str:
         return f"{prefix}-MOCK-{int(time.time())}-{secrets.token_hex(3)}"
 
-    def purchase_airtime(self, network: str, phone_number: str, amount: float) -> ProviderResult:
+    def purchase_airtime(self, network: str, phone_number: str, amount: float, reference: str | None = None) -> ProviderResult:
         if str(phone_number).strip().startswith("0000"):
             return ProviderResult(False, message="Mock failure: invalid phone number.")
         return ProviderResult(True, external_reference=self._ref("AIRTIME"), meta={"network": network, "phone_number": phone_number})
 
-    def purchase_cable(self, provider: str, smartcard_number: str, package_code: str, amount: float, phone_number: str | None = None) -> ProviderResult:
+    def purchase_cable(self, provider: str, smartcard_number: str, package_code: str, amount: float, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
         if str(smartcard_number).strip().startswith("0000"):
             return ProviderResult(False, message="Mock failure: invalid smartcard number.")
         return ProviderResult(True, external_reference=self._ref("CABLE"), meta={"provider": provider, "smartcard_number": smartcard_number, "package_code": package_code})
 
-    def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str | None = None) -> ProviderResult:
+    def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
         if str(meter_number).strip().startswith("0000"):
             return ProviderResult(False, message="Mock failure: invalid meter number.")
         token = f"{secrets.randbelow(10**12):012d}"

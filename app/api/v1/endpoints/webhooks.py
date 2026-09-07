@@ -656,6 +656,16 @@ def autosync_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), 
         transaction.status = TransactionStatus.SUCCESS
         if tx_data.get("provider_reference"):
             transaction.external_reference = tx_data.get("provider_reference")
+            
+        # Extract token for electricity purchases
+        token = str(tx_data.get("token") or tx_data.get("pin") or "")
+        units = str(tx_data.get("units") or "")
+        if token or units:
+            meta = transaction.meta or {}
+            if token: meta["token"] = token
+            if units: meta["units"] = units
+            transaction.meta = meta
+            
         db.commit()
         
         try:
