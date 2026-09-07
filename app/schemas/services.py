@@ -7,7 +7,7 @@ class AirtimePurchaseRequest(BaseModel):
     client_request_id: Optional[str] = Field(default=None, max_length=128)
     network: str = Field(..., min_length=2, max_length=32)
     phone_number: str = Field(..., min_length=7, max_length=20)
-    amount: Decimal = Field(..., gt=0)
+    amount: Decimal = Field(..., ge=100)
 
 
 class CablePurchaseRequest(BaseModel):

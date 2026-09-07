@@ -636,9 +636,14 @@ def autosync_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), 
         logger.warning("Autosync Webhook: Invalid hash for ref %s", reference)
         return "error"
         
-    transaction = db.query(Transaction).filter(Transaction.reference == reference).first()
+    request_ref = tx_data.get("request_ref")
+    
+    transaction = db.query(Transaction).filter(Transaction.reference == request_ref).first()
     if not transaction:
-        logger.warning("Autosync Webhook: Transaction not found for ref %s", reference)
+        transaction = db.query(Transaction).filter(Transaction.external_reference == reference).first()
+        
+    if not transaction:
+        logger.warning("Autosync Webhook: Transaction not found for request_ref %s and ref %s", request_ref, reference)
         return "error"
         
     if transaction.status in {TransactionStatus.SUCCESS, TransactionStatus.REFUNDED}:
