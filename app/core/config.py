@@ -111,7 +111,7 @@ class Settings(BaseSettings):
 
     # Bills provider routing:
     # - auto: prefer ClubKonnect when enabled, else VTPass, else mock
-    # - clubkonnect|vtpass|mock: force a specific provider
+    # - clubkonnect|vtpass|autosync|mock: force a specific provider
     bills_provider: str = "auto"
 
     # ClubKonnect / NelloByte API

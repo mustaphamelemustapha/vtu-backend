@@ -11,9 +11,7 @@ from typing import Any
 import httpx
 
 from app.core.config import get_settings
-
-
-@dataclass
+from app.providers.autosync_provider import AutosyncProvider
 class ProviderResult:
     success: bool
     external_reference: str | None = None
@@ -1561,14 +1559,185 @@ class ClubKonnectBillsProvider:
         return self._settle_pending(self._parse_result(data, action="data"), "data", request_id=req_id)
 
 
+class AutosyncBillsProvider:
+    def __init__(self):
+        self.autosync = AutosyncProvider()
+        self.timeout = self.autosync.timeout
+
+    def _parse_result(self, res_data: dict, action: str) -> ProviderResult:
+        status_value = str(res_data.get("status") or "").lower()
+        message = str(res_data.get("error") or res_data.get("message") or "")
+        reference = str(res_data.get("provider_reference") or "")
+        
+        meta = {
+            "autosync": {
+                "status": status_value,
+                "action": action,
+                "raw": res_data
+            }
+        }
+        
+        if status_value == "success" or status_value == "successful":
+            return ProviderResult(True, external_reference=reference, message=message or "Successful", meta=meta)
+        if status_value == "pending":
+            return ProviderResult(False, external_reference=reference, message="Transaction pending", meta=meta, pending=True)
+            
+        return ProviderResult(False, external_reference=reference, message=message or "Provider failed", meta=meta)
+
+    def purchase_airtime(self, network: str, phone_number: str, amount: float) -> ProviderResult:
+        payload = {
+            "product_id": network,
+            "phone": str(phone_number),
+            "amount": float(amount),
+            "request_ref": _vtpass_request_id() # reuse existing ID generator or create a new one, this is fine
+        }
+        
+        url = f"{self.autosync.base_url}/v1/airtime"
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                res = client.post(url, json=payload, headers=self.autosync._get_headers())
+            data = self.autosync._json_or_none(res) or {}
+            
+            # Map Autosync's generic API response to dict
+            status_value = str(data.get("status") or "").lower()
+            message = str(data.get("message") or "")
+            tx_data = data.get("data", {}).get("transaction", {}) if data.get("status") == "ok" else {}
+            provider_reference = str(tx_data.get("reference") or "")
+            
+            if status_value == "ok":
+               res_data = {"status": "success", "provider_reference": provider_reference, "error": message}
+            else:
+               res_data = {"status": "failed", "provider_reference": provider_reference, "error": message}
+               
+        except Exception as exc:
+            res_data = {"status": "failed", "error": str(exc)}
+            
+        return self._parse_result(res_data, action="airtime")
+
+    def purchase_cable(self, provider: str, smartcard_number: str, package_code: str, amount: float, phone_number: str) -> ProviderResult:
+        payload = {
+            "request_ref": _vtpass_request_id(),
+            "iuc_number": str(smartcard_number),
+            "product_id": provider, # e.g. dstv, gotv
+            "variation_code": str(package_code),
+            "type": "renew",
+            "amount": float(amount)
+        }
+        
+        url = f"{self.autosync.base_url}/v1/cable"
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                res = client.post(url, json=payload, headers=self.autosync._get_headers())
+            data = self.autosync._json_or_none(res) or {}
+            
+            status_value = str(data.get("status") or "").lower()
+            message = str(data.get("message") or "")
+            tx_data = data.get("data", {}).get("transaction", {}) if data.get("status") == "ok" else {}
+            provider_reference = str(tx_data.get("reference") or "")
+            
+            if status_value == "ok":
+               res_data = {"status": "success", "provider_reference": provider_reference, "error": message}
+            else:
+               res_data = {"status": "failed", "provider_reference": provider_reference, "error": message}
+               
+        except Exception as exc:
+            res_data = {"status": "failed", "error": str(exc)}
+            
+        return self._parse_result(res_data, action="cable")
+
+    def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str) -> ProviderResult:
+        payload = {
+            "request_ref": _vtpass_request_id(),
+            "meter_number": str(meter_number),
+            "product_id": disco, # The ID/code for the disco
+            "type": str(meter_type).lower(), # prepaid or postpaid
+            "amount": float(amount)
+        }
+        
+        url = f"{self.autosync.base_url}/v1/electricity"
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                res = client.post(url, json=payload, headers=self.autosync._get_headers())
+            data = self.autosync._json_or_none(res) or {}
+            
+            status_value = str(data.get("status") or "").lower()
+            message = str(data.get("message") or "")
+            tx_data = data.get("data", {}).get("transaction", {}) if data.get("status") == "ok" else {}
+            provider_reference = str(tx_data.get("reference") or "")
+            
+            if status_value == "ok":
+               res_data = {"status": "success", "provider_reference": provider_reference, "error": message}
+            else:
+               res_data = {"status": "failed", "provider_reference": provider_reference, "error": message}
+               
+        except Exception as exc:
+            res_data = {"status": "failed", "error": str(exc)}
+            
+        return self._parse_result(res_data, action="electricity")
+        
+    def verify_cable_customer(self, provider: str, smartcard_number: str) -> dict:
+        url = f"{self.autosync.base_url}/v1/validate/cable"
+        payload = {
+            "iuc_number": str(smartcard_number).strip(),
+            "product_id": provider
+        }
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                res = client.post(url, json=payload, headers=self.autosync._get_headers())
+            data = self.autosync._json_or_none(res) or {}
+            
+            if data.get("status") == "ok" and data.get("data", {}).get("is_valid"):
+                return {"ok": True, "customer_name": data.get("data", {}).get("customer_name") or "Verified Customer"}
+            return {"ok": False, "message": data.get("message") or "Unable to verify smartcard right now."}
+        except Exception as exc:
+            return {"ok": False, "message": str(exc)}
+            
+    def verify_electricity_customer(self, disco: str, meter_number: str, meter_type: str) -> dict:
+        url = f"{self.autosync.base_url}/v1/validate/electricity"
+        payload = {
+            "meter_number": str(meter_number).strip(),
+            "product_id": disco,
+            "type": str(meter_type).lower()
+        }
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                res = client.post(url, json=payload, headers=self.autosync._get_headers())
+            data = self.autosync._json_or_none(res) or {}
+            
+            if data.get("status") == "ok" and data.get("data", {}).get("is_valid"):
+                return {"ok": True, "customer_name": data.get("data", {}).get("customer_name") or "Verified Meter Customer"}
+            return {"ok": False, "message": data.get("message") or "Unable to verify meter right now."}
+        except Exception as exc:
+            return {"ok": False, "message": str(exc)}
+
+    # Fallbacks / stubs for unimplemented services to avoid crashes if routed here
+    def fetch_exam_packages(self, exam: str) -> list[dict]:
+        return []
+        
+    def purchase_exam_pin(self, exam: str, quantity: int, phone_number: str | None = None, exam_type: str | None = None) -> ProviderResult:
+        return ProviderResult(False, message="Exam Pins not supported by Autosync provider.")
+
+    def fetch_cable_packages(self, provider: str) -> list[dict]:
+        return []
+        
+    def fetch_electricity_discos(self) -> list[dict]:
+        return []
+
+
 def get_bills_provider():
     choice = str(settings.bills_provider or "auto").strip().lower()
 
     has_vtpass = bool(settings.vtpass_enabled and settings.vtpass_api_key and settings.vtpass_secret_key)
     has_clubkonnect = bool((settings.nello_user_id or settings.clubkonnect_user_id) and (settings.nello_api_key or settings.clubkonnect_api_key))
+    has_autosync = bool(settings.autosync_api_key)
     clubkonnect_enabled = bool(settings.clubkonnect_enabled)
 
     if choice == "mock":
+        return MockBillsProvider()
+    if choice == "autosync":
+        if has_autosync:
+            return AutosyncBillsProvider()
+        logger.warning("BILLS_PROVIDER=autosync but AUTOSYNC_API_KEY missing; falling back to mock.")
         return MockBillsProvider()
     if choice == "clubkonnect":
         if has_clubkonnect:
