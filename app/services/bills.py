@@ -1628,7 +1628,8 @@ class AutosyncBillsProvider:
             "product_id": provider, # e.g. dstv, gotv
             "variation_code": str(package_code),
             "type": "renew",
-            "amount": float(amount)
+            "amount": float(amount),
+            "phone": str(phone_number)
         }
         if self.pin:
             payload["pin"] = self.pin
@@ -1647,6 +1648,8 @@ class AutosyncBillsProvider:
             if status_value == "ok":
                res_data = {"status": "success", "provider_reference": provider_reference, "error": message}
             else:
+               logger.error(f"Autosync Cable Error Payload: {payload}")
+               logger.error(f"Autosync Cable Error Response: {data}")
                res_data = {"status": "failed", "provider_reference": provider_reference, "error": message}
                
         except Exception as exc:
@@ -1660,7 +1663,8 @@ class AutosyncBillsProvider:
             "meter_number": str(meter_number),
             "product_id": disco, # The ID/code for the disco
             "type": str(meter_type).lower(), # prepaid or postpaid
-            "amount": float(amount)
+            "amount": float(amount),
+            "phone": str(phone_number)
         }
         if self.pin:
             payload["pin"] = self.pin
@@ -1679,6 +1683,8 @@ class AutosyncBillsProvider:
             if status_value == "ok":
                res_data = {"status": "success", "provider_reference": provider_reference, "error": message}
             else:
+               logger.error(f"Autosync Electricity Error Payload: {payload}")
+               logger.error(f"Autosync Electricity Error Response: {data}")
                res_data = {"status": "failed", "provider_reference": provider_reference, "error": message}
                
         except Exception as exc:
