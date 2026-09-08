@@ -537,7 +537,8 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                         p_res = {"status": "failed", "error": err_msg}
 
             elif p_name == "clubkonnect" or (not p_name and network_key == "9mobile"):
-                bills = get_bills_provider()
+                from app.services.bills import ClubKonnectBillsProvider
+                bills = ClubKonnectBillsProvider()
                 tx_provider = "clubkonnect"
                 res = bills.purchase_data(network_key, phone, p_plan_id or plan_plan_code, amount=float(price), request_id=reference)
                 if res.ok:
