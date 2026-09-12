@@ -75,6 +75,8 @@ def _to_out(item: BroadcastAnnouncement) -> dict:
         "created_by_email": item.created_by_email,
         "button_label": item.button_label,
         "button_link": item.button_link,
+        "image_url": item.image_url,
+        "is_popup": item.is_popup,
     }
 
 
@@ -143,6 +145,8 @@ def admin_create_broadcast(
         created_by_email=admin.email,
         button_label=payload.button_label.strip() if payload.button_label else None,
         button_link=payload.button_link.strip() if payload.button_link else None,
+        image_url=payload.image_url.strip() if payload.image_url else None,
+        is_popup=bool(payload.is_popup),
     )
     db.add(row)
     db.commit()
@@ -198,6 +202,10 @@ def admin_update_broadcast(
         row.button_label = payload.button_label.strip() if payload.button_label else None
     if "button_link" in fields_set:
         row.button_link = payload.button_link.strip() if payload.button_link else None
+    if "image_url" in fields_set:
+        row.image_url = payload.image_url.strip() if payload.image_url else None
+    if "is_popup" in fields_set and payload.is_popup is not None:
+        row.is_popup = bool(payload.is_popup)
 
     _validate_window(_as_utc(row.starts_at), _as_utc(row.ends_at))
     db.commit()

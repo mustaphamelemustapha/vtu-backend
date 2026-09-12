@@ -26,6 +26,8 @@ class BroadcastAnnouncement(Base, TimestampMixin):
     created_by_email = Column(String(255), nullable=True)
     button_label = Column(String(50), nullable=True)
     button_link = Column(String(255), nullable=True)
+    image_url = Column(String(500), nullable=True)
+    is_popup = Column(Boolean, nullable=False, default=False)
 
 
 Index(
