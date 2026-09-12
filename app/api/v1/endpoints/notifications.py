@@ -4,9 +4,11 @@ import shutil
 import uuid
 import cloudinary.uploader
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
-from app.core.config import settings
+from app.core.config import get_settings
 from app.middlewares.rate_limit import limiter
 from sqlalchemy import and_, inspect, or_
+
+settings = get_settings()
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
