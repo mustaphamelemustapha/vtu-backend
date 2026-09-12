@@ -1,6 +1,11 @@
 from datetime import datetime, timezone
-
-from fastapi import APIRouter, Depends, HTTPException
+import os
+import shutil
+import uuid
+import cloudinary.uploader
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
+from app.core.config import settings
+from app.middlewares.rate_limit import limiter
 from sqlalchemy import and_, inspect, or_
 from sqlalchemy.orm import Session
 
@@ -167,6 +172,47 @@ def admin_create_broadcast(
     return _to_out(row)
 
 
+@router.post("/broadcast/admin/upload-image")
+@limiter.limit("5/minute")
+def admin_upload_broadcast_image(
+    request: Request,
+    image: UploadFile = File(...),
+    admin: User = Depends(require_admin),
+):
+    _ = admin
+    if not image.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="File provided is not an image.")
+
+    extension = image.filename.split(".")[-1] if "." in image.filename else "jpg"
+    
+    if settings.cloudinary_url:
+        try:
+            result = cloudinary.uploader.upload(
+                image.file,
+                folder="vtu_announcements",
+                public_id=f"announcement_{uuid.uuid4().hex[:8]}",
+                overwrite=True,
+                resource_type="image"
+            )
+            image_url = result.get("secure_url")
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Cloudinary upload failed: {e}")
+            raise HTTPException(status_code=500, detail="Failed to upload image to cloud storage.")
+    else:
+        filename = f"{uuid.uuid4().hex}.{extension}"
+        os.makedirs(os.path.join("uploads", "announcement_images"), exist_ok=True)
+        file_path = os.path.join("uploads", "announcement_images", filename)
+
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(image.file, buffer)
+
+        host_url = str(request.base_url).rstrip("/")
+        image_url = f"{host_url}/static/announcement_images/{filename}"
+
+    return {"image_url": image_url}
+
+
 @router.patch("/broadcast/admin/{announcement_id}", response_model=BroadcastAnnouncementOut)
 def admin_update_broadcast(
     announcement_id: int,
@@ -215,3 +261,4 @@ def admin_update_broadcast(
     db.commit()
     db.refresh(row)
     return _to_out(row)
+
