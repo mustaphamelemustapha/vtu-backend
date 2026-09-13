@@ -419,7 +419,7 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
                 if camp_time is None or stx_time >= camp_time:
                     stxs.append(stx)
         
-        if campaign.target_metric in ("data_volume_gb", "data_gb"):
+        if campaign.target_metric in ("data_volume_gb", "data_gb", "data_volume_mb", "data_mb"):
             from app.models.data_plan import DataPlan
             all_plans = db.query(DataPlan).all()
             plan_map = {p.plan_code: _parse_size_gb(p.data_size) for p in all_plans}
@@ -456,6 +456,9 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
                         total_gb += gb or 0.0
                     
             progress = total_gb
+            if campaign.target_metric in ("data_volume_mb", "data_mb"):
+                progress = total_gb * 1024
+            
             is_qualified = progress >= float(campaign.target_value)
             
         elif campaign.target_metric in ("airtime_volume", "airtime_amount"):
@@ -529,7 +532,7 @@ def claim_campaign_reward(db: Session, user: User, campaign_id: int) -> dict:
     db.add(reward)
     
     # 3. Ambassador 50GB Milestone Bonus
-    if campaign.type == AgentCampaignType.DATA_VOLUME and float(campaign.target_value) >= 51200:
+    if campaign.campaign_type == CampaignType.VOLUME and campaign.target_metric in ("data_volume_gb", "data_gb") and float(campaign.target_value) >= 50:
         referral = db.query(Referral).filter(Referral.referred_user_id == user.id).first()
         if referral and referral.is_50gb_milestone_reached and not referral.is_milestone_bonus_paid:
             referrer = db.query(User).filter(User.id == referral.referrer_id).first()
