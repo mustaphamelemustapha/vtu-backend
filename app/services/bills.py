@@ -1786,6 +1786,18 @@ def get_bills_provider():
     return MockBillsProvider()
 
 
+def get_fallback_bills_provider(primary_provider):
+    """
+    Returns a fallback provider (ClubKonnect) if the primary provider is not ClubKonnect,
+    and ClubKonnect is enabled/configured.
+    """
+    has_clubkonnect = bool((settings.nello_user_id or settings.clubkonnect_user_id) and (settings.nello_api_key or settings.clubkonnect_api_key))
+    clubkonnect_enabled = bool(settings.clubkonnect_enabled)
+    
+    if not isinstance(primary_provider, ClubKonnectBillsProvider) and clubkonnect_enabled and has_clubkonnect:
+        return ClubKonnectBillsProvider()
+    return None
+
 class MockBillsProvider:
     """
     Mock provider used to ship UI + wallet flows without binding to a real VTU aggregator yet.

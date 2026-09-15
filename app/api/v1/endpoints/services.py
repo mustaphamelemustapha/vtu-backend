@@ -20,7 +20,7 @@ from app.schemas.services import (
     ExamPurchaseRequest,
     ServicesCatalogOut,
 )
-from app.services.bills import get_bills_provider
+from app.services.bills import get_bills_provider, get_fallback_bills_provider
 from app.services.fraud import enforce_purchase_limits
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
 from app.services.pricing import get_service_charge_for_user
@@ -254,37 +254,70 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
     db.close()
 
     provider = get_bills_provider()
-    try:
-        result = provider.purchase_airtime(
-            tx.provider or "", 
-            tx.customer or "", 
-            float(base_amount),
-            reference=reference
-        )
-    except Exception as exc:
-        from app.core.database import SessionLocal
-        db2 = SessionLocal()
+    
+    def attempt_purchase(p_instance, ref):
         try:
-            tx = db2.query(ServiceTransaction).get(tx_id)
-            wallet = get_or_create_wallet(db2, user_id)
-            if _is_transport_error(exc):
-                logger.warning("Airtime provider confirmation delayed ref=%s error=%s", reference, exc)
-                _mark_pending_confirmation(db2, tx, {"provider_error": str(exc)})
-                return {"reference": reference, "status": tx.status, "message": _PENDING_CONFIRMATION_MESSAGE}
-            logger.exception("Airtime purchase failed with non-transport provider error ref=%s", reference)
-            tx.failure_reason = str(exc) or "Provider failed"
-            credit_wallet(db2, wallet, charge_amount, reference, "Auto refund for failed airtime purchase")
-            tx.status = TransactionStatus.REFUNDED.value
-            db2.commit()
-            raise HTTPException(status_code=502, detail=tx.failure_reason)
-        finally:
-            db2.close()
+            return p_instance.purchase_airtime(
+                tx.provider or "", 
+                tx.customer or "", 
+                float(base_amount),
+                reference=ref
+            ), None
+        except Exception as e:
+            return None, e
+            
+    result, exc = attempt_purchase(provider, reference)
+    
+    needs_fallback = False
+    if exc and not _is_transport_error(exc):
+        needs_fallback = True
+    elif result and not result.success and _provider_status(result) not in _PROVIDER_PENDING_STATUS:
+        needs_fallback = True
+        
+    if needs_fallback:
+        fallback = get_fallback_bills_provider(provider)
+        if fallback:
+            logger.warning("Primary airtime provider failed, attempting fallback. Error: %s", exc or (result.message if result else "unknown"))
+            primary_meta = {"primary_error": str(exc) if exc else (result.message if result else "unknown")}
+            if result and result.meta:
+                primary_meta.update(result.meta)
+            
+            result, exc = attempt_purchase(fallback, f"{reference}_FB")
+            
+            if result and result.meta:
+                result.meta = {**primary_meta, **result.meta}
+            elif result:
+                result.meta = primary_meta
 
     from app.core.database import SessionLocal
     db2 = SessionLocal()
     try:
         tx = db2.query(ServiceTransaction).get(tx_id)
         wallet = get_or_create_wallet(db2, user_id)
+        
+        if exc:
+            if _is_transport_error(exc):
+                logger.warning("Airtime provider confirmation delayed ref=%s error=%s", reference, exc)
+                _mark_pending_confirmation(db2, tx, {"provider_error": str(exc)})
+                return {"reference": reference, "status": tx.status, "message": _PENDING_CONFIRMATION_MESSAGE}
+            
+            logger.exception("Airtime purchase failed with non-transport provider error ref=%s", reference)
+            tx.failure_reason = str(exc) or "Provider failed"
+            credit_wallet(db2, wallet, charge_amount, reference, "Auto refund for failed airtime purchase")
+            tx.status = TransactionStatus.REFUNDED.value
+            db2.commit()
+            if fcm_token:
+                try:
+                    from app.services.push_notification import PushNotificationService
+                    PushNotificationService.send_to_token(
+                        token=fcm_token,
+                        title="Airtime Purchase Failed",
+                        body=f"Your purchase of ₦{float(base_amount)} {payload.network.upper()} airtime for {payload.phone_number} failed. A refund of ₦{float(charge_amount)} has been credited to your wallet.",
+                        data={"type": "transaction", "reference": reference, "status": "refunded"}
+                    )
+                except Exception as e:
+                    logger.warning("Failed to send push notification: %s", e)
+            raise HTTPException(status_code=502, detail=tx.failure_reason)
         
         provider_status = _provider_status(result)
         if provider_status in _PROVIDER_PENDING_STATUS:
@@ -295,6 +328,7 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
             tx.failure_reason = result.message or _PENDING_CONFIRMATION_MESSAGE
             db2.commit()
             return {"reference": reference, "status": tx.status, "message": tx.failure_reason}
+            
         if result.success:
             tx.status = TransactionStatus.SUCCESS.value
             tx.external_reference = result.external_reference
