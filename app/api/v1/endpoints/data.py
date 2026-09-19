@@ -26,6 +26,7 @@ from app.services.amigo import (
 )
 from app.providers.smeplug_provider import SMEPlugProvider
 from app.providers.autosync_provider import AutosyncProvider
+from app.providers.mzdata_provider import MZDataProvider
 from app.services.bills import get_bills_provider
 from app.services.fraud import enforce_purchase_limits
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
@@ -508,6 +509,13 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                     data_type=getattr(plan, "data_type", "Gifting")
                 )
                 tx_provider = "autosync"
+
+            elif p_name == "mzdata":
+                mzdata = MZDataProvider()
+                mzdata_network_map = {"mtn": 1, "airtel": 2, "glo": 3, "9mobile": 4}
+                net_id = mzdata_network_map.get(network_key, 1)
+                p_res = mzdata.purchase_network_data(net_id, phone, p_plan_id or plan_plan_code, reference)
+                tx_provider = "mzdata"
 
             elif p_name == "amigo" or (not p_name and network_key in {"mtn", "glo", "airtel", "9mobile"}):
                 amigo = AmigoClient()

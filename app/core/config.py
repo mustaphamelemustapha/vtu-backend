@@ -135,6 +135,10 @@ class Settings(BaseSettings):
     autosync_api_key: str = ""
     autosync_webhook_pin: str = ""
 
+    # MZDATA API
+    mzdata_base_url: AnyHttpUrl = "https://mzdata-1.onrender.com/api/v1"
+    mzdata_api_key: str = ""
+
     # Fraud / abuse guardrails for purchases
     fraud_guard_enabled: bool = True
     fraud_single_tx_limit_ngn: Decimal = Decimal("50000")
