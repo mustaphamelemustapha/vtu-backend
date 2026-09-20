@@ -64,7 +64,7 @@ class MZDataProvider:
         res = self.purchase_data(network_id=network_id, plan_id=plan_id, phone=phone, reference=client_request_id)
         
         status_value = str(res.get("status") or "").strip().lower()
-        message = str(res.get("message") or res.get("msg") or "")
+        message = str(res.get("message") or res.get("msg") or res.get("detail") or "")
         provider_reference = str(res.get("reference") or "")
         
         if status_value == "success":
@@ -88,8 +88,9 @@ class MZDataProvider:
                 "error": message
             }
             
+        import json
         return {
             "status": "failed",
             "provider_reference": provider_reference,
-            "error": message or "Purchase failed"
+            "error": message or f"Purchase failed: {json.dumps(res)}"
         }
