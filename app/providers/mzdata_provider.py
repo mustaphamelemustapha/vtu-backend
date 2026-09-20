@@ -68,9 +68,36 @@ class MZDataProvider:
     def purchase_network_data(self, network_id: int, phone: str, plan_id: str, client_request_id: str) -> Dict[str, Any]:
         res = self.purchase_data(network_id=network_id, plan_id=plan_id, phone=phone, reference=client_request_id)
         
-        status_value = str(res.get("status") or "").strip().lower()
+        is_success = res.get("status") is True
         message = str(res.get("message") or res.get("msg") or res.get("detail") or "")
-        provider_reference = str(res.get("reference") or "")
+        
+        if is_success:
+            data_obj = res.get("data") or {}
+            inner_status = str(data_obj.get("status") or "").strip().lower()
+            provider_reference = str(data_obj.get("reference") or res.get("reference") or "")
+            
+            if inner_status in ("success", "successful", "delivered"):
+                return {
+                    "status": "success",
+                    "provider_reference": provider_reference,
+                    "error": message
+                }
+            elif inner_status in ("pending", "processing"):
+                return {
+                    "status": "pending",
+                    "provider_reference": provider_reference,
+                    "error": message
+                }
+            else:
+                return {
+                    "status": "failed",
+                    "provider_reference": provider_reference,
+                    "error": message or "Provider reported failure in data block"
+                }
+
+        # Fallback for error responses or backward compatibility
+        status_value = str(res.get("status") or "").strip().lower()
+        provider_reference = str(res.get("reference") or res.get("data", {}).get("reference") or "")
         
         if status_value == "success":
             return {
