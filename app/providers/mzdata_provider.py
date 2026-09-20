@@ -81,7 +81,7 @@ class MZDataProvider:
             
         ambiguous_hints = (
             "timeout", "timed out", "connection error", "connection reset", 
-            "non-json", "invalid json", "service unavailable", "remote protocol",
+            "service unavailable", "remote protocol",
             "network error", "connecterror", "readerror", "transport", "http error"
         )
         lowered = message.lower()

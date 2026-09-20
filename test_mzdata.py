@@ -1,16 +1,13 @@
-import sys
-import os
+import httpx
 
-# Add app to path
-sys.path.insert(0, os.path.abspath("."))
+url = "https://mzdata-1.onrender.com/api/v1/developer/data/purchase"
+payload = {
+    "network": "mtn",
+    "phone_number": "09095263835",
+    "plan_id": 423,
+    "reference": "TEST_12345"
+}
 
-from app.providers.mzdata_provider import MZDataProvider
-from app.core.config import get_settings
-
-try:
-    provider = MZDataProvider()
-    print("Provider instantiated successfully.")
-    print("Base URL:", provider.base_url)
-    print("API Key length:", len(provider.api_key) if provider.api_key else 0)
-except Exception as e:
-    print("Error:", e)
+resp = httpx.post(url, json=payload, headers={"Authorization": "Bearer fake"})
+print(resp.status_code)
+print(resp.text)
