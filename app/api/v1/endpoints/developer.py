@@ -70,10 +70,8 @@ def get_developer_user(
         token = credentials.credentials.strip()
         
     if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid authentication credentials. Pass X-API-Key or Authorization header.",
-        )
+        from app.core.exceptions import DeveloperAPIException
+        raise DeveloperAPIException("Missing or invalid authentication credentials. Pass X-API-Key or Authorization header.", 401)
         
     token = token.strip()
     is_test_mode = token.startswith("mele_test_")
@@ -83,10 +81,8 @@ def get_developer_user(
         lookup_token = "mele_live_" + token[len("mele_test_"):]
         
     if not (token.startswith("MELE_SEC_") or token.startswith("mele_live_") or token.startswith("mele_test_") or token.startswith("mele_pub_")):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key format.",
-        )
+        from app.core.exceptions import DeveloperAPIException
+        raise DeveloperAPIException("Invalid API key format.", 401)
         
     token_hash = hashlib.sha256(lookup_token.encode("utf-8")).hexdigest()
     user = db.query(User).filter(
@@ -96,15 +92,11 @@ def get_developer_user(
     ).first()
     
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication failed. Invalid developer API key or account suspended.",
-        )
+        from app.core.exceptions import DeveloperAPIException
+        raise DeveloperAPIException("Authentication failed. Invalid developer API key or account suspended.", 401)
     if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Developer account is inactive.",
-        )
+        from app.core.exceptions import DeveloperAPIException
+        raise DeveloperAPIException("Developer account is inactive.", 403)
         
     # Attach the dynamic test mode flag
     user.is_test_mode = is_test_mode
@@ -346,38 +338,50 @@ def list_data_plans(user: User = Depends(get_developer_user), db: Session = Depe
 @router.post("/data/purchase", response_model=DeveloperPurchaseResponse)
 @limiter.limit("30/minute")
 def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
+    from app.core.exceptions import DeveloperAPIException
+
+    try:
+        plan_id_int = int(payload.plan_id)
+    except (ValueError, TypeError):
+        raise DeveloperAPIException("plan_id must be a valid integer.", 400)
+
     # 1. Idempotency Check
     client_ref = f"DEV_{user.id}_{payload.reference.strip()}"
     existing = db.query(Transaction).filter(Transaction.user_id == user.id, Transaction.reference == client_ref).first()
     if existing:
         return {
-            "status": existing.status,
-            "reference": existing.reference,
-            "amount": existing.amount,
-            "message": "Duplicate request detected. Transaction already processed."
+            "status": existing.status == TransactionStatus.SUCCESS,
+            "message": "Duplicate request detected. Transaction already processed.",
+            "data": {
+                "status": existing.status.value,
+                "reference": payload.reference.strip(),
+                "amount": float(existing.amount),
+                "network": payload.network.upper(),
+                "phone_number": payload.phone_number
+            }
         }
 
     # 2. Plan lookup
     network_key = payload.network.strip().lower()
     plan = db.query(DataPlan).filter(
-        DataPlan.id == payload.plan_id,
+        DataPlan.id == plan_id_int,
         func.lower(DataPlan.network) == network_key,
         DataPlan.is_active == True
     ).first()
     if not plan:
-        raise HTTPException(status_code=404, detail="Active data plan not found.")
+        raise DeveloperAPIException("Active data plan not found.", 404)
 
     price = get_price_for_user(db, plan, user.role)
     wallet = get_or_create_wallet(db, user.id)
     if wallet.balance < price:
-        raise HTTPException(status_code=400, detail="Insufficient wallet balance.")
+        raise DeveloperAPIException("Insufficient wallet balance.", 400)
 
     # 3. Debit Wallet
     try:
         debit_wallet(db, wallet, price, client_ref, f"API Data: {plan.plan_name} ({payload.phone_number})")
     except Exception as e:
         logger.error(f"Developer wallet debit failed: {e}")
-        raise HTTPException(status_code=400, detail="Wallet debit failed.")
+        raise DeveloperAPIException("Wallet debit failed.", 400)
 
     # 4. Save transaction
     tx = Transaction(
@@ -483,25 +487,37 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
     finally:
         db2.close()
 
+    is_success = final_status in ("success", "pending")
     return {
-        "status": final_status,
-        "reference": payload.reference.strip(),
-        "amount": price,
-        "message": provider_res.get("error") if final_status == "failed" else "Transaction successful" if final_status == "success" else "Processing"
+        "status": is_success,
+        "message": "Transaction processing." if final_status == "pending" else provider_res.get("error") if final_status == "failed" else "Transaction successful",
+        "data": {
+            "status": final_status,
+            "reference": payload.reference.strip(),
+            "amount": float(price),
+            "network": payload.network.upper(),
+            "phone_number": payload.phone_number
+        }
     }
 
 
 @router.post("/airtime/purchase", response_model=DeveloperPurchaseResponse)
 @limiter.limit("30/minute")
 def developer_buy_airtime(request: Request, payload: DeveloperAirtimePurchaseRequest, user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
+    from app.core.exceptions import DeveloperAPIException
     client_ref = f"DEV_{user.id}_{payload.reference.strip()}"
     existing = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == user.id, ServiceTransaction.reference == client_ref).first()
     if existing:
         return {
-            "status": existing.status,
-            "reference": existing.reference,
-            "amount": existing.amount,
-            "message": "Duplicate request detected. Transaction already processed."
+            "status": existing.status == TransactionStatus.SUCCESS.value,
+            "message": "Duplicate request detected. Transaction already processed.",
+            "data": {
+                "status": existing.status,
+                "reference": payload.reference.strip(),
+                "amount": float(existing.amount),
+                "network": payload.network.upper(),
+                "phone_number": payload.phone_number
+            }
         }
 
     base_amount = payload.amount
@@ -515,18 +531,18 @@ def developer_buy_airtime(request: Request, payload: DeveloperAirtimePurchaseReq
         user_role=user.role,
     )
     if charge_amount <= 0:
-        raise HTTPException(status_code=400, detail="Invalid final purchase amount.")
+        raise DeveloperAPIException("Invalid final purchase amount.", 400)
 
     wallet = get_or_create_wallet(db, user.id)
     if wallet.balance < charge_amount:
-        raise HTTPException(status_code=400, detail="Insufficient wallet balance.")
+        raise DeveloperAPIException("Insufficient wallet balance.", 400)
 
     # 1. Debit Wallet
     try:
         debit_wallet(db, wallet, charge_amount, client_ref, f"API Airtime: ₦{base_amount} ({payload.phone_number})")
     except Exception as e:
         logger.error(f"Developer airtime debit failed: {e}")
-        raise HTTPException(status_code=400, detail="Wallet debit failed.")
+        raise DeveloperAPIException("Wallet debit failed.", 400)
 
     # 2. Save Transaction
     tx = ServiceTransaction(
@@ -606,9 +622,15 @@ def developer_buy_airtime(request: Request, payload: DeveloperAirtimePurchaseReq
     finally:
         db2.close()
 
+    is_success = final_status in ("success", "pending")
     return {
-        "status": final_status,
-        "reference": payload.reference.strip(),
-        "amount": charge_amount,
-        "message": provider_res.get("error") if final_status == "failed" else "Transaction successful" if final_status == "success" else "Processing"
+        "status": is_success,
+        "message": "Transaction processing." if final_status == "pending" else provider_res.get("error") if final_status == "failed" else "Transaction successful",
+        "data": {
+            "status": final_status,
+            "reference": payload.reference.strip(),
+            "amount": float(charge_amount),
+            "network": payload.network.upper(),
+            "phone_number": payload.phone_number
+        }
     }
