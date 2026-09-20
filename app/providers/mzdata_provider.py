@@ -38,6 +38,9 @@ class MZDataProvider:
         }
         network_str = network_map.get(int(network_id), "mtn")
         
+        if ":" in str(plan_id):
+            plan_id = str(plan_id).split(":")[-1]
+            
         payload = {
             "network": network_str,
             "phone_number": str(phone),
@@ -54,7 +57,9 @@ class MZDataProvider:
                 if response.status_code not in (200, 201):
                     logger.error("MZData purchase error: status=%d response=%s", response.status_code, response.text)
                 
-                res_data = self._json_or_none(response) or {}
+                res_data = self._json_or_none(response)
+                if res_data is None:
+                    return {"status": "failed", "message": f"Non-JSON response (Status {response.status_code}): {response.text[:200]}"}
                 return res_data
         except Exception as e:
             logger.error(f"MZData purchase_data error: {e}")
