@@ -30,6 +30,7 @@ from app.services.fraud import enforce_purchase_limits
 
 # Providers/Clients
 from app.providers.smeplug_provider import SMEPlugProvider
+from app.providers.mzdata_provider import MZDataProvider
 from app.services.amigo import AmigoClient, AmigoApiError, resolve_network_id, normalize_plan_code
 from app.services.bills import get_bills_provider
 from app.dependencies import get_current_user
@@ -413,6 +414,11 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
             sme_network_map = {"mtn": 1, "airtel": 2, "9mobile": 3, "glo": 4}
             net_id = sme_network_map.get(network_key, 2)
             provider_res = sme.purchase_network_data(net_id, phone, plan.provider_plan_id or plan.plan_code, client_ref)
+        elif provider_name == "mzdata":
+            mzdata = MZDataProvider()
+            mzdata_network_map = {"mtn": 1, "airtel": 2, "glo": 3, "9mobile": 4}
+            net_id = mzdata_network_map.get(network_key, 1)
+            provider_res = mzdata.purchase_network_data(net_id, phone, plan.provider_plan_id or plan.plan_code, client_ref)
         elif provider_name == "amigo" or (not provider_name and network_key in {"mtn", "glo", "airtel", "9mobile"}):
             amigo = AmigoClient()
             amigo_payload = {
