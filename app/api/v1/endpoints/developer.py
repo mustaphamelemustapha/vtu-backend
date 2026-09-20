@@ -22,7 +22,9 @@ from app.schemas.developer import (
     DeveloperDataPurchaseRequest,
     DeveloperAirtimePurchaseRequest,
     DeveloperPurchaseResponse,
-    WebhookConfigRequest
+    WebhookConfigRequest,
+    DeveloperDataPlansResponse,
+    DeveloperDataStatusResponse
 )
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
 from app.services.pricing import get_price_for_user
@@ -242,12 +244,13 @@ def reset_sandbox_balance(user: User = Depends(get_developer_user)):
     }
 
 
-@router.get("/data/status")
-@router.get("/data/status/")
+@router.get("/data/status", response_model=DeveloperDataStatusResponse)
+@router.get("/data/status/", response_model=DeveloperDataStatusResponse)
 def get_data_purchase_status(ref: str, user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
+    from app.core.exceptions import DeveloperAPIException
     ref = ref.strip()
     if not ref:
-        raise HTTPException(status_code=422, detail="Missing required 'ref' query parameter.")
+        raise DeveloperAPIException("Missing required 'ref' query parameter.", 400)
         
     internal_ref = f"DEV_{user.id}_{ref}"
         
@@ -257,7 +260,7 @@ def get_data_purchase_status(ref: str, user: User = Depends(get_developer_user),
         # Fallback to check ServiceTransaction (e.g. for airtime)
         tx_service = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == user.id, ServiceTransaction.reference == internal_ref).first()
         if not tx_service:
-            raise HTTPException(status_code=404, detail="No purchase with that reference is owned by your client.")
+            raise DeveloperAPIException("No purchase with that reference is owned by your client.", 404)
         
         status_str = "failed"
         if tx_service.status == TransactionStatus.SUCCESS.value:
@@ -266,7 +269,8 @@ def get_data_purchase_status(ref: str, user: User = Depends(get_developer_user),
             status_str = "pending"
             
         return {
-            "success": True,
+            "status": True,
+            "message": "Transaction found",
             "data": {
                 "reference": ref,
                 "status": status_str,
@@ -289,7 +293,8 @@ def get_data_purchase_status(ref: str, user: User = Depends(get_developer_user),
         status_str = "pending"
         
     return {
-        "success": True,
+        "status": True,
+        "message": "Transaction found",
         "data": {
             "reference": ref,
             "status": status_str,
@@ -314,10 +319,14 @@ def get_balance(user: User = Depends(get_developer_user), db: Session = Depends(
     else:
         wallet = get_or_create_wallet(db, user.id)
         bal = wallet.balance
-    return {"balance": bal, "currency": "NGN"}
+    return {
+        "status": True,
+        "message": "Wallet balance retrieved successfully",
+        "data": {"balance": bal, "currency": "NGN"}
+    }
 
 
-@router.get("/data/plans")
+@router.get("/data/plans", response_model=DeveloperDataPlansResponse)
 def list_data_plans(user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
     plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
     result = []
@@ -332,7 +341,11 @@ def list_data_plans(user: User = Depends(get_developer_user), db: Session = Depe
             "validity": plan.validity,
             "price": float(price)
         })
-    return {"plans": result}
+    return {
+        "status": True,
+        "message": "Data plans retrieved successfully",
+        "data": {"plans": result}
+    }
 
 
 @router.post("/data/purchase", response_model=DeveloperPurchaseResponse)

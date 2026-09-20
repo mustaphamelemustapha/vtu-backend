@@ -29,9 +29,51 @@ class ApiKeyResponse(BaseModel):
     api_secret_key: str
 
 
-class DeveloperWalletBalanceResponse(BaseModel):
+from typing import List, Any
+
+class DeveloperWalletBalanceData(BaseModel):
     balance: Decimal
     currency: str = "NGN"
+
+class DeveloperWalletBalanceResponse(BaseModel):
+    status: bool
+    message: str
+    data: DeveloperWalletBalanceData
+
+class DeveloperDataPlanItem(BaseModel):
+    plan_id: int
+    plan_code: str
+    network: str
+    plan_name: str
+    data_size: str
+    validity: str
+    price: float
+
+class DeveloperDataPlansData(BaseModel):
+    plans: List[DeveloperDataPlanItem]
+
+class DeveloperDataPlansResponse(BaseModel):
+    status: bool
+    message: str
+    data: DeveloperDataPlansData
+
+class DeveloperDataStatusData(BaseModel):
+    reference: str
+    status: str
+    network: str
+    mobile_number: str
+    plan: Optional[str] = None
+    amount_charged: float
+    message: str
+    purchased_at: Optional[str] = None
+    queried_at: str
+    livemode: bool
+    mode: str
+
+class DeveloperDataStatusResponse(BaseModel):
+    status: bool
+    message: str
+    data: DeveloperDataStatusData
 
 
 from typing import Optional, Union
