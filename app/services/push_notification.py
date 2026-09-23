@@ -107,7 +107,7 @@ class PushNotificationService:
             return False
 
     @classmethod
-    def send_broadcast(cls, title: str, body: str, data: dict = None) -> bool:
+    def send_broadcast(cls, title: str, body: str, data: dict = None, image_url: str = None) -> bool:
         cls._initialize()
         if not cls._initialized:
             return False
@@ -122,18 +122,23 @@ class PushNotificationService:
                     default_vibrate_timings=True,
                 )
             )
-            apns_config = messaging.APNSConfig(
-                payload=messaging.APNSPayload(
-                    aps=messaging.Aps(
-                        sound="default",
-                        badge=1,
-                        content_available=True,
-                    )
+            
+            apns_payload = messaging.APNSPayload(
+                aps=messaging.Aps(
+                    sound="default",
+                    badge=1,
+                    content_available=True,
+                    mutable_content=True if image_url else False,
                 )
+            )
+            
+            apns_config = messaging.APNSConfig(
+                payload=apns_payload,
+                fcm_options=messaging.APNSFCMOptions(image=image_url) if image_url else None
             )
 
             message = messaging.Message(
-                notification=messaging.Notification(title=title, body=body),
+                notification=messaging.Notification(title=title, body=body, image=image_url),
                 data=data or {},
                 topic="all_users",
                 android=android_config,

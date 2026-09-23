@@ -22,6 +22,7 @@ from app.schemas.notifications import (
     BroadcastAnnouncementCreate,
     BroadcastAnnouncementOut,
     BroadcastAnnouncementUpdate,
+    PushNotificationSend,
 )
 
 router = APIRouter()
@@ -165,7 +166,8 @@ def admin_create_broadcast(
             PushNotificationService.send_broadcast(
                 title=row.title,
                 body=row.message,
-                data={"type": "announcement", "id": str(row.id)}
+                data={"type": "announcement", "id": str(row.id)},
+                image_url=row.image_url
             )
         except Exception as push_exc:
             import logging
@@ -263,4 +265,28 @@ def admin_update_broadcast(
     db.commit()
     db.refresh(row)
     return _to_out(row)
+
+@router.post("/broadcast/admin/push-only")
+def admin_send_push_only(
+    payload: PushNotificationSend,
+    admin: User = Depends(require_admin),
+):
+    _ = admin
+    
+    try:
+        from app.services.push_notification import PushNotificationService
+        success = PushNotificationService.send_broadcast(
+            title=payload.title.strip(),
+            body=payload.message.strip(),
+            data={"type": "announcement_push_only"},
+            image_url=payload.image_url.strip() if payload.image_url else None
+        )
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to send push notification")
+    except Exception as push_exc:
+        import logging
+        logging.getLogger(__name__).warning("Failed to send push notification: %s", push_exc)
+        raise HTTPException(status_code=500, detail="Error occurred while sending push notification")
+        
+    return {"status": "success", "message": "Push notification sent successfully"}
 

@@ -46,3 +46,8 @@ class BroadcastAnnouncementUpdate(BaseModel):
     button_link: Optional[str] = Field(default=None, max_length=255)
     image_url: Optional[str] = Field(default=None, max_length=500)
     is_popup: Optional[bool] = None
+
+class PushNotificationSend(BaseModel):
+    title: str = Field(..., min_length=2, max_length=120)
+    message: str = Field(..., min_length=6, max_length=2000)
+    image_url: Optional[str] = Field(default=None, max_length=500)
