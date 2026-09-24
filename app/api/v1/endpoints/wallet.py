@@ -342,7 +342,8 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
     if settings.billstack_enabled:
         db_billstack = db.query(VirtualAccount).filter(
             VirtualAccount.user_id == user.id,
-            VirtualAccount.provider == VirtualAccountProvider.BILLSTACK
+            VirtualAccount.provider == VirtualAccountProvider.BILLSTACK,
+            VirtualAccount.status == VirtualAccountStatus.ACTIVE
         ).all()
 
         if not db_billstack:
