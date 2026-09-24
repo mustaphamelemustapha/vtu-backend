@@ -627,22 +627,19 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
 
     # 3. Recreate / Update Billstack Reserved Account
     if settings.billstack_enabled:
-        db.query(VirtualAccount).filter(
-            VirtualAccount.user_id == user.id,
-            VirtualAccount.provider == VirtualAccountProvider.BILLSTACK
-        ).delete()
-        db.commit()
+        # Keep existing Billstack accounts (e.g. 9PSB)
+        # and just generate a Palmpay account alongside them.
 
         try:
             first = (user.full_name or "").strip().split(" ")[0] or "Mele"
             last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
             resp = generate_billstack_virtual_account(
                 email=user.email,
-                reference=f"{account_reference}_billstack_{settings.billstack_preferred_bank.lower()}",
+                reference=f"{account_reference}_billstack_palmpay_{secrets.token_hex(4)}",
                 phone=user.phone_number or "",
                 first_name=first,
                 last_name=last,
-                bank=settings.billstack_preferred_bank,
+                bank="PALMPAY",
             )
             if resp.get("status") is True:
                 data = resp.get("data", {})
@@ -656,7 +653,7 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
                         account_name=acc["account_name"],
                         bank_name=acc["bank_name"],
                         bank_code=acc.get("bank_id", "000"),
-                        customer_reference=f"{account_reference}_billstack_{settings.billstack_preferred_bank.lower()}",
+                        customer_reference=f"{account_reference}_billstack_palmpay_{secrets.token_hex(4)}",
                         reservation_reference=reservation_ref,
                         status=VirtualAccountStatus.ACTIVE,
                         )
