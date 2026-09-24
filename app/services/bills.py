@@ -1612,9 +1612,11 @@ class AutosyncBillsProvider:
             message = str(data.get("message") or "")
             tx_data = data.get("data", {}).get("transaction", {}) if data.get("status") == "ok" else {}
             provider_reference = str(tx_data.get("reference") or "")
+            inner_status = str(tx_data.get("status") or "").strip().lower()
             
             if status_value == "ok":
-               res_data = {"status": "success", "provider_reference": provider_reference, "error": message}
+               final_status = "success" if inner_status == "successful" else ("failed" if inner_status == "failed" else "pending")
+               res_data = {"status": final_status, "provider_reference": provider_reference, "error": message}
             else:
                logger.error(f"Autosync Airtime Error Payload: {payload}")
                logger.error(f"Autosync Airtime Error Response: {data}")
@@ -1648,9 +1650,11 @@ class AutosyncBillsProvider:
             message = str(data.get("message") or "")
             tx_data = data.get("data", {}).get("transaction", {}) if data.get("status") == "ok" else {}
             provider_reference = str(tx_data.get("reference") or "")
+            inner_status = str(tx_data.get("status") or "").strip().lower()
             
             if status_value == "ok":
-               res_data = {"status": "success", "provider_reference": provider_reference, "error": message}
+               final_status = "success" if inner_status == "successful" else ("failed" if inner_status == "failed" else "pending")
+               res_data = {"status": final_status, "provider_reference": provider_reference, "error": message}
             else:
                logger.error(f"Autosync Cable Error Payload: {payload}")
                logger.error(f"Autosync Cable Error Response: {data}")
@@ -1683,10 +1687,12 @@ class AutosyncBillsProvider:
             message = str(data.get("message") or "")
             tx_data = data.get("data", {}).get("transaction", {}) if data.get("status") == "ok" else {}
             provider_reference = str(tx_data.get("reference") or "")
+            inner_status = str(tx_data.get("status") or "").strip().lower()
             
             if status_value == "ok":
+               final_status = "success" if inner_status == "successful" else ("failed" if inner_status == "failed" else "pending")
                res_data = {
-                   "status": "success", 
+                   "status": final_status, 
                    "provider_reference": provider_reference, 
                    "error": message,
                    "token": tx_data.get("token") or tx_data.get("pin")
