@@ -140,7 +140,7 @@ class PushNotificationService:
             message = messaging.Message(
                 notification=messaging.Notification(title=title, body=body, image=image_url),
                 data=data or {},
-                topic="all_users",
+                topic="meledata_users",
                 android=android_config,
                 apns=apns_config,
             )
