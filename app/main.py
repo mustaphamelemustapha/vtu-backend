@@ -178,6 +178,8 @@ def ensure_tables():
         _ensure_user_developer_columns()
         _ensure_user_webhook_columns()
         _ensure_user_profile_image_url_column()
+        _ensure_referral_ambassador_columns()
+        _ensure_aspfiy_enum()
         return
 
     # Optional local fallback for fresh environments.
@@ -205,6 +207,7 @@ def ensure_tables():
     _ensure_user_webhook_columns()
     _ensure_user_profile_image_url_column()
     _ensure_referral_ambassador_columns()
+    _ensure_aspfiy_enum()
 
 
 @app.on_event("shutdown")
@@ -629,6 +632,17 @@ def _ensure_referral_ambassador_columns() -> None:
             logging.getLogger(__name__).info("Ensured referrals ambassador tracking columns.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure referrals ambassador columns: %s", exc)
+
+def _ensure_aspfiy_enum() -> None:
+    try:
+        dialect_name = getattr(engine.dialect, "name", "")
+        if dialect_name == "postgresql":
+            with engine.begin() as conn:
+                # Add ASPFIY to the ENUM if it doesn't exist
+                conn.execute(text("ALTER TYPE virtualaccountprovider ADD VALUE IF NOT EXISTS 'ASPFIY'"))
+            logging.getLogger(__name__).info("Ensured ASPFIY is in virtualaccountprovider ENUM.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure ASPFIY ENUM: %s", exc)
 
 
 @app.get("/healthz")
