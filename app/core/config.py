@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     billstack_enabled: bool = False
     billstack_preferred_bank: str = "9PSB"
 
+    # Aspfiy
+    aspfiy_secret_key: str = ""
+    aspfiy_base_url: AnyHttpUrl = "https://api-v1.aspfiy.com"
+    aspfiy_enabled: bool = False
+
     # Amigo API
     amigo_base_url: AnyHttpUrl
     amigo_api_key: str
