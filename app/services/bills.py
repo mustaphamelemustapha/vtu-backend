@@ -674,6 +674,17 @@ class VTPassBillsProvider:
             result.meta["vtpass"]["variation_code"] = payload["variation_code"]
         return result
 
+    def check_status(self, request_id: str) -> ProviderResult:
+        """
+        Query the status of a transaction using the VTpass requery API.
+        """
+        payload = {"request_id": request_id}
+        try:
+            data = self._post("/requery", payload)
+            return self._parse_result(data)
+        except Exception as e:
+            return ProviderResult(False, message=str(e), pending=True)
+
 
 class ClubKonnectBillsProvider:
     def __init__(self):
