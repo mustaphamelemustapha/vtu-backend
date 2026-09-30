@@ -309,29 +309,22 @@ class VTPassBillsProvider:
 
     def _post_headers(self) -> dict:
         headers = {
-            "api-key": self.api_key,
-            "secret-key": self.secret_key,
+            "api-key": str(self.api_key or ""),
+            "secret-key": str(self.secret_key or ""),
+            "public-key": str(self.public_key or ""),
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        if self.api_key and self.secret_key:
-            basic = base64.b64encode(f"{self.api_key}:{self.secret_key}".encode("utf-8")).decode("utf-8")
-            headers["Authorization"] = f"Basic {basic}"
         return headers
 
     def _get_headers(self) -> dict:
         headers = {
-            "api-key": self.api_key,
+            "api-key": str(self.api_key or ""),
+            "secret-key": str(self.secret_key or ""),
+            "public-key": str(self.public_key or ""),
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
-        if self.public_key:
-            headers["public-key"] = self.public_key
-        if self.secret_key:
-            headers["secret-key"] = self.secret_key
-        if self.api_key and self.secret_key:
-            basic = base64.b64encode(f"{self.api_key}:{self.secret_key}".encode("utf-8")).decode("utf-8")
-            headers["Authorization"] = f"Basic {basic}"
         return headers
 
     @staticmethod
