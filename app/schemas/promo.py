@@ -14,6 +14,7 @@ class PromoCodeBase(BaseModel):
     applicable_network: str = "ALL"
     applicable_plan_size: str = "ALL"
     target_audience: str = "ALL_USERS"
+    is_fixed_price: bool = False
 
 class PromoCodeOut(PromoCodeBase):
     id: int

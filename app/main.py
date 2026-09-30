@@ -208,6 +208,7 @@ def ensure_tables():
     _ensure_user_profile_image_url_column()
     _ensure_referral_ambassador_columns()
     _ensure_aspfiy_enum()
+    _ensure_promo_is_fixed_price_column()
 
 
 @app.on_event("shutdown")
@@ -632,6 +633,27 @@ def _ensure_referral_ambassador_columns() -> None:
             logging.getLogger(__name__).info("Ensured referrals ambassador tracking columns.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure referrals ambassador columns: %s", exc)
+
+def _ensure_promo_is_fixed_price_column() -> None:
+    db = SessionLocal()
+    try:
+        engine = db.get_bind()
+        if engine.dialect.name == "sqlite":
+            with engine.connect() as conn:
+                try:
+                    conn.execute(text("ALTER TABLE promo_codes ADD COLUMN is_fixed_price BOOLEAN DEFAULT 0 NOT NULL"))
+                    conn.commit()
+                except Exception as e:
+                    pass
+        elif engine.dialect.name == "postgresql":
+            with engine.connect() as conn:
+                try:
+                    conn.execute(text("ALTER TABLE promo_codes ADD COLUMN is_fixed_price BOOLEAN DEFAULT FALSE NOT NULL"))
+                    conn.commit()
+                except Exception as e:
+                    pass
+    finally:
+        db.close()
 
 def _ensure_aspfiy_enum() -> None:
     try:

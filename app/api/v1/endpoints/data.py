@@ -459,7 +459,12 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
         discount = Decimal(str(promo_code.discount_amount))
         if promo_code.is_percentage:
             discount = price * (discount / Decimal(100))
-        price = max(Decimal(0), price - discount)
+            price = max(Decimal(0), price - discount)
+        elif promo_code.is_fixed_price:
+            # The discount amount IS the final price (e.g. 50 NGN)
+            price = min(price, discount) # Don't increase price if original is lower
+        else:
+            price = max(Decimal(0), price - discount)
         
     if _is_mtn_1gb_promo_plan(plan) and not user_promo:
         promo = _mtn_1gb_promo_snapshot(db)

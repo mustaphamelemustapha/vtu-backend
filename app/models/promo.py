@@ -21,6 +21,7 @@ class PromoCode(Base, TimestampMixin):
     applicable_network = Column(String(20), default="ALL", nullable=False)
     applicable_plan_size = Column(String(20), default="ALL", nullable=False)
     target_audience = Column(String(20), default="ALL_USERS", nullable=False)
+    is_fixed_price = Column(Boolean, default=False, nullable=False)
     
     user_promos = relationship("UserPromo", back_populates="promo_code")
 
