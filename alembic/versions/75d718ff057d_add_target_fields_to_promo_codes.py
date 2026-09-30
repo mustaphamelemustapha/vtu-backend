@@ -23,7 +23,7 @@ def upgrade() -> None:
     op.add_column('promo_codes', sa.Column('applicable_network', sa.String(length=20), nullable=False, server_default='ALL'))
     op.add_column('promo_codes', sa.Column('applicable_plan_size', sa.String(length=20), nullable=False, server_default='ALL'))
     op.add_column('promo_codes', sa.Column('target_audience', sa.String(length=20), nullable=False, server_default='ALL'))
-    op.add_column('promo_codes', sa.Column('is_fixed_price', sa.Boolean(), nullable=False, server_default='0'))
+    op.add_column('promo_codes', sa.Column('is_fixed_price', sa.Boolean(), nullable=False, server_default=sa.text('false')))
     # ### end Alembic commands ###
 
 
