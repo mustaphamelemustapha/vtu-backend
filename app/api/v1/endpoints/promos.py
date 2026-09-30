@@ -7,14 +7,14 @@ from app.core.database import get_db
 from app.models.user import User
 from app.models.promo import PromoCode, UserPromo
 from app.schemas.promo import ClaimPromoRequest, UserPromoOut
-from app.api.dependencies import get_current_active_user
+from app.dependencies import get_current_user
 
 router = APIRouter()
 
 @router.get("/me", response_model=List[UserPromoOut])
 def get_my_promos(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Get all promos claimed by the current user.
@@ -29,7 +29,7 @@ def get_my_promos(
 def claim_promo(
     request: ClaimPromoRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Claim a promo code by code string.
