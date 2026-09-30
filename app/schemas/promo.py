@@ -19,6 +19,9 @@ class PromoCodeOut(PromoCodeBase):
     class Config:
         orm_mode = True
 
+class PromoCodeCreate(PromoCodeBase):
+    max_total_uses: Optional[int] = None
+
 class UserPromoOut(BaseModel):
     id: int
     status: str
