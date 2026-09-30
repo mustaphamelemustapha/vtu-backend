@@ -69,6 +69,7 @@ class User(Base, TimestampMixin):
     service_transactions = relationship("ServiceTransaction", back_populates="user")
     api_logs = relationship("ApiLog", back_populates="user")
     virtual_accounts = relationship("VirtualAccount", back_populates="user")
+    promos = relationship("UserPromo", back_populates="user")
 
 
 Index("ix_users_role_active", User.role, User.is_active)

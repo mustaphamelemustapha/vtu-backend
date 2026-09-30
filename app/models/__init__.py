@@ -15,6 +15,7 @@ from app.models.virtual_account import VirtualAccount, VirtualAccountProvider, V
 from app.models.agent import RewardCampaign, CampaignType, AgentReward, AgentRewardStatus, AgentStat
 from app.models.system_setting import SystemSetting
 from app.models.financial_ledger import FinancialLedger, FinancialCategory, EntryType
+from app.models.promo import PromoCode, UserPromo
 
 __all__ = [
     "User",
@@ -52,4 +53,6 @@ __all__ = [
     "FinancialLedger",
     "FinancialCategory",
     "EntryType",
+    "PromoCode",
+    "UserPromo",
 ]
