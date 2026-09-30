@@ -8,6 +8,7 @@ class AirtimePurchaseRequest(BaseModel):
     network: str = Field(..., min_length=2, max_length=32)
     phone_number: str = Field(..., min_length=7, max_length=20)
     amount: Decimal = Field(..., ge=100)
+    user_promo_id: Optional[int] = None
 
 
 class CablePurchaseRequest(BaseModel):

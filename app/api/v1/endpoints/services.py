@@ -212,6 +212,35 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
                 f"Selected network {selected_network.upper()} does not match."
             ),
         )
+        
+    user_promo = None
+    if getattr(payload, "user_promo_id", None):
+        from app.models.promo import UserPromo
+        from datetime import datetime, timezone
+        user_promo = db.query(UserPromo).filter(
+            UserPromo.id == payload.user_promo_id,
+            UserPromo.user_id == user.id,
+            UserPromo.status == "READY"
+        ).first()
+        if not user_promo:
+            raise HTTPException(status_code=400, detail="Invalid or expired promo.")
+            
+        promo_code = user_promo.promo_code
+        if not promo_code.is_active or (promo_code.expires_at and promo_code.expires_at < datetime.now(timezone.utc)):
+            raise HTTPException(status_code=400, detail="Promo code is inactive or expired.")
+            
+        if promo_code.applicable_network != "ALL" and promo_code.applicable_network.upper() != selected_network.upper():
+            raise HTTPException(status_code=400, detail=f"Promo is only applicable for {promo_code.applicable_network}.")
+            
+        # For airtime, applicable_plan_size doesn't apply strictly, or we can consider base_amount
+        if promo_code.applicable_plan_size != "ALL":
+            pass # Usually size refers to Data, but if needed we could match exact amount
+            
+        discount = Decimal(str(promo_code.discount_amount))
+        if promo_code.is_percentage:
+            discount = charge_amount * (discount / Decimal(100))
+        charge_amount = max(Decimal(0), charge_amount - discount)
+
     enforce_purchase_limits(db, user_id=user.id, amount=charge_amount, tx_type=TransactionType.AIRTIME.value)
     if Decimal(wallet.balance) < charge_amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
@@ -326,6 +355,14 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
             if result.meta:
                 tx.meta = {**(tx.meta or {}), **result.meta}
             tx.failure_reason = result.message or _PENDING_CONFIRMATION_MESSAGE
+            
+            if getattr(payload, "user_promo_id", None):
+                from app.models.promo import UserPromo
+                from datetime import datetime, timezone
+                up = db2.query(UserPromo).get(payload.user_promo_id)
+                if up:
+                    up.status = "USED"
+                    up.used_at = datetime.now(timezone.utc)
             db2.commit()
             return {"reference": reference, "status": tx.status, "message": tx.failure_reason}
             
@@ -334,6 +371,14 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
             tx.external_reference = result.external_reference
             if result.meta:
                 tx.meta = {**(tx.meta or {}), **result.meta}
+            
+            if getattr(payload, "user_promo_id", None):
+                from app.models.promo import UserPromo
+                from datetime import datetime, timezone
+                up = db2.query(UserPromo).get(payload.user_promo_id)
+                if up:
+                    up.status = "USED"
+                    up.used_at = datetime.now(timezone.utc)
             db2.commit()
             if fcm_token:
                 try:

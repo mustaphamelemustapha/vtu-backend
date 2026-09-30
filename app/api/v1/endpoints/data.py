@@ -428,7 +428,40 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
     enforce_purchase_limits(db, user_id=user.id, amount=Decimal(str(plan.base_price)), tx_type="data")
     
     price = get_price_for_user(db, plan, user.role)
-    if _is_mtn_1gb_promo_plan(plan):
+    
+    # Apply promo discount if provided
+    user_promo = None
+    if payload.user_promo_id:
+        from app.models.promo import UserPromo
+        from datetime import datetime, timezone
+        user_promo = db.query(UserPromo).filter(
+            UserPromo.id == payload.user_promo_id,
+            UserPromo.user_id == user.id,
+            UserPromo.status == "READY"
+        ).first()
+        if not user_promo:
+            raise HTTPException(status_code=400, detail="Invalid or expired promo.")
+            
+        promo_code = user_promo.promo_code
+        if not promo_code.is_active or (promo_code.expires_at and promo_code.expires_at < datetime.now(timezone.utc)):
+            raise HTTPException(status_code=400, detail="Promo code is inactive or expired.")
+            
+        if promo_code.applicable_network != "ALL" and promo_code.applicable_network.upper() != plan.network.upper():
+            raise HTTPException(status_code=400, detail=f"Promo is only applicable for {promo_code.applicable_network}.")
+            
+        if promo_code.applicable_plan_size != "ALL":
+            s1 = promo_code.applicable_plan_size.upper().replace(" ", "")
+            s2 = plan.plan_name.upper().replace(" ", "")
+            s3 = plan.data_size.upper().replace(" ", "")
+            if s1 not in s2 and s1 not in s3:
+                raise HTTPException(status_code=400, detail=f"Promo is only applicable for {promo_code.applicable_plan_size}.")
+                
+        discount = Decimal(str(promo_code.discount_amount))
+        if promo_code.is_percentage:
+            discount = price * (discount / Decimal(100))
+        price = max(Decimal(0), price - discount)
+        
+    if _is_mtn_1gb_promo_plan(plan) and not user_promo:
         promo = _mtn_1gb_promo_snapshot(db)
         if promo["active"] and not _user_has_used_mtn_1gb_promo(db, user.id):
             promo_price = Decimal(str(promo["price"]))
@@ -646,6 +679,15 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
         )
         db2.add(api_log)
         db2.commit()
+
+        if final_status in ["success", "pending"] and payload.user_promo_id:
+            from app.models.promo import UserPromo
+            from datetime import datetime, timezone
+            up = db2.query(UserPromo).get(payload.user_promo_id)
+            if up:
+                up.status = "USED"
+                up.used_at = datetime.now(timezone.utc)
+                db2.commit()
 
         return {
             "status": final_status,

@@ -33,3 +33,4 @@ class BuyDataRequest(BaseModel):
     phone_number: str
     ported_number: bool = True
     network: Optional[str] = None
+    user_promo_id: Optional[int] = None

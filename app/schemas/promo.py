@@ -11,6 +11,9 @@ class PromoCodeBase(BaseModel):
     max_uses_per_user: int
     expires_at: Optional[datetime] = None
     is_active: bool
+    applicable_network: str = "ALL"
+    applicable_plan_size: str = "ALL"
+    target_audience: str = "ALL_USERS"
 
 class PromoCodeOut(PromoCodeBase):
     id: int

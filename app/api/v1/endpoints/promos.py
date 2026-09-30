@@ -33,6 +33,9 @@ def create_promo(
         max_total_uses=promo_in.max_total_uses,
         expires_at=promo_in.expires_at,
         is_active=promo_in.is_active,
+        applicable_network=promo_in.applicable_network,
+        applicable_plan_size=promo_in.applicable_plan_size,
+        target_audience=promo_in.target_audience,
     )
     db.add(new_promo)
     db.commit()
@@ -77,6 +80,16 @@ def claim_promo(
         
     if promo.max_total_uses and promo.current_uses >= promo.max_total_uses:
         raise HTTPException(status_code=400, detail="This promo code has reached its usage limit.")
+        
+    if promo.target_audience == "NEW_USERS":
+        from datetime import timedelta
+        if current_user.created_at:
+            user_tz = current_user.created_at.tzinfo
+            now = datetime.now(user_tz) if user_tz else datetime.now(timezone.utc)
+            # If created_at is naive, assume UTC.
+            created = current_user.created_at if user_tz else current_user.created_at.replace(tzinfo=timezone.utc)
+            if now - created > timedelta(days=7):
+                raise HTTPException(status_code=400, detail="This promo code is specifically for new users.")
         
     # Check if user already claimed it too many times
     user_claims = db.query(UserPromo).filter(
