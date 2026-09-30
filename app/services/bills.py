@@ -309,9 +309,8 @@ class VTPassBillsProvider:
 
     def _post_headers(self) -> dict:
         headers = {
-            "api-key": str(self.api_key or ""),
-            "secret-key": str(self.secret_key or ""),
-            "public-key": str(self.public_key or ""),
+            "api-key": str(self.api_key or "").strip(),
+            "public-key": str(self.public_key or "").strip(),
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
@@ -319,9 +318,8 @@ class VTPassBillsProvider:
 
     def _get_headers(self) -> dict:
         headers = {
-            "api-key": str(self.api_key or ""),
-            "secret-key": str(self.secret_key or ""),
-            "public-key": str(self.public_key or ""),
+            "api-key": str(self.api_key or "").strip(),
+            "secret-key": str(self.secret_key or "").strip(),
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
