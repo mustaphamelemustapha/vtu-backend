@@ -23,6 +23,49 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+@router.post("/vtpass/webhook")
+async def vtpass_webhook(request: Request, db: Session = Depends(get_db)):
+    """
+    VTPass Callback/Webhook endpoint.
+    VTPass sends transaction status updates here.
+    """
+    try:
+        payload = await request.json()
+        logger.info(f"VTPass Webhook received: {payload}")
+        
+        # VTpass typically sends request_id and content.transactions.status
+        request_id = payload.get("requestId")
+        if not request_id:
+            return {"status": "ignored", "reason": "No requestId provided"}
+            
+        content = payload.get("content", {})
+        transactions = content.get("transactions", {})
+        status = str(transactions.get("status") or "").lower()
+        
+        transaction = db.query(Transaction).filter(Transaction.reference == request_id).first()
+        if not transaction:
+            return {"status": "ignored", "reason": "Transaction not found"}
+            
+        if status in {"delivered", "successful"}:
+            if transaction.status != TransactionStatus.SUCCESS:
+                transaction.status = TransactionStatus.SUCCESS
+                db.commit()
+                # Optionally trigger developer webhooks
+                dispatch_developer_webhook(transaction, transaction.user)
+                
+        elif status in {"failed", "reversed"}:
+            if transaction.status == TransactionStatus.PENDING:
+                transaction.status = TransactionStatus.FAILED
+                transaction.failure_reason = "Failed via VTpass Webhook"
+                db.commit()
+                # You might want to handle refunds here if applicable
+                
+        return {"status": "success"}
+    except Exception as e:
+        logger.error(f"Error processing VTpass webhook: {e}")
+        # VTPass expects a 200 OK so it doesn't keep retrying unnecessarily
+        return {"status": "error", "message": str(e)}
+
 async def get_raw_body(request: Request) -> bytes:
     return await request.body()
 
