@@ -20,6 +20,7 @@ from app.dependencies import get_current_user
 from app.services.wallet import get_or_create_wallet
 from app.services.email import send_password_reset_email, send_transaction_pin_reset_email, send_welcome_email
 from app.services.referrals import ensure_user_referral_code, attach_signup_referral
+from app.services.transaction_pin import set_pin
 
 settings = get_settings()
 router = APIRouter()
@@ -54,6 +55,12 @@ def _normalize_phone(value: str | None) -> str | None:
     digits = "".join(ch for ch in raw if ch.isdigit())
     if not digits:
         return None
+    if digits.startswith("234") and len(digits) >= 13:
+        return f"0{digits[3:13]}"
+    if digits.startswith("0") and len(digits) == 11:
+        return digits
+    if len(digits) == 10:
+        return f"0{digits}"
     return digits
 
 
@@ -76,9 +83,13 @@ def register(request: Request, payload: RegisterRequest, background_tasks: Backg
         role=UserRole.CUSTOMER,
         is_verified=False,
         phone_number=normalized_phone,
+        state=payload.state,
     )
     user.verification_token = secrets.token_urlsafe(32)
     user.verification_token_expires_at = _utcnow() + timedelta(days=2)
+
+    if payload.pin:
+        set_pin(user, payload.pin)
 
     db.add(user)
     ensure_user_referral_code(db, user)
@@ -127,7 +138,7 @@ def lookup_user(request: Request, payload: LookupRequest, db: Session = Depends(
             user = db.query(User).filter(User.phone_number == phone).first()
     if not user:
         return {"exists": False}
-    return {"exists": True, "full_name": user.full_name, "email": user.email, "phone_number": user.phone_number}
+    return {"exists": True}
 
 
 @router.post("/refresh", response_model=TokenPair)
@@ -226,7 +237,7 @@ def me(user: User = Depends(get_current_user)):
 
 @router.patch("/me", response_model=UserOut)
 def update_me(payload: UpdateMeRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    if payload.full_name is None and payload.phone_number is None:
+    if payload.full_name is None and payload.phone_number is None and payload.state is None:
         raise HTTPException(status_code=400, detail="Nothing to update")
 
     if payload.full_name is not None:
@@ -253,6 +264,9 @@ def update_me(payload: UpdateMeRequest, db: Session = Depends(get_db), user: Use
             if existing:
                 raise HTTPException(status_code=400, detail="Phone number already registered")
             user.phone_number = phone
+
+    if payload.state is not None:
+        user.state = payload.state
 
     db.commit()
     db.refresh(user)

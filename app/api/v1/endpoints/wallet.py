@@ -429,14 +429,29 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
         db_aspfiy = db.query(VirtualAccount).filter(
             VirtualAccount.user_id == user.id,
             VirtualAccount.provider == VirtualAccountProvider.ASPFIY,
-            VirtualAccount.status == VirtualAccountStatus.ACTIVE
         ).all()
 
-        if not db_aspfiy:
+        active_aspfiy = [
+            acc for acc in db_aspfiy
+            if acc.status == VirtualAccountStatus.ACTIVE and acc.account_number
+        ]
+
+        if active_aspfiy:
+            for db_acc in active_aspfiy:
+                all_accounts.append({
+                    "bank_name": db_acc.bank_name,
+                    "account_number": db_acc.account_number,
+                    "account_name": db_acc.account_name,
+                })
+        elif db_aspfiy:
+            # We already have an account record (pending or inactive/failed).
+            # Do NOT hammer Aspfiy on GET requests to prevent runaway account generation loops!
+            logger.info("Aspfiy account already recorded for user %s (status=%s); skipping auto-generation on GET.", user.id, db_aspfiy[0].status)
+        else:
             try:
                 first = (user.full_name or "").strip().split(" ")[0] or "Mele"
                 last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
-                reference = f"{account_reference}_aspfiy_{secrets.token_hex(4)}"
+                reference = f"{account_reference}_aspfiy_paga"
                 
                 resp = AspfiyService.create_reserved_account(
                     email=user.email,
@@ -446,18 +461,14 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
                     reference=reference
                 )
                 
-                acc_data = resp.get("data") or resp
-                if acc_data and ("account_number" in acc_data or "accountNumber" in acc_data):
-                    account_number = acc_data.get("account_number") or acc_data.get("accountNumber")
-                    account_name = acc_data.get("account_name") or acc_data.get("accountName")
-                    bank_name = acc_data.get("bank_name") or acc_data.get("bankName")
-                    
+                acc_info = AspfiyService.parse_reserved_account_response(resp)
+                if acc_info:
                     db_acc = VirtualAccount(
                         user_id=user.id,
                         provider=VirtualAccountProvider.ASPFIY,
-                        account_number=account_number,
-                        account_name=account_name,
-                        bank_name=bank_name,
+                        account_number=acc_info["account_number"],
+                        account_name=acc_info["account_name"],
+                        bank_name=acc_info["bank_name"],
                         bank_code="000",
                         customer_reference=reference,
                         reservation_reference=reference,
@@ -465,30 +476,48 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
                     )
                     db.add(db_acc)
                     db.commit()
-                    all_accounts.append({
-                        "bank_name": bank_name,
-                        "account_number": account_number,
-                        "account_name": account_name,
-                    })
+                    all_accounts.append(acc_info)
                 else:
+                    logger.warning("Aspfiy returned unparseable or empty account for user %s: %s", user.id, resp)
+                    # Cache failure to prevent retry loop on subsequent GET requests
+                    db.add(VirtualAccount(
+                        user_id=user.id,
+                        provider=VirtualAccountProvider.ASPFIY,
+                        account_number="",
+                        account_name="Failed",
+                        bank_name="Paga",
+                        bank_code="000",
+                        customer_reference=reference,
+                        reservation_reference=reference,
+                        status=VirtualAccountStatus.INACTIVE,
+                    ))
+                    db.commit()
                     messages.append("Failed to reserve Aspfiy account: Invalid response format.")
             except Exception as exc:
                 db.rollback()
                 logger.warning("Auto-generate Aspfiy account failed: %s", exc)
                 messages.append(f"Aspfiy: {exc}")
-        else:
-            for db_acc in db_aspfiy:
-                if db_acc.status == VirtualAccountStatus.ACTIVE and db_acc.account_number:
-                    all_accounts.append({
-                        "bank_name": db_acc.bank_name,
-                        "account_number": db_acc.account_number,
-                        "account_name": db_acc.account_name,
-                    })
+                # Cache failure to prevent retry loop on subsequent GET requests
+                try:
+                    db.add(VirtualAccount(
+                        user_id=user.id,
+                        provider=VirtualAccountProvider.ASPFIY,
+                        account_number="",
+                        account_name="Failed",
+                        bank_name="Paga",
+                        bank_code="000",
+                        customer_reference=f"{account_reference}_aspfiy_paga",
+                        reservation_reference=f"{account_reference}_aspfiy_paga",
+                        status=VirtualAccountStatus.INACTIVE,
+                    ))
+                    db.commit()
+                except Exception:
+                    db.rollback()
 
-    # Sort accounts: Palmpay first, then Moniepoint/Monnify, then others
+    # Sort accounts: Palmpay/Paga first, then Moniepoint/Monnify, then others
     def sort_key(acc):
         bank_name = str(acc.get("bank_name", "")).lower()
-        if "palmpay" in bank_name:
+        if "palmpay" in bank_name or "paga" in bank_name:
             return 0
         if "moniepoint" in bank_name or "monnify" in bank_name:
             return 1
@@ -751,14 +780,31 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
         db_aspfiy = db.query(VirtualAccount).filter(
             VirtualAccount.user_id == user.id,
             VirtualAccount.provider == VirtualAccountProvider.ASPFIY,
-            VirtualAccount.status == VirtualAccountStatus.ACTIVE
         ).all()
 
-        if not db_aspfiy:
+        active_aspfiy = [
+            acc for acc in db_aspfiy
+            if acc.status == VirtualAccountStatus.ACTIVE and acc.account_number
+        ]
+
+        if active_aspfiy:
+            for db_acc in active_aspfiy:
+                all_accounts.append({
+                    "bank_name": db_acc.bank_name,
+                    "account_number": db_acc.account_number,
+                    "account_name": db_acc.account_name,
+                })
+        else:
+            # User explicitly requested account generation/retry via POST: clear previous inactive records
+            for old_acc in db_aspfiy:
+                if old_acc.status == VirtualAccountStatus.INACTIVE:
+                    db.delete(old_acc)
+            db.commit()
+
             try:
                 first = (user.full_name or "").strip().split(" ")[0] or "Mele"
                 last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
-                reference = f"{account_reference}_aspfiy_{secrets.token_hex(4)}"
+                reference = f"{account_reference}_aspfiy_paga"
                 
                 resp = AspfiyService.create_reserved_account(
                     email=user.email,
@@ -768,18 +814,14 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
                     reference=reference
                 )
                 
-                acc_data = resp.get("data") or resp
-                if acc_data and ("account_number" in acc_data or "accountNumber" in acc_data):
-                    account_number = acc_data.get("account_number") or acc_data.get("accountNumber")
-                    account_name = acc_data.get("account_name") or acc_data.get("accountName")
-                    bank_name = acc_data.get("bank_name") or acc_data.get("bankName")
-                    
+                acc_info = AspfiyService.parse_reserved_account_response(resp)
+                if acc_info:
                     db_acc = VirtualAccount(
                         user_id=user.id,
                         provider=VirtualAccountProvider.ASPFIY,
-                        account_number=account_number,
-                        account_name=account_name,
-                        bank_name=bank_name,
+                        account_number=acc_info["account_number"],
+                        account_name=acc_info["account_name"],
+                        bank_name=acc_info["bank_name"],
                         bank_code="000",
                         customer_reference=reference,
                         reservation_reference=reference,
@@ -787,30 +829,46 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
                     )
                     db.add(db_acc)
                     db.commit()
-                    all_accounts.append({
-                        "bank_name": bank_name,
-                        "account_number": account_number,
-                        "account_name": account_name,
-                    })
+                    all_accounts.append(acc_info)
                 else:
+                    logger.warning("Aspfiy POST returned unparseable or empty account for %s: %s", user.id, resp)
+                    db.add(VirtualAccount(
+                        user_id=user.id,
+                        provider=VirtualAccountProvider.ASPFIY,
+                        account_number="",
+                        account_name="Failed",
+                        bank_name="Paga",
+                        bank_code="000",
+                        customer_reference=reference,
+                        reservation_reference=reference,
+                        status=VirtualAccountStatus.INACTIVE,
+                    ))
+                    db.commit()
                     messages.append("Failed to reserve Aspfiy account: Invalid response format.")
             except Exception as exc:
                 db.rollback()
                 logger.warning("Auto-generate Aspfiy account failed: %s", exc)
                 messages.append(f"Aspfiy: {exc}")
-        else:
-            for db_acc in db_aspfiy:
-                if db_acc.status == VirtualAccountStatus.ACTIVE and db_acc.account_number:
-                    all_accounts.append({
-                        "bank_name": db_acc.bank_name,
-                        "account_number": db_acc.account_number,
-                        "account_name": db_acc.account_name,
-                    })
+                try:
+                    db.add(VirtualAccount(
+                        user_id=user.id,
+                        provider=VirtualAccountProvider.ASPFIY,
+                        account_number="",
+                        account_name="Failed",
+                        bank_name="Paga",
+                        bank_code="000",
+                        customer_reference=f"{account_reference}_aspfiy_paga",
+                        reservation_reference=f"{account_reference}_aspfiy_paga",
+                        status=VirtualAccountStatus.INACTIVE,
+                    ))
+                    db.commit()
+                except Exception:
+                    db.rollback()
 
-    # Sort accounts: Palmpay first, then Moniepoint/Monnify, then others
+    # Sort accounts: Palmpay/Paga first, then Moniepoint/Monnify, then others
     def sort_key(acc):
         bank_name = str(acc.get("bank_name", "")).lower()
-        if "palmpay" in bank_name:
+        if "palmpay" in bank_name or "paga" in bank_name:
             return 0
         if "moniepoint" in bank_name or "monnify" in bank_name:
             return 1

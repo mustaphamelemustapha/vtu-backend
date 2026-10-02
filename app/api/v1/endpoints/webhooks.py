@@ -789,13 +789,35 @@ async def aspfiy_webhook(request: Request, raw_body: bytes = Depends(get_raw_bod
         VirtualAccount.provider == VirtualAccountProvider.ASPFIY
     ).first()
     
-    if not account:
-        logger.error(f"Aspfiy webhook: account not found for reference {merchant_reference}")
-        return {"status": "error", "message": "account not found"}
-        
-    user = db.query(User).filter(User.id == account.user_id).first()
+    user = None
+    if account:
+        user = db.query(User).filter(User.id == account.user_id).first()
+    else:
+        # Fallback: match directly from merchant_reference pattern (AXISVTU_<user_id>_aspfiy_...)
+        if merchant_reference and merchant_reference.startswith("AXISVTU_"):
+            parts = merchant_reference.split("_")
+            if len(parts) >= 2 and parts[1].isdigit():
+                user = db.query(User).filter(User.id == int(parts[1])).first()
+                if user:
+                    logger.info("Aspfiy webhook: matched user %s directly from merchant_reference %s", user.id, merchant_reference)
+                    acc_num = data.get("account_number") or data.get("accountNumber") or ""
+                    account = VirtualAccount(
+                        user_id=user.id,
+                        provider=VirtualAccountProvider.ASPFIY,
+                        account_number=str(acc_num).strip(),
+                        account_name=user.full_name or "Mele Data Customer",
+                        bank_name="Paga",
+                        bank_code="000",
+                        customer_reference=merchant_reference,
+                        reservation_reference=merchant_reference,
+                        status=VirtualAccountStatus.ACTIVE,
+                    )
+                    db.add(account)
+                    db.commit()
+
     if not user:
-        return {"status": "error", "message": "user not found"}
+        logger.error(f"Aspfiy webhook: account/user not found for reference {merchant_reference}")
+        return {"status": "error", "message": "account not found"}
         
     # Idempotency check
     existing_tx = db.query(Transaction).filter(Transaction.reference == reference).first()

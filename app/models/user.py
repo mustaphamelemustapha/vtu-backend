@@ -10,6 +10,7 @@ class UserRole(str, enum.Enum):
     AGENT = "agent"
     AMBASSADOR = "ambassador"
     ADMIN = "admin"
+    USER = "customer"
 
 
 class User(Base, TimestampMixin):
@@ -46,6 +47,7 @@ class User(Base, TimestampMixin):
     api_secret_key_hash = Column(String(128), nullable=True)
     webhook_url = Column(String(255), nullable=True)
     webhook_secret = Column(String(128), nullable=True)
+    state = Column(String(64), nullable=True)
 
     referred_by = relationship(
         "User",

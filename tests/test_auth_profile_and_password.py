@@ -60,20 +60,48 @@ def test_update_me_updates_full_name():
         id=1,
         email="user@example.com",
         full_name="Old Name",
-        role=UserRole.USER,
+        role=UserRole.CUSTOMER,
         is_active=True,
         is_verified=True,
         hashed_password=hash_password("Password123!"),
         reset_token=None,
         reset_token_expires_at=None,
         phone_number=None,
+        state=None,
     )
 
     with _client_with_user(user) as client:
-        res = client.patch("/api/v1/auth/me", headers=_auth_headers("1", "user"), json={"full_name": "New Name"})
+        res = client.patch("/api/v1/auth/me", headers=_auth_headers("1", "customer"), json={"full_name": "New Name"})
 
     assert res.status_code == 200
     assert res.json()["full_name"] == "New Name"
+
+
+def test_update_me_updates_state_and_validates():
+    user = SimpleNamespace(
+        id=1,
+        email="user@example.com",
+        full_name="User",
+        role=UserRole.CUSTOMER,
+        is_active=True,
+        is_verified=True,
+        hashed_password=hash_password("Password123!"),
+        reset_token=None,
+        reset_token_expires_at=None,
+        phone_number=None,
+        state=None,
+    )
+
+    with _client_with_user(user) as client:
+        # Valid state in lowercase canonicalized to Lagos
+        res = client.patch("/api/v1/auth/me", headers=_auth_headers("1", "customer"), json={"state": "lagos"})
+        assert res.status_code == 200
+        assert res.json()["state"] == "Lagos"
+        assert user.state == "Lagos"
+
+        # Invalid state rejected
+        res_bad = client.patch("/api/v1/auth/me", headers=_auth_headers("1", "customer"), json={"state": "InvalidState"})
+        assert res_bad.status_code == 422
 
 
 def test_change_password_rejects_wrong_current_password():
@@ -81,19 +109,20 @@ def test_change_password_rejects_wrong_current_password():
         id=1,
         email="user@example.com",
         full_name="User",
-        role=UserRole.USER,
+        role=UserRole.CUSTOMER,
         is_active=True,
         is_verified=True,
         hashed_password=hash_password("Password123!"),
         reset_token=None,
         reset_token_expires_at=None,
         phone_number=None,
+        state=None,
     )
 
     with _client_with_user(user) as client:
         res = client.post(
             "/api/v1/auth/change-password",
-            headers=_auth_headers("1", "user"),
+            headers=_auth_headers("1", "customer"),
             json={"current_password": "WrongPass!", "new_password": "NewPassword123!"},
         )
 
@@ -106,19 +135,20 @@ def test_change_password_updates_hash():
         id=1,
         email="user@example.com",
         full_name="User",
-        role=UserRole.USER,
+        role=UserRole.CUSTOMER,
         is_active=True,
         is_verified=True,
         hashed_password=hash_password("Password123!"),
         reset_token="tok",
         reset_token_expires_at="anything",
         phone_number=None,
+        state=None,
     )
 
     with _client_with_user(user) as client:
         res = client.post(
             "/api/v1/auth/change-password",
-            headers=_auth_headers("1", "user"),
+            headers=_auth_headers("1", "customer"),
             json={"current_password": "Password123!", "new_password": "NewPassword123!"},
         )
 
@@ -134,7 +164,7 @@ def test_delete_me_deactivates_account():
         id=1,
         email="user@example.com",
         full_name="User",
-        role=UserRole.USER,
+        role=UserRole.CUSTOMER,
         is_active=True,
         is_verified=True,
         hashed_password=hash_password("Password123!"),
@@ -143,10 +173,11 @@ def test_delete_me_deactivates_account():
         verification_token="v_tok",
         verification_token_expires_at="v_anything",
         phone_number=None,
+        state=None,
     )
 
     with _client_with_user(user) as client:
-        res = client.delete("/api/v1/auth/delete-me", headers=_auth_headers("1", "user"))
+        res = client.delete("/api/v1/auth/delete-me", headers=_auth_headers("1", "customer"))
 
     assert res.status_code == 200
     assert res.json()["message"] == "Account deleted successfully"

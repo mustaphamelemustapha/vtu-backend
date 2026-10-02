@@ -162,6 +162,7 @@ def ensure_tables():
     if not settings.auto_create_tables:
         _bootstrap_admins()
         _ensure_user_phone_column()
+        _ensure_user_state_column()
         _ensure_user_security_pin_columns()
         _ensure_transaction_recipient_column()
         _ensure_data_plan_provider_columns()
@@ -192,6 +193,7 @@ def ensure_tables():
         )
     _bootstrap_admins()
     _ensure_user_phone_column()
+    _ensure_user_state_column()
     _ensure_user_security_pin_columns()
     _ensure_transaction_recipient_column()
     _ensure_data_plan_provider_columns()
@@ -234,6 +236,21 @@ def _ensure_user_phone_column() -> None:
         logging.getLogger(__name__).info("Added users.phone_number column for phone login.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure phone_number column: %s", exc)
+
+
+def _ensure_user_state_column() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("users"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("users")}
+        if "state" in cols:
+            return
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE users ADD COLUMN state VARCHAR(64)"))
+        logging.getLogger(__name__).info("Added users.state column.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure users.state column: %s", exc)
 
 
 def _ensure_user_security_pin_columns() -> None:
