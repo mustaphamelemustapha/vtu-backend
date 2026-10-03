@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     aspfiy_secret_key: str = ""
     aspfiy_base_url: AnyHttpUrl = "https://api-v1.aspfiy.com"
     aspfiy_enabled: bool = False
+    aspfiy_webhook_url: str = "https://vtu-backend-8gsi.onrender.com/api/v1/webhooks/aspfiy"
 
     # Amigo API
     amigo_base_url: AnyHttpUrl

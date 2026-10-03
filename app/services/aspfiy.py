@@ -21,10 +21,8 @@ class AspfiyService:
 
         url = f"{str(settings.aspfiy_base_url).rstrip('/')}/reserve-paga/"
         
-        # Determine a webhook URL
-        webhook_url = f"{settings.frontend_base_url.rstrip('/')}/api/v1/webhooks/aspfiy"
-        if not webhook_url.startswith("https://") and not webhook_url.startswith("http://"):
-            webhook_url = "https://meledata.ng/api/v1/webhooks/aspfiy" # Fallback if dev
+        # Determine a backend webhook URL
+        webhook_url = str(settings.aspfiy_webhook_url or "https://vtu-backend-8gsi.onrender.com/api/v1/webhooks/aspfiy").strip()
             
         payload = {
             "email": email,

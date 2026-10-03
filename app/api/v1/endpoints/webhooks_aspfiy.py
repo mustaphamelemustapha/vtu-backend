@@ -1,69 +1,109 @@
 @router.post("/aspfiy")
 async def aspfiy_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), db: Session = Depends(get_db)):
-    signature = request.headers.get("x-wiaxy-signature")
+    signature = (request.headers.get("x-wiaxy-signature") or request.headers.get("X-Wiaxy-Signature") or "").strip().lower()
     if not signature:
         logger.warning("Aspfiy webhook missing signature")
         raise HTTPException(status_code=401, detail="Missing signature")
         
-    expected_signature = hashlib.md5(settings.aspfiy_secret_key.encode()).hexdigest()
+    expected_signature = hashlib.md5(settings.aspfiy_secret_key.strip().encode()).hexdigest().lower()
     if signature != expected_signature:
         logger.warning("Aspfiy webhook invalid signature")
         raise HTTPException(status_code=401, detail="Invalid signature")
 
     payload = json.loads(raw_body)
-    event = payload.get("event")
+    event = str(payload.get("event") or "").strip().lower()
     
-    # Based on docs: event == PAYMENT_NOTIFIFICATION (spelled like that in docs)
-    # or PAYMENT_NOTIFICATION
-    if event not in ("PAYMENT_NOTIFIFICATION", "PAYMENT_NOTIFICATION"):
-        return {"status": "success", "message": "unhandled event"}
+    # Aspfiy sends payment.success, PAYMENT_NOTIFIFICATION, PAYMENT_NOTIFICATION, etc.
+    allowed_events = ("payment.success", "payment_notifification", "payment_notification", "payment.successful", "paid")
+    if event and not any(allowed in event for allowed in allowed_events):
+        logger.info("Aspfiy webhook: unhandled event '%s'", event)
+        return {"status": "success", "message": f"unhandled event: {event}"}
         
     data = payload.get("data") or {}
-    tx_type = data.get("type")
-    if tx_type != "RESERVED_ACCOUNT_TRANSACTION":
+    tx_type = str(data.get("type") or "").strip().upper()
+    if tx_type and "TRANSFER" in tx_type and "RESERVED" not in tx_type:
         return {"status": "success", "message": "unhandled transaction type"}
         
-    merchant_reference = data.get("merchant_reference")
-    amount = Decimal(str(data.get("amount", 0)))
-    reference = data.get("reference") or f"asp_{secrets.token_hex(6)}"
-    
-    if not merchant_reference:
-        return {"status": "error", "message": "missing merchant_reference"}
-        
-    # The merchant_reference is our customer_reference (e.g., AXISVTU_<user_id>_aspfiy_...)
-    account = db.query(VirtualAccount).filter(
-        VirtualAccount.customer_reference == merchant_reference,
-        VirtualAccount.provider == VirtualAccountProvider.ASPFIY
-    ).first()
-    
+    merchant_reference = (
+        data.get("merchant_reference")
+        or data.get("merchantReference")
+        or payload.get("merchant_reference")
+        or payload.get("merchantReference")
+    )
+    amount = Decimal(str(data.get("amount") or payload.get("amount") or 0))
+    reference = (
+        data.get("reference")
+        or data.get("payment_reference")
+        or data.get("aspfiy_ref")
+        or payload.get("reference")
+        or f"asp_{secrets.token_hex(6)}"
+    )
+
+    account_data = data.get("account") if isinstance(data.get("account"), dict) else {}
+    customer_data = data.get("customer") if isinstance(data.get("customer"), dict) else {}
+
+    acc_num = str(
+        account_data.get("account_number")
+        or data.get("account_number")
+        or data.get("paid_into")
+        or data.get("accountNumber")
+        or ""
+    ).strip()
+
+    cust_email = str(
+        customer_data.get("email")
+        or data.get("email")
+        or payload.get("email")
+        or ""
+    ).strip().lower()
+
+    account = None
+    # 1. Match by customer_reference
+    if merchant_reference:
+        account = db.query(VirtualAccount).filter(
+            VirtualAccount.customer_reference == merchant_reference,
+            VirtualAccount.provider == VirtualAccountProvider.ASPFIY
+        ).first()
+
+    # 2. Match by account_number
+    if not account and acc_num:
+        account = db.query(VirtualAccount).filter(
+            VirtualAccount.account_number == acc_num,
+            VirtualAccount.provider == VirtualAccountProvider.ASPFIY
+        ).first()
+
     user = None
     if account:
         user = db.query(User).filter(User.id == account.user_id).first()
-    else:
-        # Fallback: match directly from merchant_reference pattern (AXISVTU_<user_id>_aspfiy_...)
-        if merchant_reference and merchant_reference.startswith("AXISVTU_"):
-            parts = merchant_reference.split("_")
-            if len(parts) >= 2 and parts[1].isdigit():
-                user = db.query(User).filter(User.id == int(parts[1])).first()
-                if user:
-                    logger.info("Aspfiy webhook: matched user %s directly from merchant_reference %s", user.id, merchant_reference)
-                    acc_num = data.get("account_number") or data.get("accountNumber") or ""
-                    account = VirtualAccount(
-                        user_id=user.id,
-                        provider=VirtualAccountProvider.ASPFIY,
-                        account_number=str(acc_num).strip(),
-                        account_name=user.full_name or "Mele Data Customer",
-                        bank_name="Paga",
-                        bank_code="000",
-                        customer_reference=merchant_reference,
-                        reservation_reference=merchant_reference,
-                        status=VirtualAccountStatus.ACTIVE,
-                    )
-                    db.add(account)
-                    db.commit()
+    
+    # 3. Match from merchant_reference pattern (AXISVTU_<user_id>_aspfiy_...)
+    if not user and merchant_reference and merchant_reference.startswith("AXISVTU_"):
+        parts = merchant_reference.split("_")
+        if len(parts) >= 2 and parts[1].isdigit():
+            user = db.query(User).filter(User.id == int(parts[1])).first()
+
+    # 4. Match from customer email in payload
+    if not user and cust_email:
+        user = db.query(User).filter(User.email == cust_email).first()
+
+    if user and not account:
+        logger.info("Aspfiy webhook: matched user %s; creating virtual account record", user.id)
+        account = VirtualAccount(
+            user_id=user.id,
+            provider=VirtualAccountProvider.ASPFIY,
+            account_number=acc_num or "paga",
+            account_name=user.full_name or "Mele Data Customer",
+            bank_name="Paga",
+            bank_code="000",
+            customer_reference=merchant_reference or f"AXISVTU_{user.id}_aspfiy_paga",
+            reservation_reference=reference,
+            status=VirtualAccountStatus.ACTIVE,
+        )
+        db.add(account)
+        db.commit()
 
     if not user:
-        logger.error(f"Aspfiy webhook: account/user not found for reference {merchant_reference}")
+        logger.error("Aspfiy webhook: account/user not found for ref=%s acc=%s email=%s", merchant_reference, acc_num, cust_email)
         return {"status": "error", "message": "account not found"}
         
     # Idempotency check
