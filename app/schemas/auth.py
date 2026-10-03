@@ -78,7 +78,7 @@ class RefreshRequest(BaseModel):
 
 
 class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
+    phone_number: str
 
 
 class ForgotPasswordResponse(BaseModel):
@@ -87,7 +87,8 @@ class ForgotPasswordResponse(BaseModel):
 
 
 class ResetPasswordRequest(BaseModel):
-    token: str
+    phone_number: str
+    otp: str
     new_password: str
 
     _password_len = validator("new_password", allow_reuse=True)(_validate_password_length)

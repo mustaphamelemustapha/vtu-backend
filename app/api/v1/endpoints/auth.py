@@ -169,22 +169,30 @@ def refresh(request: Request, payload: RefreshRequest, db: Session = Depends(get
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
 @limiter.limit("5/minute")
 def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == payload.email).first()
+    user = db.query(User).filter(User.phone_number == payload.phone_number).first()
     reset_token = None
     if user:
-        reset_token = secrets.token_urlsafe(32)
+        # Generate 6-digit numeric OTP
+        import random
+        reset_token = str(random.randint(100000, 999999))
         user.reset_token = reset_token
-        user.reset_token_expires_at = _utcnow() + timedelta(hours=2)
+        user.reset_token_expires_at = _utcnow() + timedelta(minutes=15)
         db.commit()
-        # Send email only when the user exists. Response stays generic either way.
         try:
-            send_password_reset_email(user.email, reset_token)
+            # Send OTP via Termii
+            from app.services.termii_service import send_termii_sms
+            message = f"Your MELE DATA password reset code is {reset_token}. It expires in 15 minutes."
+            
+            # Use international format if not already
+            phone = user.phone_number
+            if phone.startswith('0'):
+                phone = '234' + phone[1:]
+                
+            send_termii_sms(phone, message)
         except Exception as exc:
-            # Avoid leaking provider failures in the API response; log for ops/debugging.
             logger.warning(
-                "Password reset email send failed to=%s provider=%s error=%s",
-                _mask_email(user.email),
-                settings.email_provider,
+                "Password reset SMS send failed to=%s provider=termii error=%s",
+                user.phone_number,
                 exc,
             )
 
@@ -199,7 +207,10 @@ def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Sessio
 @router.post("/reset-password", response_model=Message)
 @limiter.limit("10/minute")
 def reset_password(request: Request, payload: ResetPasswordRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.reset_token == payload.token).first()
+    user = db.query(User).filter(
+        User.phone_number == payload.phone_number,
+        User.reset_token == payload.otp
+    ).first()
     if not user or not user.reset_token_expires_at:
         raise HTTPException(status_code=400, detail="Invalid or expired token")
     if _as_utc(user.reset_token_expires_at) < _utcnow():
