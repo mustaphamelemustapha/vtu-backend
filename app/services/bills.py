@@ -679,9 +679,26 @@ class VTPassBillsProvider:
 
 class ClubKonnectBillsProvider:
     def __init__(self):
+        import os
         self.base_url = _normalize_clubkonnect_base_url(str(settings.clubkonnect_base_url or ""))
-        self.user_id = str(settings.nello_user_id or settings.clubkonnect_user_id or "").strip()
-        self.api_key = str(settings.nello_api_key or settings.clubkonnect_api_key or "").strip()
+        self.user_id = str(
+            settings.nello_user_id 
+            or settings.clubkonnect_user_id 
+            or os.environ.get("CLUBKONNECT_USER_ID", "")
+            or os.environ.get("CLUB_KONNECT_USER_ID", "")
+            or os.environ.get("CLUBKONNECT_USERID", "")
+            or os.environ.get("NELLO_USER_ID", "")
+            or ""
+        ).strip()
+        self.api_key = str(
+            settings.nello_api_key 
+            or settings.clubkonnect_api_key 
+            or os.environ.get("CLUBKONNECT_API_KEY", "")
+            or os.environ.get("CLUB_KONNECT_API_KEY", "")
+            or os.environ.get("CLUBKONNECT_KEY", "")
+            or os.environ.get("NELLO_API_KEY", "")
+            or ""
+        ).strip()
         self.timeout = settings.clubkonnect_timeout_seconds
 
     def _callback_url(self) -> str:
@@ -705,7 +722,7 @@ class ClubKonnectBillsProvider:
 
     def _request(self, endpoint: str, params: dict) -> dict:
         if not self.user_id or not self.api_key:
-            raise RuntimeError("ClubKonnect credentials are missing.")
+            raise RuntimeError("ClubKonnect credentials are missing (UserID or APIKey).")
         payload = {
             **(params or {}),
             "UserID": self.user_id,
@@ -713,7 +730,7 @@ class ClubKonnectBillsProvider:
         }
         url = f"{self.base_url}{endpoint.lstrip('/')}"
         try:
-            with httpx.Client(timeout=self.timeout) as client:
+            with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
                 res = client.get(url, params=payload)
         except Exception as exc:
             raise RuntimeError(f"ClubKonnect network error: {exc}") from exc
@@ -726,15 +743,26 @@ class ClubKonnectBillsProvider:
     def get_balance(self) -> float | str:
         try:
             res = self._request("APIWalletBalanceV1.asp", {})
+            status_val = str(res.get("status") or "").upper()
+            if status_val in ("INVALID_CREDENTIALS", "MISSING_CREDENTIALS", "FAILED", "ERROR"):
+                msg = res.get("message") or status_val
+                logger.error(f"ClubKonnect get_balance failed: {msg}")
+                return f"CK Error: {msg}"
+
             raw_bal = ""
-            if "Balance" in res:
-                raw_bal = str(res["Balance"])
-            elif "balance" in res:
-                raw_bal = str(res["balance"])
-            
+            for k, v in res.items():
+                if "bal" in k.lower():
+                    raw_bal = str(v)
+                    break
+            if not raw_bal and "amount" in res:
+                raw_bal = str(res["amount"])
+
             if raw_bal:
                 bal = "".join(c for c in raw_bal if c.isdigit() or c == ".")
                 return float(bal) if bal else 0.0
+
+            if status_val:
+                return f"CK Error: {status_val}"
             return 0.0
         except Exception as e:
             logger.error(f"ClubKonnect get_balance error: {e}")

@@ -186,24 +186,46 @@ def get_finance_overview(
     assets_list = []
     total_assets = Decimal("0.0")
     try:
-        from app.services.bills import get_bills_provider
-        from app.services.amigo import AmigoService
-        from app.services.clubkonnect import ClubKonnect
+        from app.providers.smeplug_provider import SMEPlugProvider
+        from app.services.amigo import AmigoClient
+        from app.services.bills import ClubKonnectBillsProvider
         
-        provider = get_bills_provider()
-        sme_bal = provider.get_balance()
-        assets_list.append({"name": "SMEPlug", "balance": float(sme_bal), "type": "PROVIDER_WALLET"})
-        total_assets += Decimal(str(sme_bal))
-        
-        amigo = AmigoService()
-        amigo_bal = amigo.get_balance()
-        assets_list.append({"name": "Amigo", "balance": float(amigo_bal), "type": "PROVIDER_WALLET"})
-        total_assets += Decimal(str(amigo_bal))
-        
-        club = ClubKonnect()
-        club_bal = club.get_balance()
-        assets_list.append({"name": "ClubKonnect", "balance": float(club_bal), "type": "PROVIDER_WALLET"})
-        total_assets += Decimal(str(club_bal))
+        # 1. SMEPlug
+        try:
+            sme = SMEPlugProvider()
+            sme_bal = sme.get_balance()
+            if isinstance(sme_bal, (int, float)):
+                assets_list.append({"name": "SMEPlug", "balance": float(sme_bal), "type": "PROVIDER_WALLET"})
+                total_assets += Decimal(str(sme_bal))
+            else:
+                assets_list.append({"name": "SMEPlug", "balance": 0.0, "type": "ERROR", "error": str(sme_bal)})
+        except Exception as e:
+            assets_list.append({"name": "SMEPlug", "balance": 0.0, "type": "ERROR", "error": str(e)})
+
+        # 2. Amigo
+        try:
+            amigo = AmigoClient()
+            amigo_bal = amigo.get_balance()
+            if isinstance(amigo_bal, (int, float)):
+                assets_list.append({"name": "Amigo", "balance": float(amigo_bal), "type": "PROVIDER_WALLET"})
+                total_assets += Decimal(str(amigo_bal))
+            else:
+                assets_list.append({"name": "Amigo", "balance": 0.0, "type": "ERROR", "error": str(amigo_bal)})
+        except Exception as e:
+            assets_list.append({"name": "Amigo", "balance": 0.0, "type": "ERROR", "error": str(e)})
+
+        # 3. ClubKonnect
+        try:
+            club = ClubKonnectBillsProvider()
+            club_bal = club.get_balance()
+            if isinstance(club_bal, (int, float)):
+                assets_list.append({"name": "ClubKonnect", "balance": float(club_bal), "type": "PROVIDER_WALLET"})
+                total_assets += Decimal(str(club_bal))
+            else:
+                assets_list.append({"name": "ClubKonnect", "balance": 0.0, "type": "ERROR", "error": str(club_bal)})
+        except Exception as e:
+            assets_list.append({"name": "ClubKonnect", "balance": 0.0, "type": "ERROR", "error": str(e)})
+
     except Exception as e:
         logger.warning(f"Could not fetch live provider balances: {e}")
         assets_list.append({"name": "Live Balances", "balance": 0.0, "type": "ERROR", "error": str(e)})
