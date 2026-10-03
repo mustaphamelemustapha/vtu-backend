@@ -689,7 +689,7 @@ class ClubKonnectBillsProvider:
             or os.environ.get("CLUBKONNECT_USERID", "")
             or os.environ.get("NELLO_USER_ID", "")
             or ""
-        ).strip()
+        ).strip().strip("'\"")
         self.api_key = str(
             settings.nello_api_key 
             or settings.clubkonnect_api_key 
@@ -698,7 +698,7 @@ class ClubKonnectBillsProvider:
             or os.environ.get("CLUBKONNECT_KEY", "")
             or os.environ.get("NELLO_API_KEY", "")
             or ""
-        ).strip()
+        ).strip().strip("'\"")
         self.timeout = settings.clubkonnect_timeout_seconds
 
     def _callback_url(self) -> str:
@@ -742,6 +742,7 @@ class ClubKonnectBillsProvider:
 
     def get_balance(self) -> float | str:
         try:
+            logger.info("Checking ClubKonnect balance with UserID prefix='%s...' (len=%d), APIKey len=%d", self.user_id[:4] if self.user_id else "", len(self.user_id), len(self.api_key))
             res = self._request("APIWalletBalanceV1.asp", {})
             status_val = str(res.get("status") or "").upper()
             if status_val in ("INVALID_CREDENTIALS", "MISSING_CREDENTIALS", "FAILED", "ERROR"):
