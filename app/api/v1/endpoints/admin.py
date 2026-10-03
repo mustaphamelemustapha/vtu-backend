@@ -1913,6 +1913,8 @@ def get_data_plans(admin=Depends(require_admin), db: Session = Depends(get_db)):
             "fallback_provider": getattr(p, "fallback_provider", None),
             "fallback_provider_plan_id": getattr(p, "fallback_provider_plan_id", None),
             "data_type": getattr(p, "data_type", None),
+            "dispatch_count": int(getattr(p, "dispatch_count", 1) or 1),
+            "dispatch_plan_id": getattr(p, "dispatch_plan_id", None),
         })
     return result
 
