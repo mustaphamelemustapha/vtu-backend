@@ -26,6 +26,10 @@ class DataPlan(Base, TimestampMixin):
     fallback_provider_plan_id = Column(String(64), nullable=True, index=True)
     data_type = Column(String(64), nullable=True, index=True)
 
+    # Multi-dispatch / Bundle Splitting (e.g. 10GB = 2 x 5GB)
+    dispatch_count = Column(Integer, default=1, nullable=False, server_default="1")
+    dispatch_plan_id = Column(String(64), nullable=True, default=None)
+
     # Marketing/Promotion Fields
     promo_active = Column(Boolean, default=False, nullable=False)
     promo_old_price = Column(Numeric(12, 2), nullable=True, default=None)

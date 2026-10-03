@@ -2036,6 +2036,21 @@ def update_data_plan(
         plan.data_type = payload.data_type
         changes["data_type"] = payload.data_type
 
+    # Multi-dispatch / Bundle Splitting
+    if payload.dispatch_count is not None:
+        if payload.dispatch_count < 1:
+            raise HTTPException(status_code=400, detail="dispatch_count must be at least 1")
+        plan.dispatch_count = payload.dispatch_count
+        changes["dispatch_count"] = payload.dispatch_count
+
+    if payload.clear_dispatch_plan_id:
+        if plan.dispatch_plan_id is not None:
+            plan.dispatch_plan_id = None
+            changes["dispatch_plan_id"] = None
+    elif payload.dispatch_plan_id is not None:
+        plan.dispatch_plan_id = payload.dispatch_plan_id
+        changes["dispatch_plan_id"] = payload.dispatch_plan_id
+
     if not changes:
         return {
             "status": "no_change",
@@ -2168,7 +2183,9 @@ def create_data_plan(payload: DataPlanUpdate, admin: User = Depends(require_admi
         promo_old_price=payload.promo_old_price,
         promo_label=payload.promo_label,
         cashback_amount=payload.cashback_amount,
-        cashback_label=payload.cashback_label
+        cashback_label=payload.cashback_label,
+        dispatch_count=payload.dispatch_count if payload.dispatch_count is not None and payload.dispatch_count >= 1 else 1,
+        dispatch_plan_id=payload.dispatch_plan_id
     )
     db.add(plan)
     db.commit()

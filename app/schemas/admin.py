@@ -184,6 +184,11 @@ class DataPlanUpdate(BaseModel):
     data_type: Optional[str] = None
     clear_data_type: bool = False
 
+    # Multi-dispatch / Bundle Splitting
+    dispatch_count: Optional[int] = None
+    dispatch_plan_id: Optional[str] = None
+    clear_dispatch_plan_id: bool = False
+
 
 class AdminDataPlanOut(BaseModel):
     id: int
@@ -201,6 +206,8 @@ class AdminDataPlanOut(BaseModel):
     fallback_provider: Optional[str] = None
     fallback_provider_plan_id: Optional[str] = None
     data_type: Optional[str] = None
+    dispatch_count: int = 1
+    dispatch_plan_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     promo_active: bool = False

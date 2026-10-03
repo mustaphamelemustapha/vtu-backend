@@ -518,6 +518,9 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
     plan_fallback_provider = str(plan.fallback_provider or "").strip().lower() if plan.fallback_provider and plan.fallback_provider.lower() != "none" else None
     plan_fallback_provider_plan_id = plan.fallback_provider_plan_id
     
+    plan_dispatch_count = int(getattr(plan, "dispatch_count", 1) or 1)
+    plan_dispatch_plan_id = getattr(plan, "dispatch_plan_id", None)
+
     db.close()
 
     # 3. ROUTE TO PROVIDER
@@ -526,7 +529,8 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
     
     start_time = time.time()
 
-    def _execute_provider(p_name, p_plan_id):
+    def _execute_provider(p_name, p_plan_id, p_ref=None):
+        target_ref = p_ref or reference
         p_res = {"status": "pending", "error": "Provider routing failed"}
         tx_provider = p_name
         try:
@@ -534,7 +538,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                 sme = SMEPlugProvider()
                 sme_network_map = {"mtn": 1, "airtel": 2, "9mobile": 3, "glo": 4}
                 net_id = sme_network_map.get(network_key, 2)
-                p_res = sme.purchase_network_data(net_id, phone, p_plan_id or plan_plan_code, reference)
+                p_res = sme.purchase_network_data(net_id, phone, p_plan_id or plan_plan_code, target_ref)
                 tx_provider = "smeplug"
 
             elif p_name == "autosync":
@@ -543,7 +547,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                     network=network_key, 
                     phone=phone, 
                     plan_id=p_plan_id or plan_plan_code, 
-                    client_request_id=reference,
+                    client_request_id=target_ref,
                     data_type=getattr(plan, "data_type", "Gifting")
                 )
                 tx_provider = "autosync"
@@ -552,7 +556,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                 mzdata = MZDataProvider()
                 mzdata_network_map = {"mtn": 1, "airtel": 2, "glo": 3, "9mobile": 4}
                 net_id = mzdata_network_map.get(network_key, 1)
-                p_res = mzdata.purchase_network_data(net_id, phone, p_plan_id or plan_plan_code, reference)
+                p_res = mzdata.purchase_network_data(net_id, phone, p_plan_id or plan_plan_code, target_ref)
                 tx_provider = "mzdata"
 
             elif p_name == "amigo" or (not p_name and network_key in {"mtn", "glo", "airtel", "9mobile"}):
@@ -566,7 +570,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                 }
                 tx_provider = "amigo"
                 try:
-                    res = amigo.purchase_data(amigo_payload, idempotency_key=reference)
+                    res = amigo.purchase_data(amigo_payload, idempotency_key=target_ref)
                     if res.get("success") or str(res.get("status")).lower() in {"delivered", "success", "successful"}:
                         p_res = {"status": "success", "provider_reference": str(res.get("reference") or "")}
                     elif str(res.get("status")).lower() in {"pending", "processing"}:
@@ -576,17 +580,17 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                 except AmigoApiError as e:
                     err_msg = str(e)
                     if _is_ambiguous_provider_error(e):
-                        logger.warning("Amigo reported ambiguous error for reference %s. Marking as pending for safety: %s", reference, err_msg)
+                        logger.warning("Amigo reported ambiguous error for reference %s. Marking as pending for safety: %s", target_ref, err_msg)
                         p_res = {"status": "pending", "error": err_msg}
                     else:
-                        logger.warning("Amigo reported hard failure for reference %s. Failing immediately: %s", reference, err_msg)
+                        logger.warning("Amigo reported hard failure for reference %s. Failing immediately: %s", target_ref, err_msg)
                         p_res = {"status": "failed", "error": err_msg}
 
             elif p_name == "clubkonnect" or (not p_name and network_key == "9mobile"):
                 from app.services.bills import ClubKonnectBillsProvider
                 bills = ClubKonnectBillsProvider()
                 tx_provider = "clubkonnect"
-                res = bills.purchase_data(network_key, phone, p_plan_id or plan_plan_code, amount=float(price), request_id=reference)
+                res = bills.purchase_data(network_key, phone, p_plan_id or plan_plan_code, amount=float(price), request_id=target_ref)
                 if res.ok:
                     p_res = {"status": "success", "provider_reference": res.external_reference}
                 elif res.is_pending:
@@ -596,7 +600,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                     
             elif network_key == "airtel":
                 sme = SMEPlugProvider()
-                p_res = sme.purchase_network_data(2, phone, p_plan_id or plan_plan_code, reference)
+                p_res = sme.purchase_network_data(2, phone, p_plan_id or plan_plan_code, target_ref)
                 tx_provider = "smeplug"
 
             else:
@@ -611,16 +615,76 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                 
         return p_res, tx_provider
 
-    provider_res, transaction_provider = _execute_provider(plan_provider, plan_provider_plan_id)
-    
-    # Fallback Routing
-    if provider_res.get("status") == "failed" and plan_fallback_provider:
-        logger.warning(f"Primary provider {plan_provider} failed for {reference} ({provider_res.get('error')}). Routing to fallback: {plan_fallback_provider}")
-        # Optionally append a suffix to reference so the second provider doesn't treat it as duplicate if it's the same provider
-        # But we'll just use the same reference as it's a completely different provider API.
-        provider_res, transaction_provider = _execute_provider(plan_fallback_provider, plan_fallback_provider_plan_id)
-        # We also need to remember the fallback plan id so we can update the transaction record
-        plan_provider_plan_id = plan_fallback_provider_plan_id or plan_plan_code
+    is_multi_dispatch = bool(plan_dispatch_count > 1)
+    partial_refund_amount = Decimal("0")
+    success_parts_count = 0
+
+    if not is_multi_dispatch:
+        # 1. Standard Single Dispatch
+        provider_res, transaction_provider = _execute_provider(plan_provider, plan_provider_plan_id, reference)
+        
+        # Fallback Routing
+        if provider_res.get("status") == "failed" and plan_fallback_provider:
+            logger.warning(f"Primary provider {plan_provider} failed for {reference} ({provider_res.get('error')}). Routing to fallback: {plan_fallback_provider}")
+            provider_res, transaction_provider = _execute_provider(plan_fallback_provider, plan_fallback_provider_plan_id, reference)
+            plan_provider_plan_id = plan_fallback_provider_plan_id or plan_plan_code
+    else:
+        # 2. Multi-Dispatch / Bundle Splitting Engine
+        logger.info(
+            "Executing Multi-Dispatch (%d parts) for %s (ref=%s) to %s",
+            plan_dispatch_count, plan_plan_name, reference, phone
+        )
+        sub_plan_id = plan_dispatch_plan_id or plan_provider_plan_id
+        dispatch_results = []
+        providers_used = []
+        
+        for idx in range(plan_dispatch_count):
+            if idx > 0:
+                time.sleep(1.5)  # Buffer to prevent duplicate rejection by provider
+            part_ref = f"{reference}_p{idx+1}"
+            sub_res, sub_prov = _execute_provider(plan_provider, sub_plan_id, part_ref)
+            
+            # Sub-part fallback routing
+            if sub_res.get("status") == "failed" and plan_fallback_provider:
+                fallback_sub_id = plan_fallback_provider_plan_id or sub_plan_id
+                logger.warning(
+                    "Multi-dispatch part %d/%d failed with %s; falling back to %s",
+                    idx + 1, plan_dispatch_count, plan_provider, plan_fallback_provider
+                )
+                sub_res, sub_prov = _execute_provider(plan_fallback_provider, fallback_sub_id, part_ref)
+                
+            dispatch_results.append(sub_res)
+            providers_used.append(sub_prov)
+            
+        success_parts = [r for r in dispatch_results if r.get("status") == "success"]
+        pending_parts = [r for r in dispatch_results if r.get("status") == "pending"]
+        failed_parts = [r for r in dispatch_results if r.get("status") == "failed"]
+        success_parts_count = len(success_parts)
+        
+        all_ext_refs = [str(r.get("provider_reference")) for r in dispatch_results if r.get("provider_reference")]
+        combined_ext_ref = ", ".join(all_ext_refs) if all_ext_refs else None
+        transaction_provider = providers_used[0] if providers_used else plan_provider
+
+        if len(success_parts) == plan_dispatch_count:
+            # All parts delivered successfully
+            provider_res = {"status": "success", "provider_reference": combined_ext_ref}
+        elif len(failed_parts) == plan_dispatch_count:
+            # All parts failed
+            first_err = failed_parts[0].get("error") if failed_parts else "All dispatch parts failed"
+            provider_res = {"status": "failed", "error": first_err}
+        elif len(pending_parts) > 0 and len(failed_parts) == 0:
+            # At least one succeeded or pending, none definitively failed
+            provider_res = {"status": "pending", "provider_reference": combined_ext_ref}
+        else:
+            # Partial success: some succeeded, some failed
+            failed_ratio = Decimal(str(len(failed_parts))) / Decimal(str(plan_dispatch_count))
+            partial_refund_amount = (price * failed_ratio).quantize(Decimal("0.01"))
+            provider_res = {
+                "status": "partial_success",
+                "provider_reference": combined_ext_ref,
+                "partial_info": f"{len(success_parts)}/{plan_dispatch_count} delivered",
+                "failed_count": len(failed_parts),
+            }
 
     duration_ms = (time.time() - start_time) * 1000
     
@@ -637,27 +701,57 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
 
         # 4. HANDLE RESULT
         final_status = provider_res.get("status", "pending")
-        transaction.status = TransactionStatus.SUCCESS if final_status == "success" else (TransactionStatus.FAILED if final_status == "failed" else TransactionStatus.PENDING)
-        transaction.external_reference = provider_res.get("provider_reference")
         
-        if final_status == "failed":
+        if final_status == "partial_success":
+            # Partial delivery: mark SUCCESS with details and auto-refund the failed portion
+            transaction.status = TransactionStatus.SUCCESS
+            transaction.external_reference = provider_res.get("provider_reference")
+            transaction.failure_reason = f"Partial delivery: {provider_res.get('partial_info')}. ₦{partial_refund_amount:,.2f} refunded."
+            if partial_refund_amount > Decimal("0"):
+                credit_wallet(
+                    db2, 
+                    wallet, 
+                    partial_refund_amount, 
+                    f"{reference}_partial_refund", 
+                    f"Partial Refund: {provider_res.get('failed_count')}/{plan_dispatch_count} parts of {plan_plan_name} failed"
+                )
+            final_status = "success"  # User response status
+            
+        elif final_status == "failed":
             transaction.failure_reason = _safe_reason(provider_res.get("error"))
             credit_wallet(db2, wallet, price, reference, f"Refund: {plan_plan_name} purchase failed")
             transaction.status = TransactionStatus.REFUNDED
+            
+        elif final_status == "success":
+            transaction.status = TransactionStatus.SUCCESS
+            transaction.external_reference = provider_res.get("provider_reference")
+            
+        else:
+            transaction.status = TransactionStatus.PENDING
+            transaction.external_reference = provider_res.get("provider_reference")
 
         db2.commit()
 
         if final_status == "success":
             try:
                 from app.services.referrals import record_referral_data_activity
-                mb_size = _parse_size_gb(plan_data_size) * 1024.0
-                record_referral_data_activity(db2, user=user, tx_type="data", amount=price, data_mb=mb_size)
+                delivered_ratio = Decimal(str(success_parts_count)) / Decimal(str(plan_dispatch_count)) if is_multi_dispatch else Decimal("1")
+                mb_size = float(_parse_size_gb(plan_data_size) * 1024.0 * float(delivered_ratio))
+                record_referral_data_activity(db2, user=user, tx_type="data", amount=price - partial_refund_amount, data_mb=mb_size)
                 db2.commit()
             except Exception as ref_exc:
                 logger.error("Failed to record referral activity: %s", ref_exc)
 
         from app.services.push_notification import PushNotificationService
-        if final_status == "success" and fcm_token:
+        if partial_refund_amount > Decimal("0") and fcm_token:
+            PushNotificationService.send_to_token(
+                token=fcm_token,
+                title="Partial Data Delivery & Refund",
+                body=f"{provider_res.get('partial_info')} for {phone}. ₦{partial_refund_amount:,.2f} has been refunded to your wallet.",
+                sound_type="balance_success",
+                data={"type": "transaction", "reference": reference, "status": "partial_success"}
+            )
+        elif final_status == "success" and fcm_token:
             PushNotificationService.send_to_token(
                 token=fcm_token,
                 title="Data Purchase Successful",

@@ -181,6 +181,7 @@ def ensure_tables():
         _ensure_user_profile_image_url_column()
         _ensure_referral_ambassador_columns()
         _ensure_aspfiy_enum()
+        _ensure_data_plan_dispatch_columns()
         return
 
     # Optional local fallback for fresh environments.
@@ -211,6 +212,7 @@ def ensure_tables():
     _ensure_referral_ambassador_columns()
     _ensure_aspfiy_enum()
     _ensure_promo_is_fixed_price_column()
+    _ensure_data_plan_dispatch_columns()
 
 
 @app.on_event("shutdown")
@@ -682,6 +684,30 @@ def _ensure_aspfiy_enum() -> None:
             logging.getLogger(__name__).info("Ensured ASPFIY is in virtualaccountprovider ENUM.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure ASPFIY ENUM: %s", exc)
+
+
+def _ensure_data_plan_dispatch_columns() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("data_plans"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("data_plans")}
+        statements: list[str] = []
+        
+        if "dispatch_count" not in cols:
+            statements.append("ALTER TABLE data_plans ADD COLUMN dispatch_count INTEGER NOT NULL DEFAULT 1")
+        if "dispatch_plan_id" not in cols:
+            statements.append("ALTER TABLE data_plans ADD COLUMN dispatch_plan_id VARCHAR(64)")
+
+        if not statements:
+            return
+
+        with engine.begin() as conn:
+            for statement in statements:
+                conn.execute(text(statement))
+        logging.getLogger(__name__).info("Added data_plans dispatch columns.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure data_plans dispatch columns: %s", exc)
 
 
 @app.get("/healthz")
