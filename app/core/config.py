@@ -183,6 +183,8 @@ class Settings(BaseSettings):
 
     # Ops: bootstrap admin users (comma-separated emails). Useful when the platform
     # doesn't provide a shell/psql access on free plans.
+    bootstrap_admin_emails: Optional[str] = None
+
     # Termii OTP / SMS
     termii_api_key: str = ""
     termii_base_url: str = "https://v4.api.termii.com/"
