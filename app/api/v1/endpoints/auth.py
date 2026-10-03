@@ -18,7 +18,7 @@ from app.schemas.auth import RegisterRequest, LoginRequest, TokenPair, RefreshRe
 from app.schemas.user import UserOut
 from app.dependencies import get_current_user
 from app.services.wallet import get_or_create_wallet
-from app.services.email import send_password_reset_email, send_transaction_pin_reset_email, send_welcome_email
+from app.services.email import send_password_reset_email, send_password_reset_otp_email, send_transaction_pin_reset_email, send_welcome_email
 from app.services.referrals import ensure_user_referral_code, attach_signup_referral
 from app.services.transaction_pin import set_pin
 
@@ -179,20 +179,12 @@ def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Sessio
         user.reset_token_expires_at = _utcnow() + timedelta(minutes=15)
         db.commit()
         try:
-            # Send OTP via Termii
-            from app.services.termii_service import send_termii_sms
-            message = f"Your MELE DATA password reset code is {reset_token}. It expires in 15 minutes."
-            
-            # Use international format if not already
-            phone = user.phone_number
-            if phone.startswith('0'):
-                phone = '234' + phone[1:]
-                
-            send_termii_sms(phone, message)
+            # Send OTP via Email
+            send_password_reset_otp_email(user.email, reset_token)
         except Exception as exc:
             logger.warning(
-                "Password reset SMS send failed to=%s provider=termii error=%s",
-                user.phone_number,
+                "Password reset email send failed to=%s error=%s",
+                user.email,
                 exc,
             )
 
