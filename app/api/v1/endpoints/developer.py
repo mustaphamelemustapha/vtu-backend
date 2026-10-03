@@ -374,15 +374,29 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
             }
         }
 
-    # 2. Plan lookup
+    # 2. Plan lookup (Support numerical ID or System Code)
     network_key = payload.network.strip().lower()
-    plan = db.query(DataPlan).filter(
-        DataPlan.id == plan_id_int,
-        func.lower(DataPlan.network) == network_key,
-        DataPlan.is_active == True
-    ).first()
+    plan = None
+    try:
+        plan_id_int = int(payload.plan_id)
+        plan = db.query(DataPlan).filter(
+            DataPlan.id == plan_id_int,
+            func.lower(DataPlan.network) == network_key,
+            DataPlan.is_active == True
+        ).first()
+    except (ValueError, TypeError):
+        pass
+
     if not plan:
-        raise DeveloperAPIException("Active data plan not found.", 404)
+        plan_code_val = str(payload.plan_id).strip()
+        plan = db.query(DataPlan).filter(
+            DataPlan.plan_code == plan_code_val,
+            func.lower(DataPlan.network) == network_key,
+            DataPlan.is_active == True
+        ).first()
+
+    if not plan:
+        raise DeveloperAPIException("Active data plan not found. Please provide a valid plan ID or system code.", 404)
 
     price = get_price_for_user(db, plan, user.role)
     wallet = get_or_create_wallet(db, user.id)
@@ -418,51 +432,109 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
     tx_id = tx.id
     user_id = user.id
     plan_name = plan.plan_name
+    plan_provider = plan.provider
+    plan_provider_plan_id = plan.provider_plan_id or plan.plan_code
+    plan_fallback_provider = getattr(plan, "fallback_provider", None)
+    plan_fallback_provider_plan_id = getattr(plan, "fallback_provider_plan_id", None)
+    plan_dispatch_count = getattr(plan, "dispatch_count", 1) or 1
+    plan_dispatch_plan_id = getattr(plan, "dispatch_plan_id", None)
+    phone = payload.phone_number.strip()
     db.close()
 
     # 5. Route to Provider
+    def _execute_provider(target_provider, target_plan_id, target_ref):
+        p_res = {"status": "pending", "error": "Provider routing failed"}
+        p_name = str(target_provider or "").strip().lower()
+        try:
+            if p_name in ("smeplug", "sim"):
+                sme = SMEPlugProvider()
+                sme_network_map = {"mtn": 1, "airtel": 2, "9mobile": 3, "glo": 4}
+                net_id = sme_network_map.get(network_key, 2)
+                p_res = sme.purchase_network_data(net_id, phone, target_plan_id, target_ref)
+            elif p_name == "mzdata":
+                mzdata = MZDataProvider()
+                mzdata_network_map = {"mtn": 1, "airtel": 2, "glo": 3, "9mobile": 4}
+                net_id = mzdata_network_map.get(network_key, 1)
+                p_res = mzdata.purchase_network_data(net_id, phone, target_plan_id, target_ref)
+            elif p_name == "amigo" or (not p_name and network_key in {"mtn", "glo", "airtel", "9mobile"}):
+                amigo = AmigoClient()
+                amigo_payload = {
+                    "network": resolve_network_id(network_key),
+                    "mobile_number": phone,
+                    "plan": normalize_plan_code(target_plan_id),
+                    "Ported_number": True
+                }
+                res = amigo.purchase_data(amigo_payload, idempotency_key=target_ref)
+                if res.get("success") or str(res.get("status")).lower() in {"delivered", "success", "successful"}:
+                    p_res = {"status": "success", "provider_reference": str(res.get("reference") or "")}
+                elif str(res.get("status")).lower() in {"pending", "processing"}:
+                    p_res = {"status": "pending", "provider_reference": str(res.get("reference") or "")}
+                else:
+                    p_res = {"status": "failed", "error": res.get("message") or "Amigo reported failure"}
+            elif p_name == "clubkonnect" or (not p_name and network_key == "9mobile"):
+                bills = get_bills_provider()
+                res = bills.purchase_data(network_key, phone, target_plan_id, amount=float(price), request_id=target_ref)
+                if res.ok:
+                    p_res = {"status": "success", "provider_reference": res.external_reference}
+                elif res.is_pending:
+                    p_res = {"status": "pending", "provider_reference": res.external_reference}
+                else:
+                    p_res = {"status": "failed", "error": res.message}
+        except Exception as exc:
+            logger.error("Developer purchase provider call exception: %s", exc)
+            p_res = {"status": "pending", "error": str(exc)}
+        return p_res
+
     provider_res = {"status": "pending", "error": "Provider routing failed"}
+    transaction_provider = plan_provider
+    partial_refund_amount = Decimal("0")
     start_time = time.time()
-    try:
-        provider_name = str(plan.provider or "").strip().lower()
-        phone = payload.phone_number.strip()
-        if provider_name in ("smeplug", "sim"):
-            sme = SMEPlugProvider()
-            sme_network_map = {"mtn": 1, "airtel": 2, "9mobile": 3, "glo": 4}
-            net_id = sme_network_map.get(network_key, 2)
-            provider_res = sme.purchase_network_data(net_id, phone, plan.provider_plan_id or plan.plan_code, client_ref)
-        elif provider_name == "mzdata":
-            mzdata = MZDataProvider()
-            mzdata_network_map = {"mtn": 1, "airtel": 2, "glo": 3, "9mobile": 4}
-            net_id = mzdata_network_map.get(network_key, 1)
-            provider_res = mzdata.purchase_network_data(net_id, phone, plan.provider_plan_id or plan.plan_code, client_ref)
-        elif provider_name == "amigo" or (not provider_name and network_key in {"mtn", "glo", "airtel", "9mobile"}):
-            amigo = AmigoClient()
-            amigo_payload = {
-                "network": resolve_network_id(network_key),
-                "mobile_number": phone,
-                "plan": normalize_plan_code(plan.plan_code),
-                "Ported_number": True
+
+    is_multi_dispatch = bool(plan_dispatch_count > 1)
+    if not is_multi_dispatch:
+        provider_res = _execute_provider(plan_provider, plan_provider_plan_id, client_ref)
+        if provider_res.get("status") == "failed" and plan_fallback_provider:
+            logger.warning(f"Developer primary provider {plan_provider} failed; falling back to {plan_fallback_provider}")
+            provider_res = _execute_provider(plan_fallback_provider, plan_fallback_provider_plan_id or plan_provider_plan_id, client_ref)
+            transaction_provider = plan_fallback_provider
+    else:
+        logger.info(
+            "Executing Developer Multi-Dispatch (%d parts) for %s (ref=%s) to %s",
+            plan_dispatch_count, plan_name, client_ref, phone
+        )
+        sub_plan_id = plan_dispatch_plan_id or plan_provider_plan_id
+        dispatch_results = []
+        for idx in range(plan_dispatch_count):
+            if idx > 0:
+                time.sleep(1.5)
+            part_ref = f"{client_ref}_p{idx+1}"
+            sub_res = _execute_provider(plan_provider, sub_plan_id, part_ref)
+            if sub_res.get("status") == "failed" and plan_fallback_provider:
+                fallback_sub_id = plan_fallback_provider_plan_id or sub_plan_id
+                sub_res = _execute_provider(plan_fallback_provider, fallback_sub_id, part_ref)
+            dispatch_results.append(sub_res)
+
+        success_parts = [r for r in dispatch_results if r.get("status") == "success"]
+        pending_parts = [r for r in dispatch_results if r.get("status") == "pending"]
+        failed_parts = [r for r in dispatch_results if r.get("status") == "failed"]
+        all_ext_refs = [str(r.get("provider_reference")) for r in dispatch_results if r.get("provider_reference")]
+        combined_ext_ref = ", ".join(all_ext_refs) if all_ext_refs else None
+
+        if len(success_parts) == plan_dispatch_count:
+            provider_res = {"status": "success", "provider_reference": combined_ext_ref}
+        elif len(failed_parts) == plan_dispatch_count:
+            first_err = failed_parts[0].get("error") if failed_parts else "All dispatch parts failed"
+            provider_res = {"status": "failed", "error": first_err}
+        elif len(pending_parts) > 0 and len(failed_parts) == 0:
+            provider_res = {"status": "pending", "provider_reference": combined_ext_ref}
+        else:
+            failed_ratio = Decimal(str(len(failed_parts))) / Decimal(str(plan_dispatch_count))
+            partial_refund_amount = (price * failed_ratio).quantize(Decimal("0.01"))
+            provider_res = {
+                "status": "partial_success",
+                "provider_reference": combined_ext_ref,
+                "partial_info": f"{len(success_parts)}/{plan_dispatch_count} delivered",
             }
-            res = amigo.purchase_data(amigo_payload, idempotency_key=client_ref)
-            if res.get("success") or str(res.get("status")).lower() in {"delivered", "success", "successful"}:
-                provider_res = {"status": "success", "provider_reference": str(res.get("reference") or "")}
-            elif str(res.get("status")).lower() in {"pending", "processing"}:
-                provider_res = {"status": "pending", "provider_reference": str(res.get("reference") or "")}
-            else:
-                provider_res = {"status": "failed", "error": res.get("message") or "Amigo reported failure"}
-        elif provider_name == "clubkonnect" or (not provider_name and network_key == "9mobile"):
-            bills = get_bills_provider()
-            res = bills.purchase_data(network_key, phone, plan.provider_plan_id or plan.plan_code, amount=float(price), request_id=client_ref)
-            if res.ok:
-                provider_res = {"status": "success", "provider_reference": res.external_reference}
-            elif res.is_pending:
-                provider_res = {"status": "pending", "provider_reference": res.external_reference}
-            else:
-                provider_res = {"status": "failed", "error": res.message}
-    except Exception as exc:
-        logger.error("Developer purchase exception: %s", exc)
-        provider_res = {"status": "pending", "error": str(exc)}
 
     duration_ms = (time.time() - start_time) * 1000
 
@@ -476,13 +548,22 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
 
         # 6. Update Transaction Status
         final_status = provider_res.get("status", "pending")
-        tx.status = TransactionStatus.SUCCESS if final_status == "success" else (TransactionStatus.FAILED if final_status == "failed" else TransactionStatus.PENDING)
-        tx.external_reference = provider_res.get("provider_reference")
-        
-        if final_status == "failed":
+        if final_status == "success":
+            tx.status = TransactionStatus.SUCCESS
+        elif final_status == "partial_success":
+            tx.status = TransactionStatus.SUCCESS
+            tx.failure_reason = f"Partial delivery: {provider_res.get('partial_info')}"
+            if partial_refund_amount > 0:
+                credit_wallet(db2, wallet, partial_refund_amount, f"{client_ref}_refund", f"Partial Refund ({provider_res.get('partial_info')}): {plan_name}")
+        elif final_status == "failed":
+            tx.status = TransactionStatus.REFUNDED
             tx.failure_reason = str(provider_res.get("error"))[:255]
             credit_wallet(db2, wallet, price, client_ref, f"Refund: {plan_name} API purchase failed")
-            tx.status = TransactionStatus.REFUNDED
+        else:
+            tx.status = TransactionStatus.PENDING
+
+        tx.provider = transaction_provider
+        tx.external_reference = provider_res.get("provider_reference")
         db2.commit()
 
         # 7. Write Log
