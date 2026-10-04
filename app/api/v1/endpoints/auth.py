@@ -169,7 +169,9 @@ def refresh(request: Request, payload: RefreshRequest, db: Session = Depends(get
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
 @limiter.limit("5/minute")
 def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.phone_number == payload.phone_number).first()
+    user = db.query(User).filter(
+        (User.email == payload.identifier) | (User.phone_number == payload.identifier)
+    ).first()
     reset_token = None
     if user:
         # Generate 6-digit numeric OTP
@@ -200,7 +202,7 @@ def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Sessio
 @limiter.limit("10/minute")
 def reset_password(request: Request, payload: ResetPasswordRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(
-        User.phone_number == payload.phone_number,
+        (User.email == payload.identifier) | (User.phone_number == payload.identifier),
         User.reset_token == payload.otp
     ).first()
     if not user or not user.reset_token_expires_at:

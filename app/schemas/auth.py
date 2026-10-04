@@ -78,7 +78,7 @@ class RefreshRequest(BaseModel):
 
 
 class ForgotPasswordRequest(BaseModel):
-    phone_number: str
+    identifier: str
 
 
 class ForgotPasswordResponse(BaseModel):
@@ -87,7 +87,7 @@ class ForgotPasswordResponse(BaseModel):
 
 
 class ResetPasswordRequest(BaseModel):
-    phone_number: str
+    identifier: str
     otp: str
     new_password: str
 
