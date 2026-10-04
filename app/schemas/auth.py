@@ -86,6 +86,11 @@ class ForgotPasswordResponse(BaseModel):
     reset_token: Optional[str] = None
 
 
+class VerifyResetTokenRequest(BaseModel):
+    identifier: str
+    otp: str
+
+
 class ResetPasswordRequest(BaseModel):
     identifier: str
     otp: str

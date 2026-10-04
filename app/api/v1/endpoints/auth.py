@@ -14,7 +14,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.middlewares.rate_limit import limiter
 from app.models import User, UserRole
-from app.schemas.auth import RegisterRequest, LoginRequest, TokenPair, RefreshRequest, Message, ForgotPasswordRequest, ForgotPasswordResponse, ResetPasswordRequest, ChangePasswordRequest, UpdateMeRequest, EmailVerification, LookupRequest, FCMTokenRequest
+from app.schemas.auth import RegisterRequest, LoginRequest, TokenPair, RefreshRequest, Message, ForgotPasswordRequest, ForgotPasswordResponse, ResetPasswordRequest, VerifyResetTokenRequest, ChangePasswordRequest, UpdateMeRequest, EmailVerification, LookupRequest, FCMTokenRequest
 from app.schemas.user import UserOut
 from app.dependencies import get_current_user
 from app.services.wallet import get_or_create_wallet
@@ -196,6 +196,20 @@ def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Sessio
     if env and env != "production" and reset_token:
         return ForgotPasswordResponse(message=message, reset_token=reset_token)
     return ForgotPasswordResponse(message=message)
+
+
+@router.post("/verify-reset-token", response_model=Message)
+@limiter.limit("10/minute")
+def verify_reset_token(request: Request, payload: VerifyResetTokenRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(
+        (User.email == payload.identifier) | (User.phone_number == payload.identifier),
+        User.reset_token == payload.otp
+    ).first()
+    if not user or not user.reset_token_expires_at:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+    if _as_utc(user.reset_token_expires_at) < _utcnow():
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+    return Message(message="Token is valid")
 
 
 @router.post("/reset-password", response_model=Message)
