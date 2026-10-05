@@ -59,6 +59,8 @@ class BoltnetProvider:
         payload = {
             "network": network,
             "mobile_number": phone,
+            "phone": phone,
+            "phone_number": phone,
             "plan": plan_id,
             "Ported_number": True,
             "request_id": client_request_id
@@ -89,7 +91,9 @@ class BoltnetProvider:
         payload = {
             "network": network,
             "mobile_number": phone,
-            "amount": amount,
+            "phone": phone,
+            "phone_number": phone,
+            "amount": int(amount),
             "airtime_type": "VTU",
             "Ported_number": True,
             "request_id": client_request_id
