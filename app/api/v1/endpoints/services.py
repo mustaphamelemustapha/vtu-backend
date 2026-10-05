@@ -71,7 +71,7 @@ def _client_request_reference(prefix: str, user_id: int, request_id: str | None)
 
 def _provider_status(result) -> str:
     meta = result.meta or {}
-    for provider_key in ("vtpass", "clubkonnect"):
+    for provider_key in ("vtpass", "clubkonnect", "autosync"):
         status = str((meta.get(provider_key) or {}).get("status") or "").strip().lower()
         if status:
             return status

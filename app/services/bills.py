@@ -12,6 +12,7 @@ import httpx
 
 from app.core.config import get_settings
 from app.providers.autosync_provider import AutosyncProvider
+from app.providers.boltnet_provider import BoltnetProvider
 
 @dataclass
 class ProviderResult:
@@ -1786,6 +1787,45 @@ class AutosyncBillsProvider:
     def fetch_electricity_discos(self) -> list[dict]:
         return []
 
+class BoltnetBillsProvider:
+    def __init__(self):
+        self.boltnet = BoltnetProvider()
+        self.name = "boltnet"
+
+    def _parse_result(self, res_data: dict, action: str) -> ProviderResult:
+        status_value = str(res_data.get("status") or "").lower()
+        message = str(res_data.get("error") or "Successful")
+        reference = str(res_data.get("provider_reference") or "")
+        meta = res_data.get("meta") or {}
+        meta["boltnet_action"] = action
+            
+        if status_value == "success":
+            return ProviderResult(True, external_reference=reference, message=message, meta=meta)
+        if status_value == "pending":
+            return ProviderResult(False, external_reference=reference, message="Transaction pending", meta=meta, pending=True)
+            
+        return ProviderResult(False, external_reference=reference, message=message, meta=meta)
+
+    def purchase_airtime(self, network: str, phone_number: str, amount: float, reference: str | None = None) -> ProviderResult:
+        network_map = {"mtn": 1, "airtel": 2, "glo": 3, "9mobile": 4}
+        net_id = network_map.get(str(network).lower(), 1)
+        res_data = self.boltnet.purchase_airtime(net_id, phone_number, float(amount), reference or _vtpass_request_id())
+        return self._parse_result(res_data, "airtime")
+
+    def purchase_cable(self, provider: str, smartcard_number: str, plan_code: str, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
+        return ProviderResult(False, message="Cable not supported by Boltnet API via this class.")
+
+    def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
+        return ProviderResult(False, message="Electricity not supported by Boltnet API.")
+
+    def purchase_exam_pin(self, exam: str, quantity: int, phone_number: str | None = None, exam_type: str | None = None) -> ProviderResult:
+        return ProviderResult(False, message="Exam Pins not supported by Boltnet API.")
+
+    def fetch_cable_packages(self, provider: str) -> list[dict]:
+        return []
+        
+    def fetch_electricity_discos(self) -> list[dict]:
+        return []
 
 def get_bills_provider():
     choice = str(settings.bills_provider or "auto").strip().lower()
@@ -1811,6 +1851,11 @@ def get_bills_provider():
         if has_vtpass:
             return VTPassBillsProvider()
         logger.warning("BILLS_PROVIDER=vtpass but VTPASS credentials missing; falling back to mock.")
+        return MockBillsProvider()
+    if choice == "boltnet":
+        if bool(settings.boltnet_api_key):
+            return BoltnetBillsProvider()
+        logger.warning("BILLS_PROVIDER=boltnet but BOLTNET_API_KEY missing; falling back to mock.")
         return MockBillsProvider()
 
     # auto mode

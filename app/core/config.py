@@ -141,6 +141,12 @@ class Settings(BaseSettings):
     autosync_api_key: str = ""
     autosync_webhook_pin: str = ""
 
+    # Boltnet API
+    boltnet_base_url: AnyHttpUrl = "https://boltnet.com.ng"
+    boltnet_api_key: Optional[str] = None
+    boltnet_timeout_seconds: int = 30
+    boltnet_timeout_seconds: int = 30
+
     # MZDATA API
     mzdata_base_url: AnyHttpUrl = "https://mzdata-1.onrender.com/api/v1"
     mzdata_api_key: str = ""
