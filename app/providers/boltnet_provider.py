@@ -67,7 +67,7 @@ class BoltnetProvider:
         }
         
         try:
-            res = self._request("POST", "/data", payload)
+            res = self._request("POST", "/data/", payload)
             if res.get("success") or str(res.get("Status")).lower() in {"delivered", "success", "successful"}:
                 return {"status": "success", "provider_reference": str(res.get("id") or res.get("ident") or "")}
             elif str(res.get("Status")).lower() in {"pending", "processing"}:
@@ -100,7 +100,7 @@ class BoltnetProvider:
         }
         
         try:
-            res = self._request("POST", "/topup", payload)
+            res = self._request("POST", "/topup/", payload)
             if res.get("success") or str(res.get("Status")).lower() in {"delivered", "success", "successful"}:
                 return {"status": "success", "provider_reference": str(res.get("id") or res.get("ident") or ""), "meta": res}
             elif str(res.get("Status")).lower() in {"pending", "processing"}:
