@@ -753,6 +753,84 @@ def autosync_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), 
             
     return "ok"
 
+@router.post("/boltnet")
+def boltnet_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), db: Session = Depends(get_db)):
+    """
+    Boltnet Webhook Handler
+    """
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        return "invalid json"
+        
+    logger.info("Boltnet Webhook received: %s", payload)
+    
+    # Payload should include request_id and ident
+    request_id = payload.get("request_id")
+    ident = payload.get("ident") or payload.get("id")
+    
+    if not request_id:
+        logger.warning("Boltnet Webhook missing request_id")
+        return "error"
+        
+    transaction = db.query(Transaction).filter(Transaction.reference == request_id).first()
+    if not transaction:
+        logger.warning("Boltnet Webhook: Transaction not found for request_id %s", request_id)
+        return "error"
+        
+    if transaction.status in {TransactionStatus.SUCCESS, TransactionStatus.REFUNDED}:
+        logger.info("Boltnet Webhook: Transaction %s already in terminal state %s", request_id, transaction.status)
+        return "ok"
+        
+    status = str(payload.get("Status") or payload.get("status") or "").strip().lower()
+    
+    if status in {"successful", "success", "delivered"}:
+        transaction.status = TransactionStatus.SUCCESS
+        if ident:
+            transaction.external_reference = str(ident)
+            
+        db.commit()
+        
+        try:
+            from app.services.referrals import trigger_referral_data_activity
+            trigger_referral_data_activity(db, transaction)
+            db.commit()
+        except Exception as ref_exc:
+            logger.error("Failed to trigger referral activity in boltnet webhook: %s", ref_exc)
+            
+        logger.info("Boltnet Webhook: Transaction %s marked as SUCCESS", request_id)
+        dispatch_developer_webhook(transaction, transaction.user)
+        
+    elif status in {"failed", "reversed", "declined"}:
+        transaction.status = TransactionStatus.FAILED
+        if ident:
+            transaction.external_reference = str(ident)
+            
+        wallet = get_or_create_wallet(db, transaction.user_id)
+        service_name = getattr(transaction, "tx_type", getattr(TransactionType, "DATA")).name.capitalize()
+        
+        credit_wallet(
+            db, 
+            wallet, 
+            Decimal(transaction.amount), 
+            transaction.reference, 
+            f"Refund for failed Boltnet {service_name} purchase (Ref: {request_id})"
+        )
+        transaction.status = TransactionStatus.REFUNDED
+        db.commit()
+        logger.info("Boltnet Webhook: Transaction %s marked as FAILED and REFUNDED", request_id)
+        dispatch_developer_webhook(transaction, transaction.user)
+        
+        if transaction.user and transaction.user.fcm_token:
+            PushNotificationService.send_push_notification(
+                token=transaction.user.fcm_token,
+                title=f"{service_name} Purchase Failed",
+                body=f"Your {service_name.lower()} purchase failed. Your wallet has been refunded ₦{transaction.amount}.",
+                data={"transaction_id": transaction.id, "type": "refund"}
+            )
+            
+    return "ok"
+
 @router.get("/aspfiy")
 def aspfiy_webhook_health():
     return {"status": "active", "provider": "aspfiy"}
