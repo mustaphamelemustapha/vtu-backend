@@ -17,6 +17,12 @@ logger = logging.getLogger(__name__)
 def _resolve_database_url(database_url: str) -> str:
     if not database_url.startswith("postgresql://"):
         return database_url
+        
+    # Auto-fix Supabase connection string to use transaction mode pooler (port 6543)
+    # instead of session mode (5432) which has a strict limit of 15 connections.
+    if ".pooler.supabase.com" in database_url and ":5432" in database_url:
+        database_url = database_url.replace(":5432", ":6543")
+        
     has_psycopg2 = importlib.util.find_spec("psycopg2") is not None
     has_psycopg3 = importlib.util.find_spec("psycopg") is not None
     if not has_psycopg2 and has_psycopg3:
