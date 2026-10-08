@@ -10,6 +10,8 @@ class DeveloperStatusResponse(BaseModel):
     api_public_key: Optional[str] = None
     has_keys: bool
     api_secret_key: Optional[str] = None
+    test_api_public_key: Optional[str] = None
+    test_api_secret_key: Optional[str] = None
     webhook_url: Optional[str] = None
     webhook_secret_prefix: Optional[str] = None
 
@@ -27,6 +29,8 @@ class DeveloperApplyRequest(BaseModel):
 class ApiKeyResponse(BaseModel):
     api_public_key: str
     api_secret_key: str
+    test_api_public_key: str
+    test_api_secret_key: str
 
 
 from typing import List, Any

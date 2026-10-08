@@ -78,11 +78,14 @@ def get_developer_user(
     token = token.strip()
     is_test_mode = token.startswith("mele_test_")
     lookup_token = token
-    if is_test_mode:
-        # Swap prefix to look up the hash of the user's primary live token
+    if token.startswith("mele_test_pub_"):
+        is_test_mode = True
+        lookup_token = "mele_pub_" + token[len("mele_test_pub_"):]
+    elif token.startswith("mele_test_"):
+        is_test_mode = True
         lookup_token = "mele_live_" + token[len("mele_test_"):]
         
-    if not (token.startswith("MELE_SEC_") or token.startswith("mele_live_") or token.startswith("mele_test_") or token.startswith("mele_pub_")):
+    if not (token.startswith("MELE_SEC_") or token.startswith("mele_live_") or token.startswith("mele_test_") or token.startswith("mele_pub_") or token.startswith("mele_test_pub_")):
         from app.core.exceptions import DeveloperAPIException
         raise DeveloperAPIException("Invalid API key format.", 401)
         
@@ -110,10 +113,14 @@ def get_developer_user(
 @router.get("/status", response_model=DeveloperStatusResponse)
 def get_status(user: User = Depends(get_current_user)):
     secret_prefix = f"{user.webhook_secret[:10]}..." if getattr(user, "webhook_secret", None) else None
+    
+    test_pub = user.api_public_key.replace("mele_pub_", "mele_test_pub_") if user.api_public_key else None
+    
     return {
         "is_developer": user.is_developer,
         "developer_status": user.developer_status,
         "api_public_key": user.api_public_key,
+        "test_api_public_key": test_pub,
         "has_keys": user.api_secret_key_hash is not None,
         "webhook_url": getattr(user, "webhook_url", None),
         "webhook_secret_prefix": secret_prefix
@@ -134,12 +141,17 @@ def apply_developer(payload: DeveloperApplyRequest, user: User = Depends(get_cur
     user.api_secret_key_hash = sec_hash
     db.commit()
     db.refresh(user)
+    test_pub = pub.replace("mele_pub_", "mele_test_pub_")
+    test_sec_plain = sec_plain.replace("mele_live_", "mele_test_")
+    
     return {
         "is_developer": user.is_developer,
         "developer_status": user.developer_status,
         "api_public_key": user.api_public_key,
+        "test_api_public_key": test_pub,
         "has_keys": True,
-        "api_secret_key": sec_plain
+        "api_secret_key": sec_plain,
+        "test_api_secret_key": test_sec_plain
     }
 
 
@@ -152,9 +164,14 @@ def generate_keys(user: User = Depends(get_current_user), db: Session = Depends(
     user.api_public_key = pub
     user.api_secret_key_hash = sec_hash
     db.commit()
+    test_pub = pub.replace("mele_pub_", "mele_test_pub_")
+    test_sec_plain = sec_plain.replace("mele_live_", "mele_test_")
+    
     return {
         "api_public_key": pub,
-        "api_secret_key": sec_plain
+        "api_secret_key": sec_plain,
+        "test_api_public_key": test_pub,
+        "test_api_secret_key": test_sec_plain
     }
 
 
@@ -169,6 +186,7 @@ def revoke_keys(user: User = Depends(get_current_user), db: Session = Depends(ge
         "is_developer": user.is_developer,
         "developer_status": user.developer_status,
         "api_public_key": user.api_public_key,
+        "test_api_public_key": None,
         "has_keys": False,
         "webhook_url": getattr(user, "webhook_url", None),
         "webhook_secret_prefix": secret_prefix
@@ -187,10 +205,13 @@ def configure_webhook(payload: WebhookConfigRequest, user: User = Depends(get_cu
     db.commit()
     db.refresh(user)
     secret_prefix = f"{user.webhook_secret[:10]}..." if getattr(user, "webhook_secret", None) else None
+    test_pub = user.api_public_key.replace("mele_pub_", "mele_test_pub_") if user.api_public_key else None
+    
     return {
         "is_developer": user.is_developer,
         "developer_status": user.developer_status,
         "api_public_key": user.api_public_key,
+        "test_api_public_key": test_pub,
         "has_keys": user.api_secret_key_hash is not None,
         "webhook_url": user.webhook_url,
         "webhook_secret_prefix": secret_prefix
