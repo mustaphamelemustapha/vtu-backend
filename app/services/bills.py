@@ -1851,8 +1851,13 @@ class TelecomAbodeBillsProvider:
         res_data = self.abode.purchase_airtime(network, phone_number, amount, reference or _vtpass_request_id())
         return self._parse_result(res_data, "airtime")
 
+    def purchase_data(self, network: str, phone_number: str, plan_code: str, amount: float | None = None, request_id: str | None = None) -> ProviderResult:
+        res_data = self.abode.purchase_data(network, phone_number, plan_code, request_id or _vtpass_request_id())
+        return self._parse_result(res_data, "data")
+
     def purchase_cable(self, provider: str, smartcard_number: str, plan_code: str, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
-        return ProviderResult(False, message="Cable not supported by Telecom Abode API via this class.")
+        res_data = self.abode.purchase_cable(provider, smartcard_number, plan_code, reference or _vtpass_request_id())
+        return self._parse_result(res_data, "cable")
 
     def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
         return ProviderResult(False, message="Electricity not supported by Telecom Abode API.")

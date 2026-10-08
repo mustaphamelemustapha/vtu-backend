@@ -91,3 +91,63 @@ class TelecomAbodeProvider:
             if any(hint in msg for hint in ambiguous_hints):
                 return {"status": "pending", "error": f"Provider timeout/error: {str(exc)}"}
             return {"status": "failed", "error": str(exc)}
+
+    def purchase_data(self, network: str, phone: str, plan_id: str, request_id: str) -> Dict[str, Any]:
+        if not self.api_key:
+            return {"status": "failed", "error": "Telecom Abode API key is not configured"}
+
+        url = f"{self.base_url}/data"
+        payload = {
+            "network": self._map_network_to_id(network),
+            "phone": str(phone),
+            "plan": str(plan_id),
+            "request-id": str(request_id),
+        }
+
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                response = client.post(url, json=payload, headers=self._get_headers())
+                logger.info("TelecomAbode POST %s network=%s phone=%s status=%d", 
+                            url, network, phone, response.status_code)
+                
+                res_data = self._json_or_none(response) or {}
+                status_value = str(res_data.get("status") or "").lower()
+                inner_status = str(res_data.get("Status") or "").lower()
+                message = str(res_data.get("message") or "")
+                
+                if status_value == "success" or inner_status == "successful":
+                    return {"status": "success", "provider_reference": str(res_data.get("request-id") or request_id), "error": message}
+                elif status_value == "pending" or inner_status == "pending":
+                    return {"status": "pending", "provider_reference": str(res_data.get("request-id") or request_id), "error": message}
+                
+                return {"status": "failed", "provider_reference": str(res_data.get("request-id") or request_id), "error": message or "Data purchase failed"}
+                
+        except Exception as exc:
+            logger.error("TelecomAbode data exception: %s", exc)
+            return {"status": "pending", "error": f"Provider error: {str(exc)}"}
+
+    def purchase_cable(self, provider: str, smartcard: str, plan_code: str, request_id: str) -> Dict[str, Any]:
+        if not self.api_key:
+            return {"status": "failed", "error": "Telecom Abode API key is not configured"}
+            
+        url = f"{self.base_url}/cable"
+        payload = {
+            "cablename": provider.upper(),
+            "smart_card_number": str(smartcard),
+            "cableplan": str(plan_code),
+            "request-id": str(request_id),
+        }
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                response = client.post(url, json=payload, headers=self._get_headers())
+                res_data = self._json_or_none(response) or {}
+                status_value = str(res_data.get("status") or "").lower()
+                message = str(res_data.get("message") or "")
+                
+                if status_value == "success":
+                    return {"status": "success", "provider_reference": str(res_data.get("request-id") or request_id), "error": message}
+                if status_value == "pending":
+                    return {"status": "pending", "provider_reference": str(res_data.get("request-id") or request_id), "error": message}
+                return {"status": "failed", "provider_reference": str(res_data.get("request-id") or request_id), "error": message or "Cable purchase failed"}
+        except Exception as exc:
+            return {"status": "pending", "error": f"Provider error: {str(exc)}"}
