@@ -181,8 +181,8 @@ def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Sessio
         user.reset_token_expires_at = _utcnow() + timedelta(minutes=15)
         db.commit()
         try:
-            # Send OTP via Email
-            send_password_reset_otp_email(user.email, reset_token)
+            # Send Email containing both Magic Link (for old app/web) and OTP (for new app)
+            send_password_reset_email(user.email, reset_token)
         except Exception as exc:
             logger.warning(
                 "Password reset email send failed to=%s error=%s",

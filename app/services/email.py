@@ -89,8 +89,9 @@ def _get_base_email_template(title: str, preheader: str, content: str, action_ur
     """.strip()
 
 
-def _build_reset_email_html(reset_link: str) -> str:
-    content = "<p>Hello,</p><p>We received a request to reset your password. Click the button below to securely choose a new password.</p><p>If you didn't request a password reset, you can safely ignore this email.</p>"
+def _build_reset_email_html(reset_link: str, reset_token: str = "") -> str:
+    token_html = f"<h2 style='text-align: center; font-size: 32px; letter-spacing: 4px; color: #2563eb; background: #f1f5f9; padding: 16px; border-radius: 8px;'>{reset_token}</h2>" if reset_token else ""
+    content = f"<p>Hello,</p><p>We received a request to reset your password. You can either use the verification code below in your app, or click the button to reset it on our website.</p>{token_html}<p>If you didn't request a password reset, you can safely ignore this email.</p>"
     return _get_base_email_template(
         title="Reset your Password",
         preheader="Instructions for resetting your MELE DATA password.",
@@ -140,7 +141,7 @@ def send_password_reset_email(to_email: str, reset_token: str) -> None:
     settings = get_settings()
     reset_link = f"{_resolve_frontend_base_url()}/reset-password?token={reset_token}&flow=password"
     subject = "Reset your MELE DATA password"
-    html = _build_reset_email_html(reset_link)
+    html = _build_reset_email_html(reset_link, reset_token)
     to_email = _sanitize_email(to_email)
 
     provider = (settings.email_provider or "console").lower()
