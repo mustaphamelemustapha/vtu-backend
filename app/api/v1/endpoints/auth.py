@@ -218,10 +218,15 @@ def verify_reset_token(request: Request, payload: VerifyResetTokenRequest, db: S
 @router.post("/reset-password", response_model=Message)
 @limiter.limit("10/minute")
 def reset_password(request: Request, payload: ResetPasswordRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(
-        (User.email == payload.identifier) | (User.phone_number == payload.identifier),
-        User.reset_token == payload.otp
-    ).first()
+    if payload.token:
+        user = db.query(User).filter(User.reset_token == payload.token).first()
+    else:
+        if not payload.identifier or not payload.otp:
+            raise HTTPException(status_code=400, detail="Must provide either token, or identifier and otp")
+        user = db.query(User).filter(
+            (User.email == payload.identifier) | (User.phone_number == payload.identifier),
+            User.reset_token == payload.otp
+        ).first()
     if not user or not user.reset_token_expires_at:
         raise HTTPException(status_code=400, detail="Invalid or expired token")
     if _as_utc(user.reset_token_expires_at) < _utcnow():
