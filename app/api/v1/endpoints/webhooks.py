@@ -188,13 +188,15 @@ def smeplug_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), d
         }
     }
     """
-    # Optional webhook token validation (supports either bearer auth or x-webhook-token).
+    # Optional webhook token validation (supports bearer auth, x-webhook-token, or ?secret= query param).
     configured_secret = str(settings.smeplug_webhook_secret or "").strip()
     if configured_secret:
         auth_header = str(request.headers.get("authorization") or "")
         token_header = str(request.headers.get("x-webhook-token") or "")
+        query_secret = str(request.query_params.get("secret") or "").strip()
         bearer = auth_header.replace("Bearer ", "").strip() if auth_header.lower().startswith("bearer ") else auth_header.strip()
-        if configured_secret not in {bearer, token_header.strip()}:
+        if configured_secret not in {bearer, token_header.strip(), query_secret}:
+            logger.warning(f"SMEPlug Webhook 401 Unauthorized. Headers: {request.headers}, Query: {request.query_params}")
             raise HTTPException(status_code=401, detail="Invalid SMEPlug webhook token")
 
     payload = json.loads(raw_body)
