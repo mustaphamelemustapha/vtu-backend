@@ -169,8 +169,11 @@ def refresh(request: Request, payload: RefreshRequest, db: Session = Depends(get
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
 @limiter.limit("5/minute")
 def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    ident = payload.identifier or payload.email
+    if not ident:
+        raise HTTPException(status_code=400, detail="Must provide identifier or email")
     user = db.query(User).filter(
-        (User.email == payload.identifier) | (User.phone_number == payload.identifier)
+        (User.email == ident) | (User.phone_number == ident)
     ).first()
     reset_token = None
     if user:

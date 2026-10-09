@@ -78,7 +78,8 @@ class RefreshRequest(BaseModel):
 
 
 class ForgotPasswordRequest(BaseModel):
-    identifier: str
+    identifier: Optional[str] = None
+    email: Optional[EmailStr] = None
 
 
 class ForgotPasswordResponse(BaseModel):
