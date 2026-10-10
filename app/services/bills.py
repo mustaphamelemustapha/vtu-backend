@@ -1882,13 +1882,41 @@ class TelecomAbodeBillsProvider:
         return []
 
 def get_bills_provider(service_type: str | None = None):
+    env_choice = str(settings.bills_provider or "auto").strip().lower()
+    has_telecom_abode = bool(getattr(settings, "telecom_abode_enabled", False) and getattr(settings, "telecom_abode_api_key", None))
+
+    # 1. If explicitly set in environment, honor it immediately
+    if env_choice == "telecom_abode":
+        return TelecomAbodeBillsProvider()
+    if env_choice == "mock":
+        return MockBillsProvider()
+    if env_choice == "boltnet":
+        return BoltnetBillsProvider()
+    if env_choice == "autosync":
+        return AutosyncBillsProvider()
+
+    # 2. If service is airtime and Telecom Abode is enabled in env, route to Telecom Abode
+    if service_type == "airtime" and has_telecom_abode:
+        return TelecomAbodeBillsProvider()
+
     db = SessionLocal()
     active_provider = None
     try:
-        # Check IntegrationProvider: if service_type is given, prefer an active provider supporting this service
-        if service_type:
+        # Check if Telecom Abode is specifically active in database for airtime
+        if service_type == "airtime":
+            abode_prov = db.query(IntegrationProvider).filter(
+                IntegrationProvider.identifier == "telecom_abode",
+                IntegrationProvider.is_active == True
+            ).first()
+            if abode_prov:
+                active_provider = abode_prov
+
+        # Check IntegrationProvider: if service_type is given, prefer an active provider supporting this service (excluding clubkonnect for airtime if kyc blocked)
+        if not active_provider and service_type:
             active_providers = db.query(IntegrationProvider).filter(IntegrationProvider.is_active == True).all()
             for p in active_providers:
+                if service_type == "airtime" and p.identifier == "clubkonnect" and has_telecom_abode:
+                    continue
                 supported = p.supported_services or []
                 if isinstance(supported, list) and service_type.lower() in [str(s).lower() for s in supported]:
                     active_provider = p
@@ -1898,7 +1926,7 @@ def get_bills_provider(service_type: str | None = None):
             # Check IntegrationProvider for an active VTU provider
             active_provider = db.query(IntegrationProvider).filter(
                 IntegrationProvider.is_active == True,
-                IntegrationProvider.identifier.in_(["vtpass", "clubkonnect", "autosync", "boltnet", "telecom_abode"])
+                IntegrationProvider.identifier.in_(["telecom_abode", "autosync", "boltnet", "vtpass", "clubkonnect"])
             ).first()
 
         if active_provider:
@@ -1908,6 +1936,8 @@ def get_bills_provider(service_type: str | None = None):
             api_secret = active_provider.api_secret
             config = active_provider.additional_config or {}
 
+            if choice == "telecom_abode":
+                return TelecomAbodeBillsProvider(api_key=api_key, base_url=base_url)
             if choice == "clubkonnect":
                 user_id = api_secret or config.get("user_id")
                 return ClubKonnectBillsProvider(base_url=base_url, user_id=user_id, api_key=api_key)
@@ -1918,8 +1948,6 @@ def get_bills_provider(service_type: str | None = None):
                 return AutosyncBillsProvider(api_key=api_key, base_url=base_url)
             if choice == "boltnet":
                 return BoltnetBillsProvider(api_key=api_key, base_url=base_url)
-            if choice == "telecom_abode":
-                return TelecomAbodeBillsProvider(api_key=api_key, base_url=base_url)
 
         # Fallback to SystemSettings if no IntegrationProvider is active
         db_settings = db.query(SystemSettings).first()
@@ -1928,16 +1956,18 @@ def get_bills_provider(service_type: str | None = None):
     finally:
         db.close()
 
-    choice = db_choice or str(settings.bills_provider or "auto").strip().lower()
+    choice = db_choice or env_choice
 
     has_vtpass = bool(settings.vtpass_enabled and settings.vtpass_api_key and settings.vtpass_secret_key)
     has_clubkonnect = bool((settings.nello_user_id or settings.clubkonnect_user_id) and (settings.nello_api_key or settings.clubkonnect_api_key))
     has_autosync = bool(vtu_api_key or settings.autosync_api_key)
-    has_telecom_abode = bool(getattr(settings, "telecom_abode_enabled", False) and getattr(settings, "telecom_abode_api_key", None))
     clubkonnect_enabled = bool(settings.clubkonnect_enabled)
 
     if choice == "mock":
         return MockBillsProvider()
+    if choice == "telecom_abode" or (service_type == "airtime" and has_telecom_abode):
+        if has_telecom_abode:
+            return TelecomAbodeBillsProvider()
     if choice == "autosync":
         if has_autosync:
             return AutosyncBillsProvider(api_key=vtu_api_key)
@@ -1959,15 +1989,12 @@ def get_bills_provider(service_type: str | None = None):
             return BoltnetBillsProvider(api_key=vtu_api_key)
         logger.warning("BILLS_PROVIDER=boltnet but BOLTNET_API_KEY missing; falling back to mock.")
         return MockBillsProvider()
-    if choice == "telecom_abode":
-        if has_telecom_abode:
-            return TelecomAbodeBillsProvider()
-        logger.warning("BILLS_PROVIDER=telecom_abode but TELECOM_ABODE_API_KEY missing; falling back to mock.")
-        return MockBillsProvider()
 
     # auto mode:
     # If the requested service is airtime and telecom_abode is configured, use Telecom Abode!
     if service_type == "airtime" and has_telecom_abode:
+        return TelecomAbodeBillsProvider()
+    if has_telecom_abode:
         return TelecomAbodeBillsProvider()
 
     if clubkonnect_enabled and has_clubkonnect:
@@ -1976,16 +2003,17 @@ def get_bills_provider(service_type: str | None = None):
         return VTPassBillsProvider()
     if has_clubkonnect:
         return ClubKonnectBillsProvider()
-    if has_telecom_abode:
-        return TelecomAbodeBillsProvider()
     return MockBillsProvider()
 
 
 def get_fallback_bills_provider(primary_provider):
     """
-    Returns a fallback provider (ClubKonnect) if the primary provider is not ClubKonnect,
-    and ClubKonnect is enabled/configured.
+    Returns a fallback provider if primary fails.
+    Never falls back to ClubKonnect when using Telecom Abode to avoid KYC failure blocks.
     """
+    if isinstance(primary_provider, TelecomAbodeBillsProvider):
+        return None
+
     has_clubkonnect = bool((settings.nello_user_id or settings.clubkonnect_user_id) and (settings.nello_api_key or settings.clubkonnect_api_key))
     clubkonnect_enabled = bool(settings.clubkonnect_enabled)
     

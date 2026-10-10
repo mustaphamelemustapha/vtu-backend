@@ -790,7 +790,7 @@ def _ensure_default_integrations() -> None:
                 "base_url": settings.clubkonnect_base_url,
                 "api_key": settings.clubkonnect_api_key or "",
                 "is_active": bool(settings.clubkonnect_api_key or settings.clubkonnect_enabled),
-                "supported_services": ["airtime", "cable", "electricity", "data"],
+                "supported_services": ["cable", "electricity", "data"],
             },
             {
                 "name": "AutoSync",
@@ -798,7 +798,7 @@ def _ensure_default_integrations() -> None:
                 "base_url": settings.autosync_base_url,
                 "api_key": settings.autosync_api_key or "",
                 "is_active": bool(settings.autosync_api_key),
-                "supported_services": ["airtime", "data"],
+                "supported_services": ["data"],
             },
             {
                 "name": "BoltNet",
@@ -814,7 +814,7 @@ def _ensure_default_integrations() -> None:
                 "base_url": settings.vtpass_base_url,
                 "api_key": settings.vtpass_api_key or "",
                 "is_active": bool(settings.vtpass_enabled or settings.vtpass_api_key),
-                "supported_services": ["airtime", "cable", "electricity"],
+                "supported_services": ["cable", "electricity"],
             },
             {
                 "name": "Telecom Abode",
@@ -832,11 +832,12 @@ def _ensure_default_integrations() -> None:
                 prov = IntegrationProvider(**spec)
                 db.add(prov)
             else:
-                if not existing.api_key and spec["api_key"]:
+                if spec["api_key"]:
                     existing.api_key = spec["api_key"]
                     existing.is_active = True
-                if not existing.base_url and spec["base_url"]:
+                if spec["base_url"]:
                     existing.base_url = spec["base_url"]
+                existing.supported_services = spec["supported_services"]
 
         gateways_spec = [
             {
