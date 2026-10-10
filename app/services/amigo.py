@@ -3,6 +3,9 @@ import logging
 import json
 import re
 import httpx
+
+GLOBAL_HTTP_CLIENT = httpx.Client(timeout=30.0)
+GLOBAL_HTTP_CLIENT_FOLLOW = httpx.Client(timeout=30.0, follow_redirects=True)
 from urllib.parse import urlparse, urlunparse
 from app.core.config import get_settings
 
@@ -75,9 +78,9 @@ class AmigoApiError(Exception):
         self.raw = raw
 
 class AmigoClient:
-    def __init__(self):
-        self.base_url = str(settings.amigo_base_url).rstrip("/")
-        self.api_key = settings.amigo_api_key
+    def __init__(self, api_key: str | None = None, base_url: str | None = None):
+        self.base_url = str(base_url or settings.amigo_base_url).rstrip("/")
+        self.api_key = api_key or settings.amigo_api_key
         self.timeout = 30.0
 
     def _headers(self, idempotency_key: str | None = None) -> dict:
@@ -93,19 +96,19 @@ class AmigoClient:
     def _request(self, method: str, path: str, payload: dict | None = None, idempotency_key: str | None = None) -> dict:
         url = f"{self.base_url}/{path.lstrip('/')}"
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.request(method, url, headers=self._headers(idempotency_key), json=payload)
-                logger.info("Amigo API %s %s status=%d", method, path, response.status_code)
-                
-                if response.status_code >= 400:
-                    try:
-                        err_data = response.json()
-                        msg = err_data.get("message") or err_data.get("detail") or response.text
-                    except:
-                        msg = response.text
-                    raise AmigoApiError(msg, status_code=response.status_code, raw=response.text)
-                
-                return response.json()
+            client = GLOBAL_HTTP_CLIENT
+            response = client.request(method, url, headers=self._headers(idempotency_key), json=payload)
+            logger.info("Amigo API %s %s status=%d", method, path, response.status_code)
+            
+            if response.status_code >= 400:
+                try:
+                    err_data = response.json()
+                    msg = err_data.get("message") or err_data.get("detail") or response.text
+                except:
+                    msg = response.text
+                raise AmigoApiError(msg, status_code=response.status_code, raw=response.text)
+            
+            return response.json()
         except httpx.HTTPError as e:
             raise AmigoApiError(f"HTTP Error: {str(e)}")
         except Exception as e:

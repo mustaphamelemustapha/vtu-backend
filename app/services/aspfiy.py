@@ -2,6 +2,8 @@ import logging
 import httpx
 from fastapi import HTTPException
 from app.core.config import get_settings
+from app.core.database import SessionLocal
+from app.models.integration import PaymentGateway
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -15,14 +17,26 @@ class AspfiyService:
         phone: str,
         reference: str
     ) -> dict:
-        if not settings.aspfiy_secret_key:
+        db = SessionLocal()
+        try:
+            db_settings = db.query(PaymentGateway).filter(PaymentGateway.identifier == "asfiy").first()
+            if db_settings and db_settings.is_active:
+                secret_key = db_settings.secret_key or settings.aspfiy_secret_key
+                webhook_url = db_settings.webhook_url or settings.aspfiy_webhook_url or "https://vtu-backend-8gsi.onrender.com/api/v1/webhooks/aspfiy"
+            else:
+                secret_key = settings.aspfiy_secret_key
+                webhook_url = settings.aspfiy_webhook_url or "https://vtu-backend-8gsi.onrender.com/api/v1/webhooks/aspfiy"
+        finally:
+            db.close()
+
+        if not secret_key:
             logger.warning("Aspfiy is not configured (missing secret key)")
             raise HTTPException(status_code=500, detail="Aspfiy is not configured")
 
         url = f"{str(settings.aspfiy_base_url).rstrip('/')}/reserve-paga/"
         
         # Determine a backend webhook URL
-        webhook_url = str(settings.aspfiy_webhook_url or "https://vtu-backend-8gsi.onrender.com/api/v1/webhooks/aspfiy").strip()
+        webhook_url = str(webhook_url).strip()
             
         payload = {
             "email": email,
@@ -34,7 +48,7 @@ class AspfiyService:
         }
 
         headers = {
-            "Authorization": f"Bearer {settings.aspfiy_secret_key}",
+            "Authorization": f"Bearer {secret_key}",
             "Content-Type": "application/json"
         }
 
@@ -99,7 +113,7 @@ class AspfiyService:
             or target.get("accountName")
             or target.get("customer_name")
             or target.get("customerName")
-            or "Mele Data Customer"
+            or "Kulloma Data Customer"
         )
         bank_name = (
             target.get("bank_name")

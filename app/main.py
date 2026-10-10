@@ -85,20 +85,22 @@ allow_origins = list(
     dict.fromkeys(
         configured_origins
         + [
+            "https://kullomadata.com",
+            "https://www.kullomadata.com",
             "https://vtu-frontend-beta.vercel.app",
             "https://vtu-frontend-git-main-mmt-ech-globe.vercel.app",
             "https://axisvtu.vercel.app",
             "https://axisvtu.com",
             "https://www.axisvtu.com",
-            "https://meledata.ng",
-            "https://www.meledata.ng",
+            "https://kullomadata.com",
+            "https://www.kullomadata.com",
             "https://meledata.vercel.app",
             *([frontend_origin] if frontend_origin else []),
         ]
     )
 )
 allow_origin_regex = (
-    r"^https:\/\/(?:vtu-frontend|axisvtu|meledata)(?:-[A-Za-z0-9-]+)?\.vercel\.app$"
+    r"^https:\/\/(?:vtu-frontend|axisvtu|meledata|kullomadata)(?:-[A-Za-z0-9-]+)?\.(?:vercel\.app|com|ng)$"
     r"|^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$"
 )
 

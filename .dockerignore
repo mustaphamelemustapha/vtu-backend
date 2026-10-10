@@ -1,0 +1,16 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.venv*/
+.env
+.git
+.pytest_cache/
+test.db
+test_concurrency.db
+vtu.db
+alembic/versions/*_scratch.py

@@ -8,8 +8,22 @@ from app.core.config import get_settings
 settings = get_settings()
 
 
+from app.core.database import SessionLocal
+from app.models.integration import PaymentGateway
+
 def _basic_auth() -> str:
-    token = f"{settings.monnify_api_key}:{settings.monnify_secret_key}"
+    db = SessionLocal()
+    try:
+        db_settings = db.query(PaymentGateway).filter(PaymentGateway.identifier == "monnify").first()
+        if db_settings and db_settings.is_active:
+            api_key = db_settings.public_key or settings.monnify_api_key
+            secret_key = db_settings.secret_key or settings.monnify_secret_key
+        else:
+            api_key = settings.monnify_api_key
+            secret_key = settings.monnify_secret_key
+    finally:
+        db.close()
+    token = f"{api_key}:{secret_key}"
     return base64.b64encode(token.encode()).decode()
 
 
@@ -44,6 +58,16 @@ def get_monnify_token() -> str:
 def init_monnify_transaction(email: str, name: str, amount: float, reference: str, callback_url: str) -> dict:
     token = get_monnify_token()
     payment_methods = [m.strip() for m in settings.monnify_payment_methods.split(",") if m.strip()]
+    db = SessionLocal()
+    try:
+        db_settings = db.query(PaymentGateway).filter(PaymentGateway.identifier == "monnify").first()
+        if db_settings and db_settings.is_active:
+            contract_code = db_settings.contract_code or settings.monnify_contract_code
+        else:
+            contract_code = settings.monnify_contract_code
+    finally:
+        db.close()
+        
     payload = {
         "amount": amount,
         "customerName": name or email,
@@ -51,7 +75,7 @@ def init_monnify_transaction(email: str, name: str, amount: float, reference: st
         "paymentReference": reference,
         "paymentDescription": "Wallet funding",
         "currencyCode": settings.monnify_currency,
-        "contractCode": settings.monnify_contract_code,
+        "contractCode": contract_code,
         "redirectUrl": callback_url,
         "paymentMethods": payment_methods,
     }
@@ -85,11 +109,21 @@ def reserve_monnify_account(
     get_all_available_banks: bool = True,
 ) -> dict:
     token = get_monnify_token()
+    db = SessionLocal()
+    try:
+        db_settings = db.query(PaymentGateway).filter(PaymentGateway.identifier == "monnify").first()
+        if db_settings and db_settings.is_active:
+            contract_code = db_settings.contract_code or settings.monnify_contract_code
+        else:
+            contract_code = settings.monnify_contract_code
+    finally:
+        db.close()
+
     payload = {
         "accountReference": account_reference,
         "accountName": account_name,
         "currencyCode": settings.monnify_currency,
-        "contractCode": settings.monnify_contract_code,
+        "contractCode": contract_code,
         "customerEmail": customer_email,
         "customerName": customer_name or customer_email,
         "getAllAvailableBanks": bool(get_all_available_banks),
@@ -161,6 +195,14 @@ def verify_monnify_signature(body: bytes, signature: str) -> bool:
         keys.append(settings.monnify_webhook_secret)
     if settings.monnify_secret_key:
         keys.append(settings.monnify_secret_key)
+        
+    db = SessionLocal()
+    try:
+        db_settings = db.query(PaymentGateway).filter(PaymentGateway.identifier == "monnify").first()
+        if db_settings and db_settings.is_active and db_settings.secret_key:
+            keys.append(db_settings.secret_key)
+    finally:
+        db.close()
         
     for secret in keys:
         # Monnify docs specify HMAC-SHA512 of request body using client secret key

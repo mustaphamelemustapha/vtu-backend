@@ -78,14 +78,11 @@ def get_developer_user(
     token = token.strip()
     is_test_mode = token.startswith("mele_test_")
     lookup_token = token
-    if token.startswith("mele_test_pub_"):
-        is_test_mode = True
-        lookup_token = "mele_pub_" + token[len("mele_test_pub_"):]
-    elif token.startswith("mele_test_"):
-        is_test_mode = True
+    if is_test_mode:
+        # Swap prefix to look up the hash of the user's primary live token
         lookup_token = "mele_live_" + token[len("mele_test_"):]
         
-    if not (token.startswith("MELE_SEC_") or token.startswith("mele_live_") or token.startswith("mele_test_") or token.startswith("mele_pub_") or token.startswith("mele_test_pub_")):
+    if not (token.startswith("MELE_SEC_") or token.startswith("mele_live_") or token.startswith("mele_test_") or token.startswith("mele_pub_")):
         from app.core.exceptions import DeveloperAPIException
         raise DeveloperAPIException("Invalid API key format.", 401)
         
@@ -113,14 +110,10 @@ def get_developer_user(
 @router.get("/status", response_model=DeveloperStatusResponse)
 def get_status(user: User = Depends(get_current_user)):
     secret_prefix = f"{user.webhook_secret[:10]}..." if getattr(user, "webhook_secret", None) else None
-    
-    test_pub = user.api_public_key.replace("mele_pub_", "mele_test_pub_") if user.api_public_key else None
-    
     return {
         "is_developer": user.is_developer,
         "developer_status": user.developer_status,
         "api_public_key": user.api_public_key,
-        "test_api_public_key": test_pub,
         "has_keys": user.api_secret_key_hash is not None,
         "webhook_url": getattr(user, "webhook_url", None),
         "webhook_secret_prefix": secret_prefix
@@ -141,17 +134,12 @@ def apply_developer(payload: DeveloperApplyRequest, user: User = Depends(get_cur
     user.api_secret_key_hash = sec_hash
     db.commit()
     db.refresh(user)
-    test_pub = pub.replace("mele_pub_", "mele_test_pub_")
-    test_sec_plain = sec_plain.replace("mele_live_", "mele_test_")
-    
     return {
         "is_developer": user.is_developer,
         "developer_status": user.developer_status,
         "api_public_key": user.api_public_key,
-        "test_api_public_key": test_pub,
         "has_keys": True,
-        "api_secret_key": sec_plain,
-        "test_api_secret_key": test_sec_plain
+        "api_secret_key": sec_plain
     }
 
 
@@ -164,14 +152,9 @@ def generate_keys(user: User = Depends(get_current_user), db: Session = Depends(
     user.api_public_key = pub
     user.api_secret_key_hash = sec_hash
     db.commit()
-    test_pub = pub.replace("mele_pub_", "mele_test_pub_")
-    test_sec_plain = sec_plain.replace("mele_live_", "mele_test_")
-    
     return {
         "api_public_key": pub,
-        "api_secret_key": sec_plain,
-        "test_api_public_key": test_pub,
-        "test_api_secret_key": test_sec_plain
+        "api_secret_key": sec_plain
     }
 
 
@@ -186,7 +169,6 @@ def revoke_keys(user: User = Depends(get_current_user), db: Session = Depends(ge
         "is_developer": user.is_developer,
         "developer_status": user.developer_status,
         "api_public_key": user.api_public_key,
-        "test_api_public_key": None,
         "has_keys": False,
         "webhook_url": getattr(user, "webhook_url", None),
         "webhook_secret_prefix": secret_prefix
@@ -205,13 +187,10 @@ def configure_webhook(payload: WebhookConfigRequest, user: User = Depends(get_cu
     db.commit()
     db.refresh(user)
     secret_prefix = f"{user.webhook_secret[:10]}..." if getattr(user, "webhook_secret", None) else None
-    test_pub = user.api_public_key.replace("mele_pub_", "mele_test_pub_") if user.api_public_key else None
-    
     return {
         "is_developer": user.is_developer,
         "developer_status": user.developer_status,
         "api_public_key": user.api_public_key,
-        "test_api_public_key": test_pub,
         "has_keys": user.api_secret_key_hash is not None,
         "webhook_url": user.webhook_url,
         "webhook_secret_prefix": secret_prefix
@@ -420,24 +399,16 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
         raise DeveloperAPIException("Active data plan not found. Please provide a valid plan ID or system code.", 404)
 
     price = get_price_for_user(db, plan, user.role)
-    is_test = getattr(user, "is_test_mode", False)
-    
-    if is_test:
-        test_bal = Decimal(str(SANDBOX_BALANCES.get(user.id, 1000000.0)))
-        if test_bal < price:
-            raise DeveloperAPIException("Insufficient sandbox wallet balance.", 400)
-        SANDBOX_BALANCES[user.id] = float(test_bal - price)
-    else:
-        wallet = get_or_create_wallet(db, user.id)
-        if wallet.balance < price:
-            raise DeveloperAPIException("Insufficient wallet balance.", 400)
+    wallet = get_or_create_wallet(db, user.id)
+    if wallet.balance < price:
+        raise DeveloperAPIException("Insufficient wallet balance.", 400)
 
-        # 3. Debit Wallet
-        try:
-            debit_wallet(db, wallet, price, client_ref, f"API Data: {plan.plan_name} ({payload.phone_number})")
-        except Exception as e:
-            logger.error(f"Developer wallet debit failed: {e}")
-            raise DeveloperAPIException("Wallet debit failed.", 400)
+    # 3. Debit Wallet
+    try:
+        debit_wallet(db, wallet, price, client_ref, f"API Data: {plan.plan_name} ({payload.phone_number})")
+    except Exception as e:
+        logger.error(f"Developer wallet debit failed: {e}")
+        raise DeveloperAPIException("Wallet debit failed.", 400)
 
     # 4. Save transaction
     tx = Transaction(
@@ -519,58 +490,51 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
     partial_refund_amount = Decimal("0")
     start_time = time.time()
 
-    is_test = getattr(user, "is_test_mode", False)
-
-    if is_test:
-        time.sleep(0.5)
-        provider_res = {"status": "success", "provider_reference": f"TEST_{secrets.token_hex(6)}"}
-        transaction_provider = "Sandbox Provider"
+    is_multi_dispatch = bool(plan_dispatch_count > 1)
+    if not is_multi_dispatch:
+        provider_res = _execute_provider(plan_provider, plan_provider_plan_id, client_ref)
+        if provider_res.get("status") == "failed" and plan_fallback_provider:
+            logger.warning(f"Developer primary provider {plan_provider} failed; falling back to {plan_fallback_provider}")
+            provider_res = _execute_provider(plan_fallback_provider, plan_fallback_provider_plan_id or plan_provider_plan_id, client_ref)
+            transaction_provider = plan_fallback_provider
     else:
-        is_multi_dispatch = bool(plan_dispatch_count > 1)
-        if not is_multi_dispatch:
-            provider_res = _execute_provider(plan_provider, plan_provider_plan_id, client_ref)
-            if provider_res.get("status") == "failed" and plan_fallback_provider:
-                logger.warning(f"Developer primary provider {plan_provider} failed; falling back to {plan_fallback_provider}")
-                provider_res = _execute_provider(plan_fallback_provider, plan_fallback_provider_plan_id or plan_provider_plan_id, client_ref)
-                transaction_provider = plan_fallback_provider
+        logger.info(
+            "Executing Developer Multi-Dispatch (%d parts) for %s (ref=%s) to %s",
+            plan_dispatch_count, plan_name, client_ref, phone
+        )
+        sub_plan_id = plan_dispatch_plan_id or plan_provider_plan_id
+        dispatch_results = []
+        for idx in range(plan_dispatch_count):
+            if idx > 0:
+                time.sleep(1.5)
+            part_ref = f"{client_ref}_p{idx+1}"
+            sub_res = _execute_provider(plan_provider, sub_plan_id, part_ref)
+            if sub_res.get("status") == "failed" and plan_fallback_provider:
+                fallback_sub_id = plan_fallback_provider_plan_id or sub_plan_id
+                sub_res = _execute_provider(plan_fallback_provider, fallback_sub_id, part_ref)
+            dispatch_results.append(sub_res)
+
+        success_parts = [r for r in dispatch_results if r.get("status") == "success"]
+        pending_parts = [r for r in dispatch_results if r.get("status") == "pending"]
+        failed_parts = [r for r in dispatch_results if r.get("status") == "failed"]
+        all_ext_refs = [str(r.get("provider_reference")) for r in dispatch_results if r.get("provider_reference")]
+        combined_ext_ref = ", ".join(all_ext_refs) if all_ext_refs else None
+
+        if len(success_parts) == plan_dispatch_count:
+            provider_res = {"status": "success", "provider_reference": combined_ext_ref}
+        elif len(failed_parts) == plan_dispatch_count:
+            first_err = failed_parts[0].get("error") if failed_parts else "All dispatch parts failed"
+            provider_res = {"status": "failed", "error": first_err}
+        elif len(pending_parts) > 0 and len(failed_parts) == 0:
+            provider_res = {"status": "pending", "provider_reference": combined_ext_ref}
         else:
-            logger.info(
-                "Executing Developer Multi-Dispatch (%d parts) for %s (ref=%s) to %s",
-                plan_dispatch_count, plan_name, client_ref, phone
-            )
-            sub_plan_id = plan_dispatch_plan_id or plan_provider_plan_id
-            dispatch_results = []
-            for idx in range(plan_dispatch_count):
-                if idx > 0:
-                    time.sleep(1.5)
-                part_ref = f"{client_ref}_p{idx+1}"
-                sub_res = _execute_provider(plan_provider, sub_plan_id, part_ref)
-                if sub_res.get("status") == "failed" and plan_fallback_provider:
-                    fallback_sub_id = plan_fallback_provider_plan_id or sub_plan_id
-                    sub_res = _execute_provider(plan_fallback_provider, fallback_sub_id, part_ref)
-                dispatch_results.append(sub_res)
-
-            success_parts = [r for r in dispatch_results if r.get("status") == "success"]
-            pending_parts = [r for r in dispatch_results if r.get("status") == "pending"]
-            failed_parts = [r for r in dispatch_results if r.get("status") == "failed"]
-            all_ext_refs = [str(r.get("provider_reference")) for r in dispatch_results if r.get("provider_reference")]
-            combined_ext_ref = ", ".join(all_ext_refs) if all_ext_refs else None
-
-            if len(success_parts) == plan_dispatch_count:
-                provider_res = {"status": "success", "provider_reference": combined_ext_ref}
-            elif len(failed_parts) == plan_dispatch_count:
-                first_err = failed_parts[0].get("error") if failed_parts else "All dispatch parts failed"
-                provider_res = {"status": "failed", "error": first_err}
-            elif len(pending_parts) > 0 and len(failed_parts) == 0:
-                provider_res = {"status": "pending", "provider_reference": combined_ext_ref}
-            else:
-                failed_ratio = Decimal(str(len(failed_parts))) / Decimal(str(plan_dispatch_count))
-                partial_refund_amount = (price * failed_ratio).quantize(Decimal("0.01"))
-                provider_res = {
-                    "status": "partial_success",
-                    "provider_reference": combined_ext_ref,
-                    "partial_info": f"{len(success_parts)}/{plan_dispatch_count} delivered",
-                }
+            failed_ratio = Decimal(str(len(failed_parts))) / Decimal(str(plan_dispatch_count))
+            partial_refund_amount = (price * failed_ratio).quantize(Decimal("0.01"))
+            provider_res = {
+                "status": "partial_success",
+                "provider_reference": combined_ext_ref,
+                "partial_info": f"{len(success_parts)}/{plan_dispatch_count} delivered",
+            }
 
     duration_ms = (time.time() - start_time) * 1000
 
@@ -589,15 +553,12 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
         elif final_status == "partial_success":
             tx.status = TransactionStatus.SUCCESS
             tx.failure_reason = f"Partial delivery: {provider_res.get('partial_info')}"
-            if partial_refund_amount > 0 and not is_test:
+            if partial_refund_amount > 0:
                 credit_wallet(db2, wallet, partial_refund_amount, f"{client_ref}_refund", f"Partial Refund ({provider_res.get('partial_info')}): {plan_name}")
         elif final_status == "failed":
             tx.status = TransactionStatus.REFUNDED
             tx.failure_reason = str(provider_res.get("error"))[:255]
-            if not is_test:
-                credit_wallet(db2, wallet, price, client_ref, f"Refund: {plan_name} API purchase failed")
-            else:
-                SANDBOX_BALANCES[user.id] = float(Decimal(str(SANDBOX_BALANCES.get(user.id, 1000000.0))) + price)
+            credit_wallet(db2, wallet, price, client_ref, f"Refund: {plan_name} API purchase failed")
         else:
             tx.status = TransactionStatus.PENDING
 
@@ -666,24 +627,16 @@ def developer_buy_airtime(request: Request, payload: DeveloperAirtimePurchaseReq
     if charge_amount <= 0:
         raise DeveloperAPIException("Invalid final purchase amount.", 400)
 
-    is_test = getattr(user, "is_test_mode", False)
-    
-    if is_test:
-        test_bal = Decimal(str(SANDBOX_BALANCES.get(user.id, 1000000.0)))
-        if test_bal < charge_amount:
-            raise DeveloperAPIException("Insufficient sandbox wallet balance.", 400)
-        SANDBOX_BALANCES[user.id] = float(test_bal - charge_amount)
-    else:
-        wallet = get_or_create_wallet(db, user.id)
-        if wallet.balance < charge_amount:
-            raise DeveloperAPIException("Insufficient wallet balance.", 400)
+    wallet = get_or_create_wallet(db, user.id)
+    if wallet.balance < charge_amount:
+        raise DeveloperAPIException("Insufficient wallet balance.", 400)
 
-        # 1. Debit Wallet
-        try:
-            debit_wallet(db, wallet, charge_amount, client_ref, f"API Airtime: ₦{base_amount} ({payload.phone_number})")
-        except Exception as e:
-            logger.error(f"Developer airtime debit failed: {e}")
-            raise DeveloperAPIException("Wallet debit failed.", 400)
+    # 1. Debit Wallet
+    try:
+        debit_wallet(db, wallet, charge_amount, client_ref, f"API Airtime: ₦{base_amount} ({payload.phone_number})")
+    except Exception as e:
+        logger.error(f"Developer airtime debit failed: {e}")
+        raise DeveloperAPIException("Wallet debit failed.", 400)
 
     # 2. Save Transaction
     tx = ServiceTransaction(
@@ -715,22 +668,17 @@ def developer_buy_airtime(request: Request, payload: DeveloperAirtimePurchaseReq
     # 3. Route to Provider
     start_time = time.time()
     provider_res = {"status": "pending", "error": "Provider confirmation pending"}
-    
-    if is_test:
-        time.sleep(0.5)
-        provider_res = {"status": "success", "provider_reference": f"TEST_{secrets.token_hex(6)}"}
-    else:
-        try:
-            provider = get_bills_provider()
-            result = provider.purchase_airtime(payload.network.strip().lower(), payload.phone_number.strip(), float(base_amount))
-            
-            if result.success:
-                provider_res = {"status": "success", "provider_reference": result.external_reference}
-            else:
-                provider_res = {"status": "failed", "error": result.message or "Provider rejected airtime"}
-        except Exception as exc:
-            logger.error("Developer airtime provider exception: %s", exc)
-            provider_res = {"status": "pending", "error": str(exc)}
+    try:
+        provider = get_bills_provider()
+        result = provider.purchase_airtime(payload.network.strip().lower(), payload.phone_number.strip(), float(base_amount))
+        
+        if result.success:
+            provider_res = {"status": "success", "provider_reference": result.external_reference}
+        else:
+            provider_res = {"status": "failed", "error": result.message or "Provider rejected airtime"}
+    except Exception as exc:
+        logger.error("Developer airtime provider exception: %s", exc)
+        provider_res = {"status": "pending", "error": str(exc)}
 
     duration_ms = (time.time() - start_time) * 1000
 
@@ -749,10 +697,7 @@ def developer_buy_airtime(request: Request, payload: DeveloperAirtimePurchaseReq
 
         if final_status == "failed":
             tx.failure_reason = str(provider_res.get("error"))[:255]
-            if not is_test:
-                credit_wallet(db2, wallet, charge_amount, client_ref, "API Refund: Airtime purchase failed")
-            else:
-                SANDBOX_BALANCES[user.id] = float(Decimal(str(SANDBOX_BALANCES.get(user.id, 1000000.0))) + charge_amount)
+            credit_wallet(db2, wallet, charge_amount, client_ref, "API Refund: Airtime purchase failed")
             tx.status = TransactionStatus.REFUNDED.value
         db2.commit()
 

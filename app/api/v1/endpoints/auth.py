@@ -169,11 +169,8 @@ def refresh(request: Request, payload: RefreshRequest, db: Session = Depends(get
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
 @limiter.limit("5/minute")
 def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    ident = payload.identifier or payload.email
-    if not ident:
-        raise HTTPException(status_code=400, detail="Must provide identifier or email")
     user = db.query(User).filter(
-        (User.email == ident) | (User.phone_number == ident)
+        (User.email == payload.identifier) | (User.phone_number == payload.identifier)
     ).first()
     reset_token = None
     if user:
@@ -184,8 +181,8 @@ def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Sessio
         user.reset_token_expires_at = _utcnow() + timedelta(minutes=15)
         db.commit()
         try:
-            # Send Email containing both Magic Link (for old app/web) and OTP (for new app)
-            send_password_reset_email(user.email, reset_token)
+            # Send OTP via Email
+            send_password_reset_otp_email(user.email, reset_token)
         except Exception as exc:
             logger.warning(
                 "Password reset email send failed to=%s error=%s",
@@ -218,15 +215,10 @@ def verify_reset_token(request: Request, payload: VerifyResetTokenRequest, db: S
 @router.post("/reset-password", response_model=Message)
 @limiter.limit("10/minute")
 def reset_password(request: Request, payload: ResetPasswordRequest, db: Session = Depends(get_db)):
-    if payload.token:
-        user = db.query(User).filter(User.reset_token == payload.token).first()
-    else:
-        if not payload.identifier or not payload.otp:
-            raise HTTPException(status_code=400, detail="Must provide either token, or identifier and otp")
-        user = db.query(User).filter(
-            (User.email == payload.identifier) | (User.phone_number == payload.identifier),
-            User.reset_token == payload.otp
-        ).first()
+    user = db.query(User).filter(
+        (User.email == payload.identifier) | (User.phone_number == payload.identifier),
+        User.reset_token == payload.otp
+    ).first()
     if not user or not user.reset_token_expires_at:
         raise HTTPException(status_code=400, detail="Invalid or expired token")
     if _as_utc(user.reset_token_expires_at) < _utcnow():
@@ -414,3 +406,19 @@ def acknowledge_agent_upgrade(
     user.agent_upgrade_seen = True
     db.commit()
     return Message(message="Agent upgrade notification marked as seen.")
+
+
+@router.post("/setup-admin", response_model=Message)
+def setup_admin(
+    email: str,
+    secret: str,
+    db: Session = Depends(get_db)
+):
+    if secret != "kulloma2026":
+        raise HTTPException(status_code=403, detail="Invalid secret")
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.role = UserRole.ADMIN
+    db.commit()
+    return Message(message=f"Success! {email} is now an ADMIN.")

@@ -66,7 +66,7 @@ class User(Base, TimestampMixin):
         back_populates="referred_user",
         uselist=False,
     )
-    wallet = relationship("Wallet", back_populates="user", uselist=False)
+    wallet = relationship("Wallet", back_populates="user", uselist=False, lazy="joined")
     transactions = relationship("Transaction", back_populates="user")
     service_transactions = relationship("ServiceTransaction", back_populates="user")
     api_logs = relationship("ApiLog", back_populates="user")

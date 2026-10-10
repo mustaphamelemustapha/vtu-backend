@@ -10,13 +10,15 @@ from typing import Any
 
 import httpx
 
+GLOBAL_HTTP_CLIENT = httpx.Client(timeout=30.0)
+GLOBAL_HTTP_CLIENT_FOLLOW = httpx.Client(timeout=30.0, follow_redirects=True)
+
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models.system_settings import SystemSettings
 from app.models.integration import IntegrationProvider
 from app.providers.autosync_provider import AutosyncProvider
 from app.providers.boltnet_provider import BoltnetProvider
-from app.providers.telecom_abode_provider import TelecomAbodeProvider
 
 @dataclass
 class ProviderResult:
@@ -305,11 +307,11 @@ def _extract_token(purchased_code: str | None) -> str | None:
 
 
 class VTPassBillsProvider:
-    def __init__(self):
-        self.base_url = _normalize_vtpass_base_url(str(settings.vtpass_base_url))
-        self.api_key = settings.vtpass_api_key or ""
-        self.public_key = settings.vtpass_public_key or ""
-        self.secret_key = settings.vtpass_secret_key or ""
+    def __init__(self, base_url=None, api_key=None, public_key=None, secret_key=None):
+        self.base_url = _normalize_vtpass_base_url(base_url or str(settings.vtpass_base_url))
+        self.api_key = api_key or settings.vtpass_api_key or ""
+        self.public_key = public_key or settings.vtpass_public_key or ""
+        self.secret_key = secret_key or settings.vtpass_secret_key or ""
         self.timeout = settings.vtpass_timeout_seconds
 
     def _post_headers(self) -> dict:
@@ -353,8 +355,8 @@ class VTPassBillsProvider:
     def _post(self, path: str, payload: dict) -> dict:
         url = f"{self.base_url}{path}"
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                res = client.post(url, json=payload, headers=self._post_headers())
+            client = GLOBAL_HTTP_CLIENT
+            res = client.post(url, json=payload, headers=self._post_headers())
         except Exception as exc:
             raise RuntimeError(f"VTPass network error: {exc}") from exc
         data = self._safe_json(res)
@@ -366,8 +368,8 @@ class VTPassBillsProvider:
     def _get(self, path: str, params: dict | None = None) -> dict:
         url = f"{self.base_url}{path}"
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                res = client.get(url, params=params, headers=self._get_headers())
+            client = GLOBAL_HTTP_CLIENT
+            res = client.get(url, params=params, headers=self._get_headers())
         except Exception as exc:
             raise RuntimeError(f"VTPass network error: {exc}") from exc
         data = self._safe_json(res)
@@ -683,10 +685,10 @@ class VTPassBillsProvider:
 
 
 class ClubKonnectBillsProvider:
-    def __init__(self):
+    def __init__(self, base_url=None, user_id=None, api_key=None):
         import os
-        self.base_url = _normalize_clubkonnect_base_url(str(settings.clubkonnect_base_url or ""))
-        self.user_id = str(
+        self.base_url = _normalize_clubkonnect_base_url(base_url or str(settings.clubkonnect_base_url or ""))
+        self.user_id = user_id or str(
             settings.nello_user_id 
             or settings.clubkonnect_user_id 
             or os.environ.get("CLUBKONNECT_USER_ID", "")
@@ -695,7 +697,7 @@ class ClubKonnectBillsProvider:
             or os.environ.get("NELLO_USER_ID", "")
             or ""
         ).strip().strip("'\"")
-        self.api_key = str(
+        self.api_key = api_key or str(
             settings.nello_api_key 
             or settings.clubkonnect_api_key 
             or os.environ.get("CLUBKONNECT_API_KEY", "")
@@ -712,7 +714,7 @@ class ClubKonnectBillsProvider:
             return callback
         base = str(settings.frontend_base_url or "").strip().rstrip("/")
         if not base:
-            return "https://meledata.ng/app/transactions"
+            return "https://kullomadata.com/app/transactions"
         return f"{base}/app/transactions"
 
     @staticmethod
@@ -729,14 +731,14 @@ class ClubKonnectBillsProvider:
         if not self.user_id or not self.api_key:
             raise RuntimeError("ClubKonnect credentials are missing (UserID or APIKey).")
         payload = {
+            **(params or {}),
             "UserID": self.user_id,
             "APIKey": self.api_key,
-            **(params or {}),
         }
         url = f"{self.base_url}{endpoint.lstrip('/')}"
         try:
-            with httpx.Client(timeout=self.timeout, follow_redirects=True) as client:
-                res = client.get(url, params=payload)
+            client = GLOBAL_HTTP_CLIENT_FOLLOW
+            res = client.get(url, params=payload)
         except Exception as exc:
             raise RuntimeError(f"ClubKonnect network error: {exc}") from exc
         data = self._safe_json(res)
@@ -1598,8 +1600,10 @@ class ClubKonnectBillsProvider:
 
 
 class AutosyncBillsProvider:
-    def __init__(self):
-        self.autosync = AutosyncProvider()
+    def __init__(self, api_key: str | None = None, base_url: str | None = None):
+        self.autosync = AutosyncProvider(api_key=api_key)
+        if base_url:
+            self.autosync.base_url = base_url
         self.timeout = self.autosync.timeout
         self.pin = str(get_settings().autosync_webhook_pin or "").strip()
 
@@ -1639,8 +1643,8 @@ class AutosyncBillsProvider:
             
         url = f"{self.autosync.base_url}/v1/airtime"
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                res = client.post(url, json=payload, headers=self.autosync._get_headers())
+            client = GLOBAL_HTTP_CLIENT
+            res = client.post(url, json=payload, headers=self.autosync._get_headers())
             data = self.autosync._json_or_none(res) or {}
             
             # Map Autosync's generic API response to dict
@@ -1678,8 +1682,8 @@ class AutosyncBillsProvider:
             
         url = f"{self.autosync.base_url}/v1/cable"
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                res = client.post(url, json=payload, headers=self.autosync._get_headers())
+            client = GLOBAL_HTTP_CLIENT
+            res = client.post(url, json=payload, headers=self.autosync._get_headers())
             data = self.autosync._json_or_none(res) or {}
             
             status_value = str(data.get("status") or "").lower()
@@ -1715,8 +1719,8 @@ class AutosyncBillsProvider:
             
         url = f"{self.autosync.base_url}/v1/electricity"
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                res = client.post(url, json=payload, headers=self.autosync._get_headers())
+            client = GLOBAL_HTTP_CLIENT
+            res = client.post(url, json=payload, headers=self.autosync._get_headers())
             data = self.autosync._json_or_none(res) or {}
             
             status_value = str(data.get("status") or "").lower()
@@ -1750,8 +1754,8 @@ class AutosyncBillsProvider:
             "product_id": provider
         }
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                res = client.post(url, json=payload, headers=self.autosync._get_headers())
+            client = GLOBAL_HTTP_CLIENT
+            res = client.post(url, json=payload, headers=self.autosync._get_headers())
             data = self.autosync._json_or_none(res) or {}
             
             if data.get("status") == "ok" and data.get("data", {}).get("is_valid"):
@@ -1768,8 +1772,8 @@ class AutosyncBillsProvider:
             "type": str(meter_type).lower()
         }
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                res = client.post(url, json=payload, headers=self.autosync._get_headers())
+            client = GLOBAL_HTTP_CLIENT
+            res = client.post(url, json=payload, headers=self.autosync._get_headers())
             data = self.autosync._json_or_none(res) or {}
             
             if data.get("status") == "ok" and data.get("data", {}).get("is_valid"):
@@ -1792,8 +1796,10 @@ class AutosyncBillsProvider:
         return []
 
 class BoltnetBillsProvider:
-    def __init__(self):
-        self.boltnet = BoltnetProvider()
+    def __init__(self, api_key: str | None = None, base_url: str | None = None):
+        self.boltnet = BoltnetProvider(api_key=api_key)
+        if base_url:
+            self.boltnet.base_url = base_url
         self.name = "boltnet"
 
     def _parse_result(self, res_data: dict, action: str) -> ProviderResult:
@@ -1831,55 +1837,13 @@ class BoltnetBillsProvider:
     def fetch_electricity_discos(self) -> list[dict]:
         return []
 
-class TelecomAbodeBillsProvider:
-    def __init__(self):
-        self.abode = TelecomAbodeProvider()
-        self.name = "telecom_abode"
-
-    def _parse_result(self, res_data: dict, action: str) -> ProviderResult:
-        status_value = str(res_data.get("status") or "").lower()
-        message = str(res_data.get("error") or "Successful")
-        reference = str(res_data.get("provider_reference") or "")
-        meta = res_data.get("meta") or {}
-        meta["telecom_abode_action"] = action
-            
-        if status_value == "success":
-            return ProviderResult(True, external_reference=reference, message=message, meta=meta)
-        if status_value == "pending":
-            return ProviderResult(False, external_reference=reference, message="Transaction pending", meta=meta, pending=True)
-            
-        return ProviderResult(False, external_reference=reference, message=message, meta=meta)
-
-    def purchase_airtime(self, network: str, phone_number: str, amount: float, reference: str | None = None) -> ProviderResult:
-        res_data = self.abode.purchase_airtime(network, phone_number, amount, reference or _vtpass_request_id())
-        return self._parse_result(res_data, "airtime")
-
-    def purchase_data(self, network: str, phone_number: str, plan_code: str, amount: float | None = None, request_id: str | None = None) -> ProviderResult:
-        res_data = self.abode.purchase_data(network, phone_number, plan_code, request_id or _vtpass_request_id())
-        return self._parse_result(res_data, "data")
-
-    def purchase_cable(self, provider: str, smartcard_number: str, plan_code: str, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
-        res_data = self.abode.purchase_cable(provider, smartcard_number, plan_code, reference or _vtpass_request_id())
-        return self._parse_result(res_data, "cable")
-
-    def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
-        return ProviderResult(False, message="Electricity not supported by Telecom Abode API.")
-
-    def purchase_exam_pin(self, exam: str, quantity: int, phone_number: str | None = None, exam_type: str | None = None) -> ProviderResult:
-        return ProviderResult(False, message="Exam Pins not supported by Telecom Abode API.")
-
-    def fetch_cable_packages(self, provider: str) -> list[dict]:
-        return []
-        
-    def fetch_electricity_discos(self) -> list[dict]:
-        return []
-
 def get_bills_provider():
     db = SessionLocal()
     try:
+        # First, check IntegrationProvider for an active VTU provider
         active_provider = db.query(IntegrationProvider).filter(
             IntegrationProvider.is_active == True,
-            IntegrationProvider.identifier.in_(["vtpass", "clubkonnect", "autosync", "boltnet", "telecom_abode"])
+            IntegrationProvider.identifier.in_(["vtpass", "clubkonnect", "autosync", "boltnet"])
         ).first()
 
         if active_provider:
@@ -1899,11 +1863,11 @@ def get_bills_provider():
                 return AutosyncBillsProvider(api_key=api_key, base_url=base_url)
             if choice == "boltnet":
                 return BoltnetBillsProvider(api_key=api_key, base_url=base_url)
-            if choice == "telecom_abode":
-                return TelecomAbodeBillsProvider()
 
+        # Fallback to SystemSettings if no IntegrationProvider is active
         db_settings = db.query(SystemSettings).first()
         db_choice = db_settings.active_vtu_provider if db_settings else None
+        vtu_api_key = db_settings.vtu_api_key if db_settings else None
     finally:
         db.close()
 
@@ -1911,15 +1875,14 @@ def get_bills_provider():
 
     has_vtpass = bool(settings.vtpass_enabled and settings.vtpass_api_key and settings.vtpass_secret_key)
     has_clubkonnect = bool((settings.nello_user_id or settings.clubkonnect_user_id) and (settings.nello_api_key or settings.clubkonnect_api_key))
-    has_autosync = bool(settings.autosync_api_key)
+    has_autosync = bool(vtu_api_key or settings.autosync_api_key)
     clubkonnect_enabled = bool(settings.clubkonnect_enabled)
-    has_telecom_abode = bool(getattr(settings, "telecom_abode_enabled", False) and getattr(settings, "telecom_abode_api_key", None))
 
     if choice == "mock":
         return MockBillsProvider()
     if choice == "autosync":
         if has_autosync:
-            return AutosyncBillsProvider()
+            return AutosyncBillsProvider(api_key=vtu_api_key)
         logger.warning("BILLS_PROVIDER=autosync but AUTOSYNC_API_KEY missing; falling back to mock.")
         return MockBillsProvider()
     if choice == "clubkonnect":
@@ -1933,14 +1896,10 @@ def get_bills_provider():
         logger.warning("BILLS_PROVIDER=vtpass but VTPASS credentials missing; falling back to mock.")
         return MockBillsProvider()
     if choice == "boltnet":
-        if bool(settings.boltnet_api_key):
-            return BoltnetBillsProvider()
+        has_boltnet = bool(vtu_api_key or settings.boltnet_api_key)
+        if has_boltnet:
+            return BoltnetBillsProvider(api_key=vtu_api_key)
         logger.warning("BILLS_PROVIDER=boltnet but BOLTNET_API_KEY missing; falling back to mock.")
-        return MockBillsProvider()
-    if choice == "telecom_abode":
-        if has_telecom_abode:
-            return TelecomAbodeBillsProvider()
-        logger.warning("BILLS_PROVIDER=telecom_abode but credentials missing; falling back to mock.")
         return MockBillsProvider()
 
     # auto mode

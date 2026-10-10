@@ -2,7 +2,7 @@ import importlib.util
 import logging
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from app.core.config import get_settings
 
 
@@ -15,19 +15,40 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_database_url(database_url: str) -> str:
-    if not database_url.startswith("postgresql://"):
+    if not database_url:
         return database_url
-        
-    # Auto-fix Supabase connection string to use transaction mode pooler (port 6543)
-    # instead of session mode (5432) which has a strict limit of 15 connections.
-    if ".pooler.supabase.com" in database_url and ":5432" in database_url:
-        database_url = database_url.replace(":5432", ":6543")
-        
+
+    # Normalize legacy postgres:// scheme to postgresql://
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
+
+    if not database_url.startswith("postgresql://") and not database_url.startswith("postgresql+psycopg://"):
+        return database_url
+
     has_psycopg2 = importlib.util.find_spec("psycopg2") is not None
     has_psycopg3 = importlib.util.find_spec("psycopg") is not None
-    if not has_psycopg2 and has_psycopg3:
-        return database_url.replace("postgresql://", "postgresql+psycopg://", 1)
-    return database_url
+    if not has_psycopg2 and has_psycopg3 and database_url.startswith("postgresql://"):
+        database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+
+    try:
+        parsed = urlparse(database_url)
+        query_params = parse_qs(parsed.query, keep_blank_values=True)
+        hostname = (parsed.hostname or "").lower()
+        is_supabase = "supabase" in hostname
+
+        if not is_supabase:
+            # Internal/Coolify/Docker/local postgres databases do not support SSL
+            query_params["sslmode"] = ["disable"]
+        else:
+            # Supabase managed databases require SSL
+            query_params["sslmode"] = ["require"]
+
+        flat_query = {k: v[0] if len(v) == 1 else v for k, v in query_params.items()}
+        new_query = urlencode(flat_query, doseq=True)
+        return urlunparse((parsed.scheme, parsed.netloc, parsed.path, parsed.params, new_query, parsed.fragment))
+    except Exception as exc:
+        logger.warning("Failed to sanitize database url: %s", exc)
+        return database_url
 
 
 def _build_connect_args(database_url: str) -> dict:
@@ -35,15 +56,16 @@ def _build_connect_args(database_url: str) -> dict:
     if not parsed.scheme.startswith("postgresql"):
         return {}
 
+    hostname = (parsed.hostname or "").lower()
+    is_supabase = "supabase" in hostname
+
     connect_args = {
         "keepalives": 1,
         "keepalives_idle": 30,
         "keepalives_interval": 10,
         "keepalives_count": 5,
+        "sslmode": "require" if is_supabase else "disable",
     }
-    local_hosts = {"localhost", "127.0.0.1", "db"}
-    if parsed.hostname not in local_hosts:
-        connect_args["sslmode"] = "require"
     return connect_args
 
 

@@ -2,14 +2,26 @@ import logging
 import httpx
 from typing import Dict, Any, List
 from app.core.config import get_settings
+from app.core.database import SessionLocal
+from app.models.integration import IntegrationProvider
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
 class AutosyncProvider:
-    def __init__(self):
-        self.base_url = str(settings.autosync_base_url).rstrip("/")
-        self.api_key = settings.autosync_api_key
+    def __init__(self, api_key: str | None = None, db=None):
+        _db = db or SessionLocal()
+        try:
+            db_prov = _db.query(IntegrationProvider).filter(IntegrationProvider.identifier == "autosync").first()
+            if db_prov and db_prov.is_active:
+                self.base_url = str(db_prov.base_url or settings.autosync_base_url).rstrip("/")
+                self.api_key = api_key if api_key else (db_prov.api_key or settings.autosync_api_key)
+            else:
+                self.base_url = str(settings.autosync_base_url).rstrip("/")
+                self.api_key = api_key if api_key else settings.autosync_api_key
+        finally:
+            if db is None:
+                _db.close()
         self.timeout = 30.0
 
     def _get_headers(self):

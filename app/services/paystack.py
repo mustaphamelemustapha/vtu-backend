@@ -15,8 +15,20 @@ class PaystackError(RuntimeError):
         self.data = data or {}
 
 
+from app.core.database import SessionLocal
+from app.models.integration import PaymentGateway
+
 def _headers() -> dict:
-    return {"Authorization": f"Bearer {settings.paystack_secret_key}", "Content-Type": "application/json"}
+    db = SessionLocal()
+    try:
+        db_settings = db.query(PaymentGateway).filter(PaymentGateway.identifier == "paystack").first()
+        if db_settings and db_settings.is_active:
+            secret = db_settings.secret_key or settings.paystack_secret_key
+        else:
+            secret = settings.paystack_secret_key
+    finally:
+        db.close()
+    return {"Authorization": f"Bearer {secret}", "Content-Type": "application/json"}
 
 
 def _request(method: str, path: str, payload: dict | None = None, params: dict | None = None) -> dict:
@@ -66,6 +78,16 @@ def verify_paystack_signature(body: bytes, signature: str) -> bool:
         candidates.append(settings.paystack_webhook_secret)
     if settings.paystack_secret_key and settings.paystack_secret_key not in candidates:
         candidates.append(settings.paystack_secret_key)
+
+    db = SessionLocal()
+    try:
+        db_settings = db.query(PaymentGateway).filter(PaymentGateway.identifier == "paystack").first()
+        db_secret = db_settings.secret_key if db_settings and db_settings.is_active else None
+    finally:
+        db.close()
+        
+    if db_secret and db_secret not in candidates:
+        candidates.append(db_secret)
 
     for secret in candidates:
         computed = hmac.new(secret.encode(), body, hashlib.sha512).hexdigest()

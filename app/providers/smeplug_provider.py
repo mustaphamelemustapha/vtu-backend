@@ -3,14 +3,26 @@ import httpx
 import time
 from typing import Dict, Any, List
 from app.core.config import get_settings
+from app.core.database import SessionLocal
+from app.models.integration import IntegrationProvider
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
 class SMEPlugProvider:
-    def __init__(self):
-        self.base_url = str(settings.smeplug_base_url).rstrip("/")
-        self.api_key = settings.smeplug_api_key
+    def __init__(self, db=None):
+        _db = db or SessionLocal()
+        try:
+            db_prov = _db.query(IntegrationProvider).filter(IntegrationProvider.identifier == "smeplug").first()
+            if db_prov and db_prov.is_active:
+                self.base_url = str(db_prov.base_url or settings.smeplug_base_url).rstrip("/")
+                self.api_key = db_prov.api_key or settings.smeplug_api_key
+            else:
+                self.base_url = str(settings.smeplug_base_url).rstrip("/")
+                self.api_key = settings.smeplug_api_key
+        finally:
+            if db is None:
+                _db.close()
         self.timeout = 30.0
 
     def _get_headers(self):

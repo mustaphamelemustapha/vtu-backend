@@ -15,8 +15,10 @@ def main() -> int:
 
     import time
     from sqlalchemy.exc import OperationalError
-    
-    engine = create_engine(database_url)
+    from app.core.database import _resolve_database_url, _build_connect_args
+
+    resolved_url = _resolve_database_url(database_url)
+    engine = create_engine(resolved_url, connect_args=_build_connect_args(resolved_url))
     
     max_retries = 10
     retry_delay = 3

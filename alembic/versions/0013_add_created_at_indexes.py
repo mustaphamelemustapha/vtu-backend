@@ -11,7 +11,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = '0013_add_created_at_indexes'
-down_revision: Union[str, None] = '0012_user_bvn_nin_hashes'
+down_revision: Union[str, None] = '0012b_service_txs'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
