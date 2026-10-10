@@ -119,6 +119,55 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Optional transparent reverse-proxy forwarder (used on legacy Render to forward mobile traffic to Coolify)
+FORWARD_TARGET_URL = os.environ.get("FORWARD_TARGET_URL", "").strip().rstrip("/")
+if FORWARD_TARGET_URL:
+    import httpx
+    from starlette.responses import Response
+
+    _forward_client = httpx.AsyncClient(
+        base_url=FORWARD_TARGET_URL,
+        timeout=60.0,
+        follow_redirects=True,
+    )
+    logging.getLogger(__name__).info("Active forwarder proxy enabled pointing to: %s", FORWARD_TARGET_URL)
+
+    @app.middleware("http")
+    async def transparent_forward_middleware(request: Request, call_next):
+        if request.url.path in ("/healthz", "/readyz"):
+            return await call_next(request)
+
+        url = httpx.URL(path=request.url.path, query=request.url.query.encode("utf-8"))
+        headers = dict(request.headers)
+        headers.pop("host", None)
+        headers.pop("content-length", None)
+
+        body = await request.body()
+        try:
+            req = _forward_client.build_request(
+                method=request.method,
+                url=url,
+                headers=headers,
+                content=body,
+            )
+            resp = await _forward_client.send(req, stream=True)
+            resp_headers = dict(resp.headers)
+            resp_headers.pop("content-encoding", None)
+            resp_headers.pop("content-length", None)
+            resp_headers.pop("transfer-encoding", None)
+
+            content = await resp.aread()
+            await resp.aclose()
+            return Response(
+                content=content,
+                status_code=resp.status_code,
+                headers=resp_headers,
+                media_type=resp.headers.get("content-type"),
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).error("Forwarder to %s failed: %s", FORWARD_TARGET_URL, exc)
+            return await call_next(request)
+
 app.include_router(api_router, prefix=settings.api_v1_prefix)
 
 
