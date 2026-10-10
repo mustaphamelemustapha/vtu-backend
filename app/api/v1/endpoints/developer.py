@@ -669,7 +669,7 @@ def developer_buy_airtime(request: Request, payload: DeveloperAirtimePurchaseReq
     start_time = time.time()
     provider_res = {"status": "pending", "error": "Provider confirmation pending"}
     try:
-        provider = get_bills_provider()
+        provider = get_bills_provider("airtime")
         result = provider.purchase_airtime(payload.network.strip().lower(), payload.phone_number.strip(), float(base_amount))
         
         if result.success:

@@ -816,6 +816,14 @@ def _ensure_default_integrations() -> None:
                 "is_active": bool(settings.vtpass_enabled or settings.vtpass_api_key),
                 "supported_services": ["airtime", "cable", "electricity"],
             },
+            {
+                "name": "Telecom Abode",
+                "identifier": "telecom_abode",
+                "base_url": getattr(settings, "telecom_abode_base_url", "https://telecomabode.com.ng/api"),
+                "api_key": getattr(settings, "telecom_abode_api_key", "") or "",
+                "is_active": bool(getattr(settings, "telecom_abode_api_key", "") or getattr(settings, "telecom_abode_enabled", False)),
+                "supported_services": ["airtime", "data", "cable"],
+            },
         ]
 
         for spec in providers_spec:

@@ -282,7 +282,7 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
     fcm_token = user.fcm_token
     db.close()
 
-    provider = get_bills_provider()
+    provider = get_bills_provider("airtime")
     
     def attempt_purchase(p_instance, ref):
         try:

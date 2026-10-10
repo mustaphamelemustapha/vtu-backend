@@ -2,18 +2,30 @@ import logging
 import httpx
 from typing import Dict, Any
 from app.core.config import get_settings
+from app.core.database import SessionLocal
+from app.models.integration import IntegrationProvider
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
 class TelecomAbodeProvider:
-    def __init__(self):
-        self.base_url = "https://telecomabode.com.ng/api"
-        self.api_key = getattr(settings, "telecom_abode_api_key", None)
-        self.timeout = 30.0
+    def __init__(self, api_key: str | None = None, base_url: str | None = None, db=None):
+        _db = db or SessionLocal()
+        try:
+            db_prov = _db.query(IntegrationProvider).filter(IntegrationProvider.identifier == "telecom_abode").first()
+            if db_prov and db_prov.is_active:
+                self.base_url = str(base_url or db_prov.base_url or settings.telecom_abode_base_url).rstrip("/")
+                self.api_key = api_key if api_key else (db_prov.api_key or settings.telecom_abode_api_key)
+            else:
+                self.base_url = str(base_url or settings.telecom_abode_base_url).rstrip("/")
+                self.api_key = api_key if api_key else settings.telecom_abode_api_key
+        finally:
+            if db is None:
+                _db.close()
+        self.timeout = float(getattr(settings, "telecom_abode_timeout_seconds", 30))
 
     def _get_headers(self) -> dict:
-        token = self.api_key.strip() if self.api_key else ""
+        token = (self.api_key or "").strip()
         return {
             "Authorization": f"Token {token}" if token else "Token none",
             "Content-Type": "application/json",
@@ -34,7 +46,7 @@ class TelecomAbodeProvider:
             "9mobile": 4,
             "etisalat": 4
         }
-        return mapping.get(network.lower(), 1)
+        return mapping.get(str(network).strip().lower(), 1)
 
     def purchase_airtime(self, network: str, phone: str, amount: float, request_id: str, type_val: str = "VTU") -> Dict[str, Any]:
         if not self.api_key:

@@ -19,6 +19,7 @@ from app.models.system_settings import SystemSettings
 from app.models.integration import IntegrationProvider
 from app.providers.autosync_provider import AutosyncProvider
 from app.providers.boltnet_provider import BoltnetProvider
+from app.providers.telecom_abode_provider import TelecomAbodeProvider
 
 @dataclass
 class ProviderResult:
@@ -1837,14 +1838,68 @@ class BoltnetBillsProvider:
     def fetch_electricity_discos(self) -> list[dict]:
         return []
 
-def get_bills_provider():
+class TelecomAbodeBillsProvider:
+    def __init__(self, api_key: str | None = None, base_url: str | None = None):
+        self.abode = TelecomAbodeProvider(api_key=api_key, base_url=base_url)
+        self.name = "telecom_abode"
+
+    def _parse_result(self, res_data: dict, action: str) -> ProviderResult:
+        status_value = str(res_data.get("status") or "").lower()
+        message = str(res_data.get("error") or "Successful")
+        reference = str(res_data.get("provider_reference") or "")
+        meta = res_data.get("meta") or {}
+        meta["telecom_abode_action"] = action
+            
+        if status_value == "success":
+            return ProviderResult(True, external_reference=reference, message=message, meta=meta)
+        if status_value == "pending":
+            return ProviderResult(False, external_reference=reference, message="Transaction pending", meta=meta, pending=True)
+            
+        return ProviderResult(False, external_reference=reference, message=message, meta=meta)
+
+    def purchase_airtime(self, network: str, phone_number: str, amount: float, reference: str | None = None) -> ProviderResult:
+        res_data = self.abode.purchase_airtime(network, phone_number, amount, reference or _vtpass_request_id())
+        return self._parse_result(res_data, "airtime")
+
+    def purchase_data(self, network: str, phone_number: str, plan_code: str, amount: float | None = None, request_id: str | None = None) -> ProviderResult:
+        res_data = self.abode.purchase_data(network, phone_number, plan_code, request_id or _vtpass_request_id())
+        return self._parse_result(res_data, "data")
+
+    def purchase_cable(self, provider: str, smartcard_number: str, plan_code: str, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
+        res_data = self.abode.purchase_cable(provider, smartcard_number, plan_code, reference or _vtpass_request_id())
+        return self._parse_result(res_data, "cable")
+
+    def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
+        return ProviderResult(False, message="Electricity not supported by Telecom Abode API.")
+
+    def purchase_exam_pin(self, exam: str, quantity: int, phone_number: str | None = None, exam_type: str | None = None) -> ProviderResult:
+        return ProviderResult(False, message="Exam Pins not supported by Telecom Abode API.")
+
+    def fetch_cable_packages(self, provider: str) -> list[dict]:
+        return []
+        
+    def fetch_electricity_discos(self) -> list[dict]:
+        return []
+
+def get_bills_provider(service_type: str | None = None):
     db = SessionLocal()
+    active_provider = None
     try:
-        # First, check IntegrationProvider for an active VTU provider
-        active_provider = db.query(IntegrationProvider).filter(
-            IntegrationProvider.is_active == True,
-            IntegrationProvider.identifier.in_(["vtpass", "clubkonnect", "autosync", "boltnet"])
-        ).first()
+        # Check IntegrationProvider: if service_type is given, prefer an active provider supporting this service
+        if service_type:
+            active_providers = db.query(IntegrationProvider).filter(IntegrationProvider.is_active == True).all()
+            for p in active_providers:
+                supported = p.supported_services or []
+                if isinstance(supported, list) and service_type.lower() in [str(s).lower() for s in supported]:
+                    active_provider = p
+                    break
+
+        if not active_provider:
+            # Check IntegrationProvider for an active VTU provider
+            active_provider = db.query(IntegrationProvider).filter(
+                IntegrationProvider.is_active == True,
+                IntegrationProvider.identifier.in_(["vtpass", "clubkonnect", "autosync", "boltnet", "telecom_abode"])
+            ).first()
 
         if active_provider:
             choice = active_provider.identifier.lower()
@@ -1863,6 +1918,8 @@ def get_bills_provider():
                 return AutosyncBillsProvider(api_key=api_key, base_url=base_url)
             if choice == "boltnet":
                 return BoltnetBillsProvider(api_key=api_key, base_url=base_url)
+            if choice == "telecom_abode":
+                return TelecomAbodeBillsProvider(api_key=api_key, base_url=base_url)
 
         # Fallback to SystemSettings if no IntegrationProvider is active
         db_settings = db.query(SystemSettings).first()
@@ -1876,6 +1933,7 @@ def get_bills_provider():
     has_vtpass = bool(settings.vtpass_enabled and settings.vtpass_api_key and settings.vtpass_secret_key)
     has_clubkonnect = bool((settings.nello_user_id or settings.clubkonnect_user_id) and (settings.nello_api_key or settings.clubkonnect_api_key))
     has_autosync = bool(vtu_api_key or settings.autosync_api_key)
+    has_telecom_abode = bool(getattr(settings, "telecom_abode_enabled", False) and getattr(settings, "telecom_abode_api_key", None))
     clubkonnect_enabled = bool(settings.clubkonnect_enabled)
 
     if choice == "mock":
@@ -1901,14 +1959,25 @@ def get_bills_provider():
             return BoltnetBillsProvider(api_key=vtu_api_key)
         logger.warning("BILLS_PROVIDER=boltnet but BOLTNET_API_KEY missing; falling back to mock.")
         return MockBillsProvider()
+    if choice == "telecom_abode":
+        if has_telecom_abode:
+            return TelecomAbodeBillsProvider()
+        logger.warning("BILLS_PROVIDER=telecom_abode but TELECOM_ABODE_API_KEY missing; falling back to mock.")
+        return MockBillsProvider()
 
-    # auto mode
+    # auto mode:
+    # If the requested service is airtime and telecom_abode is configured, use Telecom Abode!
+    if service_type == "airtime" and has_telecom_abode:
+        return TelecomAbodeBillsProvider()
+
     if clubkonnect_enabled and has_clubkonnect:
         return ClubKonnectBillsProvider()
     if has_vtpass:
         return VTPassBillsProvider()
     if has_clubkonnect:
         return ClubKonnectBillsProvider()
+    if has_telecom_abode:
+        return TelecomAbodeBillsProvider()
     return MockBillsProvider()
 
 
