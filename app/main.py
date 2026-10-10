@@ -184,6 +184,7 @@ def ensure_tables():
         _ensure_referral_ambassador_columns()
         _ensure_aspfiy_enum()
         _ensure_data_plan_dispatch_columns()
+        _ensure_default_integrations()
         return
 
     # Optional local fallback for fresh environments.
@@ -215,6 +216,7 @@ def ensure_tables():
     _ensure_aspfiy_enum()
     _ensure_promo_is_fixed_price_column()
     _ensure_data_plan_dispatch_columns()
+    _ensure_default_integrations()
 
 
 @app.on_event("shutdown")
@@ -710,6 +712,121 @@ def _ensure_data_plan_dispatch_columns() -> None:
         logging.getLogger(__name__).info("Added data_plans dispatch columns.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure data_plans dispatch columns: %s", exc)
+
+
+def _ensure_default_integrations() -> None:
+    from app.models.integration import IntegrationProvider, PaymentGateway
+    db = SessionLocal()
+    try:
+        providers_spec = [
+            {
+                "name": "SMEPlug",
+                "identifier": "smeplug",
+                "base_url": settings.smeplug_base_url,
+                "api_key": settings.smeplug_api_key or "",
+                "is_active": bool(settings.smeplug_api_key),
+                "supported_services": ["data"],
+            },
+            {
+                "name": "Amigo",
+                "identifier": "amigo",
+                "base_url": settings.amigo_base_url,
+                "api_key": settings.amigo_api_key or "",
+                "is_active": bool(settings.amigo_api_key),
+                "supported_services": ["data"],
+            },
+            {
+                "name": "ClubKonnect",
+                "identifier": "clubkonnect",
+                "base_url": settings.clubkonnect_base_url,
+                "api_key": settings.clubkonnect_api_key or "",
+                "is_active": bool(settings.clubkonnect_api_key or settings.clubkonnect_enabled),
+                "supported_services": ["airtime", "cable", "electricity", "data"],
+            },
+            {
+                "name": "AutoSync",
+                "identifier": "autosync",
+                "base_url": settings.autosync_base_url,
+                "api_key": settings.autosync_api_key or "",
+                "is_active": bool(settings.autosync_api_key),
+                "supported_services": ["airtime", "data"],
+            },
+            {
+                "name": "BoltNet",
+                "identifier": "boltnet",
+                "base_url": getattr(settings, "boltnet_base_url", "https://boltnet.com/api"),
+                "api_key": getattr(settings, "boltnet_api_key", "") or "",
+                "is_active": bool(getattr(settings, "boltnet_api_key", "")),
+                "supported_services": ["data"],
+            },
+            {
+                "name": "VTPass",
+                "identifier": "vtpass",
+                "base_url": settings.vtpass_base_url,
+                "api_key": settings.vtpass_api_key or "",
+                "is_active": bool(settings.vtpass_enabled or settings.vtpass_api_key),
+                "supported_services": ["airtime", "cable", "electricity"],
+            },
+        ]
+
+        for spec in providers_spec:
+            existing = db.query(IntegrationProvider).filter(IntegrationProvider.identifier == spec["identifier"]).first()
+            if not existing:
+                prov = IntegrationProvider(**spec)
+                db.add(prov)
+            else:
+                if not existing.api_key and spec["api_key"]:
+                    existing.api_key = spec["api_key"]
+                    existing.is_active = True
+                if not existing.base_url and spec["base_url"]:
+                    existing.base_url = spec["base_url"]
+
+        gateways_spec = [
+            {
+                "name": "Monnify",
+                "identifier": "monnify",
+                "public_key": settings.monnify_api_key or "",
+                "secret_key": settings.monnify_secret_key or "",
+                "contract_code": settings.monnify_contract_code or "",
+                "is_active": bool(settings.monnify_secret_key),
+            },
+            {
+                "name": "Paystack",
+                "identifier": "paystack",
+                "secret_key": settings.paystack_secret_key or "",
+                "is_active": bool(settings.paystack_secret_key),
+            },
+            {
+                "name": "Billstack",
+                "identifier": "billstack",
+                "secret_key": settings.billstack_api_key or "",
+                "is_active": bool(settings.billstack_enabled),
+            },
+            {
+                "name": "Aspfiy",
+                "identifier": "aspfiy",
+                "secret_key": settings.aspfiy_secret_key or "",
+                "is_active": bool(settings.aspfiy_enabled),
+            },
+        ]
+
+        for g_spec in gateways_spec:
+            existing_gw = db.query(PaymentGateway).filter(PaymentGateway.identifier == g_spec["identifier"]).first()
+            if not existing_gw:
+                gw = PaymentGateway(**g_spec)
+                db.add(gw)
+            else:
+                if not existing_gw.secret_key and g_spec["secret_key"]:
+                    existing_gw.secret_key = g_spec["secret_key"]
+                    existing_gw.is_active = True
+
+        db.commit()
+        logging.getLogger(__name__).info("Ensured default integration providers and payment gateways.")
+    except Exception as exc:
+        db.rollback()
+        logging.getLogger(__name__).warning("Could not ensure default integrations: %s", exc)
+    finally:
+        db.close()
 
 
 @app.get("/healthz")
