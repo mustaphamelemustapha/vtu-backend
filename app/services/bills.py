@@ -11,6 +11,9 @@ from typing import Any
 import httpx
 
 from app.core.config import get_settings
+from app.core.database import SessionLocal
+from app.models.system_settings import SystemSettings
+from app.models.integration import IntegrationProvider
 from app.providers.autosync_provider import AutosyncProvider
 from app.providers.boltnet_provider import BoltnetProvider
 from app.providers.telecom_abode_provider import TelecomAbodeProvider
@@ -1872,7 +1875,39 @@ class TelecomAbodeBillsProvider:
         return []
 
 def get_bills_provider():
-    choice = str(settings.bills_provider or "auto").strip().lower()
+    db = SessionLocal()
+    try:
+        active_provider = db.query(IntegrationProvider).filter(
+            IntegrationProvider.is_active == True,
+            IntegrationProvider.identifier.in_(["vtpass", "clubkonnect", "autosync", "boltnet", "telecom_abode"])
+        ).first()
+
+        if active_provider:
+            choice = active_provider.identifier.lower()
+            api_key = active_provider.api_key
+            base_url = active_provider.base_url
+            api_secret = active_provider.api_secret
+            config = active_provider.additional_config or {}
+
+            if choice == "clubkonnect":
+                user_id = api_secret or config.get("user_id")
+                return ClubKonnectBillsProvider(base_url=base_url, user_id=user_id, api_key=api_key)
+            if choice == "vtpass":
+                public_key = config.get("public_key")
+                return VTPassBillsProvider(base_url=base_url, api_key=api_key, secret_key=api_secret, public_key=public_key)
+            if choice == "autosync":
+                return AutosyncBillsProvider(api_key=api_key, base_url=base_url)
+            if choice == "boltnet":
+                return BoltnetBillsProvider(api_key=api_key, base_url=base_url)
+            if choice == "telecom_abode":
+                return TelecomAbodeBillsProvider()
+
+        db_settings = db.query(SystemSettings).first()
+        db_choice = db_settings.active_vtu_provider if db_settings else None
+    finally:
+        db.close()
+
+    choice = db_choice or str(settings.bills_provider or "auto").strip().lower()
 
     has_vtpass = bool(settings.vtpass_enabled and settings.vtpass_api_key and settings.vtpass_secret_key)
     has_clubkonnect = bool((settings.nello_user_id or settings.clubkonnect_user_id) and (settings.nello_api_key or settings.clubkonnect_api_key))

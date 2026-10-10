@@ -14,8 +14,10 @@ from app.models.admin_audit_log import AdminAuditLog
 from app.models.virtual_account import VirtualAccount, VirtualAccountProvider, VirtualAccountStatus
 from app.models.agent import RewardCampaign, CampaignType, AgentReward, AgentRewardStatus, AgentStat
 from app.models.system_setting import SystemSetting
+from app.models.system_settings import SystemSettings
 from app.models.financial_ledger import FinancialLedger, FinancialCategory, EntryType
 from app.models.promo import PromoCode, UserPromo
+from app.models.integration import IntegrationProvider, PaymentGateway, ProviderType
 
 __all__ = [
     "User",
@@ -50,9 +52,13 @@ __all__ = [
     "AgentRewardStatus",
     "AgentStat",
     "SystemSetting",
+    "SystemSettings",
     "FinancialLedger",
     "FinancialCategory",
     "EntryType",
     "PromoCode",
     "UserPromo",
+    "IntegrationProvider",
+    "PaymentGateway",
+    "ProviderType",
 ]

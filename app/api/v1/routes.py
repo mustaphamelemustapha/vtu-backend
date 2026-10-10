@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1.endpoints import auth, wallet, data, transactions, admin, services, notifications, dashboard, security, referrals, webhooks, agent, admin_agent, developer, leaderboard, finance, promos
+from app.api.v1.endpoints import auth, wallet, data, transactions, admin, admin_settings, services, notifications, dashboard, security, referrals, webhooks, agent, admin_agent, developer, leaderboard, finance, promos, integrations
 
 router = APIRouter()
 
@@ -20,4 +20,5 @@ router.include_router(developer.router, prefix="/developer", tags=["developer"])
 router.include_router(leaderboard.router, prefix="/leaderboard", tags=["leaderboard"])
 router.include_router(finance.router, prefix="/admin/finance", tags=["admin_finance"])
 router.include_router(promos.router, prefix="/promos", tags=["promos"])
-
+router.include_router(admin_settings.router, prefix="/admin/settings", tags=["admin_settings"])
+router.include_router(integrations.router, prefix="/admin/integrations", tags=["admin_integrations"])

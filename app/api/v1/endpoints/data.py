@@ -28,6 +28,16 @@ from app.providers.smeplug_provider import SMEPlugProvider
 from app.providers.autosync_provider import AutosyncProvider
 from app.providers.mzdata_provider import MZDataProvider
 from app.providers.boltnet_provider import BoltnetProvider
+from app.models.integration import IntegrationProvider
+
+def get_amigo_client(db: Session) -> AmigoClient:
+    provider = db.query(IntegrationProvider).filter(
+        IntegrationProvider.identifier == "amigo",
+        IntegrationProvider.is_active == True
+    ).first()
+    if provider:
+        return AmigoClient(api_key=provider.api_key, base_url=provider.base_url)
+    return AmigoClient()
 from app.services.bills import get_bills_provider
 from app.services.fraud import enforce_purchase_limits
 from app.services.wallet import get_or_create_wallet, debit_wallet, credit_wallet
@@ -256,7 +266,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
     if breakdown.get("mtn", 0) < 5 or breakdown.get("glo", 0) < 5:
         logger.info("MTN or Glo plans low. Syncing from Amigo...")
         try:
-            amigo = AmigoClient()
+            amigo = get_amigo_client(db)
             res = amigo.fetch_data_plans()
             items = res.get("data", [])
             if items:
@@ -568,7 +578,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                 tx_provider = "boltnet"
 
             elif p_name == "amigo" or (not p_name and network_key in {"mtn", "glo", "airtel", "9mobile"}):
-                amigo = AmigoClient()
+                amigo = get_amigo_client(db)
                 amigo_network_id = resolve_network_id(network_key)
                 amigo_payload = {
                     "network": amigo_network_id,
@@ -831,7 +841,7 @@ def sync_data_plans(db: Session = Depends(get_db)):
 
     # 2. Amigo (All Networks - MTN/GLO/AIRTEL/9MOBILE)
     try:
-        amigo = AmigoClient()
+        amigo = get_amigo_client(db)
         res = amigo.fetch_data_plans()
         items = res.get("data", [])
         for item in items:
