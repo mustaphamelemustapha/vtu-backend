@@ -8,6 +8,12 @@ from app.models.integration import IntegrationProvider
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+# Persistent connection pool with Keep-Alive to eliminate TLS/TCP handshake latency
+_AUTOSYNC_CLIENT = httpx.Client(
+    timeout=httpx.Timeout(connect=8.0, read=25.0, write=10.0, pool=10.0),
+    limits=httpx.Limits(max_keepalive_connections=20, max_connections=50, keepalive_expiry=60.0),
+)
+
 class AutosyncProvider:
     def __init__(self, api_key: str | None = None, db=None):
         _db = db or SessionLocal()
@@ -22,7 +28,7 @@ class AutosyncProvider:
         finally:
             if db is None:
                 _db.close()
-        self.timeout = 30.0
+        self.timeout = 25.0
 
     def _get_headers(self):
         token = self.api_key.strip() if self.api_key else ""
@@ -49,13 +55,12 @@ class AutosyncProvider:
     def _fetch_and_parse_plans(self, url: str, plan_type: str) -> List[Dict[str, Any]]:
         results = []
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.get(url, headers=self._get_headers())
-                data = self._json_or_none(response)
-                
-                if not isinstance(data, dict) or data.get("status") != "ok":
-                    logger.error(f"Autosync {plan_type} plans fetch failed: {data}")
-                    return []
+            response = _AUTOSYNC_CLIENT.get(url, headers=self._get_headers())
+            data = self._json_or_none(response)
+            
+            if not isinstance(data, dict) or data.get("status") != "ok":
+                logger.error(f"Autosync {plan_type} plans fetch failed: {data}")
+                return []
                 
                 category = data.get("data", {}).get("category", {})
                 products = category.get("products", [])
@@ -122,36 +127,35 @@ class AutosyncProvider:
             
         
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(url, json=payload, headers=self._get_headers())
-                logger.info("Autosync POST %s network=%s plan=%s phone=%s status=%d", 
-                            endpoint, network, plan_id, phone, response.status_code)
-                
-                res_data = self._json_or_none(response) or {}
-                
-                status_value = str(res_data.get("status") or "").lower()
-                message = str(res_data.get("message") or "")
-                
-                # "successful", "failed", "pending" according to docs
-                if status_value == "successful":
-                    return {
-                        "status": "success",
-                        "provider_reference": str(res_data.get("reference") or ""),
-                        "error": message
-                    }
-                elif status_value == "pending":
-                    return {
-                        "status": "pending",
-                        "provider_reference": str(res_data.get("reference") or ""),
-                        "error": message
-                    }
-                
+            response = _AUTOSYNC_CLIENT.post(url, json=payload, headers=self._get_headers())
+            logger.info("Autosync POST %s network=%s plan=%s phone=%s status=%d", 
+                        endpoint, network, plan_id, phone, response.status_code)
+            
+            res_data = self._json_or_none(response) or {}
+            
+            status_value = str(res_data.get("status") or "").lower()
+            message = str(res_data.get("message") or "")
+            
+            # "successful", "failed", "pending" according to docs
+            if status_value == "successful":
                 return {
-                    "status": "failed",
+                    "status": "success",
                     "provider_reference": str(res_data.get("reference") or ""),
-                    "error": message or "Purchase failed"
+                    "error": message
                 }
-                
+            elif status_value == "pending":
+                return {
+                    "status": "pending",
+                    "provider_reference": str(res_data.get("reference") or ""),
+                    "error": message
+                }
+            
+            return {
+                "status": "failed",
+                "provider_reference": str(res_data.get("reference") or ""),
+                "error": message or "Purchase failed"
+            }
+            
         except Exception as exc:
             logger.error("Autosync purchase exception: %s", exc)
             ambiguous_hints = (
@@ -170,19 +174,18 @@ class AutosyncProvider:
             
         url = f"{self.base_url}/v1/transactions/{reference}"
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.get(url, headers=self._get_headers())
-                data = self._json_or_none(response) or {}
-                
-                status_value = str(data.get("status") or "").strip().lower()
-                provider_reference = str(data.get("reference") or "")
-                message = str(data.get("message") or "")
+            response = _AUTOSYNC_CLIENT.get(url, headers=self._get_headers())
+            data = self._json_or_none(response) or {}
+            
+            status_value = str(data.get("status") or "").strip().lower()
+            provider_reference = str(data.get("reference") or "")
+            message = str(data.get("message") or "")
 
-                if status_value == "successful":
-                    return {"status": "success", "provider_reference": provider_reference, "error": message}
-                if status_value == "failed":
-                    return {"status": "failed", "provider_reference": provider_reference, "error": message}
-                return {"status": "pending", "provider_reference": provider_reference, "error": message}
+            if status_value == "successful":
+                return {"status": "success", "provider_reference": provider_reference, "error": message}
+            if status_value == "failed":
+                return {"status": "failed", "provider_reference": provider_reference, "error": message}
+            return {"status": "pending", "provider_reference": provider_reference, "error": message}
         except Exception as exc:
             logger.error("Autosync query exception: %s", exc)
             return {"status": "pending", "error": str(exc)}

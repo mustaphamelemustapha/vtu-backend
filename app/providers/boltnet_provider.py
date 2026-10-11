@@ -8,6 +8,12 @@ from app.models.integration import IntegrationProvider
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+# Persistent connection pool with Keep-Alive to eliminate TLS/TCP handshake latency
+_BOLTNET_CLIENT = httpx.Client(
+    timeout=httpx.Timeout(connect=8.0, read=25.0, write=10.0, pool=10.0),
+    limits=httpx.Limits(max_keepalive_connections=20, max_connections=50, keepalive_expiry=60.0),
+)
+
 class BoltnetProviderError(Exception):
     def __init__(self, message: str, *, status_code: int | None = None, raw: str | None = None):
         super().__init__(message)
@@ -46,18 +52,17 @@ class BoltnetProvider:
     def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
         url = f"{self.base_url}/{path.lstrip('/')}"
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.request(method, url, headers=self._get_headers(), json=payload)
-                
-                if response.status_code >= 400:
-                    try:
-                        err_data = response.json()
-                        msg = err_data.get("message") or err_data.get("detail") or response.text
-                    except Exception:
-                        msg = response.text
-                    raise BoltnetProviderError(msg, status_code=response.status_code, raw=response.text)
-                
-                return response.json()
+            response = _BOLTNET_CLIENT.request(method, url, headers=self._get_headers(), json=payload)
+            
+            if response.status_code >= 400:
+                try:
+                    err_data = response.json()
+                    msg = err_data.get("message") or err_data.get("detail") or response.text
+                except Exception:
+                    msg = response.text
+                raise BoltnetProviderError(msg, status_code=response.status_code, raw=response.text)
+            
+            return response.json()
         except httpx.HTTPError as e:
             raise BoltnetProviderError(f"HTTP Error: {str(e)}")
         except Exception as e:

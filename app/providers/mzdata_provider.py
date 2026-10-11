@@ -8,6 +8,12 @@ from app.models.integration import IntegrationProvider
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+# Persistent connection pool with Keep-Alive to eliminate TLS/TCP handshake latency
+_MZDATA_CLIENT = httpx.Client(
+    timeout=httpx.Timeout(connect=8.0, read=25.0, write=10.0, pool=10.0),
+    limits=httpx.Limits(max_keepalive_connections=20, max_connections=50, keepalive_expiry=60.0),
+)
+
 class MZDataProvider:
     def __init__(self, db=None):
         _db = db or SessionLocal()
@@ -22,7 +28,7 @@ class MZDataProvider:
         finally:
             if db is None:
                 _db.close()
-        self.timeout = 30.0
+        self.timeout = 25.0
 
     def _get_headers(self):
         return {
@@ -61,18 +67,17 @@ class MZDataProvider:
         }
         
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(url, json=payload, headers=self._get_headers())
-                logger.info("MZData POST /developer/data/purchase network=%s plan=%s phone=%s status=%d", 
-                            network_str, plan_id, phone, response.status_code)
-                
-                if response.status_code not in (200, 201):
-                    logger.error("MZData purchase error: status=%d response=%s", response.status_code, response.text)
-                
-                res_data = self._json_or_none(response)
-                if res_data is None:
-                    return {"status": "failed", "message": f"Non-JSON response (Status {response.status_code}): {response.text[:200]}"}
-                return res_data
+            response = _MZDATA_CLIENT.post(url, json=payload, headers=self._get_headers())
+            logger.info("MZData POST /developer/data/purchase network=%s plan=%s phone=%s status=%d", 
+                        network_str, plan_id, phone, response.status_code)
+            
+            if response.status_code not in (200, 201):
+                logger.error("MZData purchase error: status=%d response=%s", response.status_code, response.text)
+            
+            res_data = self._json_or_none(response)
+            if res_data is None:
+                return {"status": "failed", "message": f"Non-JSON response (Status {response.status_code}): {response.text[:200]}"}
+            return res_data
         except Exception as e:
             logger.error(f"MZData purchase_data error: {e}")
             return {"status": "failed", "message": str(e)}

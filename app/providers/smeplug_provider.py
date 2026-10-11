@@ -9,6 +9,12 @@ from app.models.integration import IntegrationProvider
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+# Persistent connection pool with Keep-Alive to eliminate TLS/TCP handshake latency
+_SMEPLUG_CLIENT = httpx.Client(
+    timeout=httpx.Timeout(connect=8.0, read=25.0, write=10.0, pool=10.0),
+    limits=httpx.Limits(max_keepalive_connections=20, max_connections=50, keepalive_expiry=60.0),
+)
+
 class SMEPlugProvider:
     def __init__(self, db=None):
         _db = db or SessionLocal()
@@ -23,7 +29,7 @@ class SMEPlugProvider:
         finally:
             if db is None:
                 _db.close()
-        self.timeout = 30.0
+        self.timeout = 25.0
 
     def _get_headers(self):
         return {
@@ -41,14 +47,13 @@ class SMEPlugProvider:
     def get_balance(self) -> float:
         url = f"{self.base_url}/account/balance"
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.get(url, headers=self._get_headers())
-                data = self._json_or_none(response)
-                if isinstance(data, dict):
-                    if "data" in data and isinstance(data["data"], dict) and "balance" in data["data"]:
-                        return float(data["data"]["balance"])
-                    elif "balance" in data:
-                        return float(data["balance"])
+            response = _SMEPLUG_CLIENT.get(url, headers=self._get_headers())
+            data = self._json_or_none(response)
+            if isinstance(data, dict):
+                if "data" in data and isinstance(data["data"], dict) and "balance" in data["data"]:
+                    return float(data["data"]["balance"])
+                elif "balance" in data:
+                    return float(data["balance"])
             return 0.0
         except Exception as e:
             logger.error(f"SMEPlug get_balance error: {e}")
@@ -57,15 +62,14 @@ class SMEPlugProvider:
     def fetch_plans(self) -> dict:
         url = f"{self.base_url}/data/plans"
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.get(url, headers=self._get_headers())
-                logger.info("SMEPlug GET /data/plans status=%d", response.status_code)
-                data = self._json_or_none(response)
-                if isinstance(data, dict):
-                    return data
-                if isinstance(data, list):
-                    return {"status": True, "data": data}
-                return {"status": False, "msg": "Invalid response format"}
+            response = _SMEPLUG_CLIENT.get(url, headers=self._get_headers())
+            logger.info("SMEPlug GET /data/plans status=%d", response.status_code)
+            data = self._json_or_none(response)
+            if isinstance(data, dict):
+                return data
+            if isinstance(data, list):
+                return {"status": True, "data": data}
+            return {"status": False, "msg": "Invalid response format"}
         except Exception as e:
             logger.error(f"SMEPlug fetch_plans error: {e}")
             return {"status": False, "msg": str(e)}
@@ -122,16 +126,15 @@ class SMEPlugProvider:
         }
         
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(url, json=payload, headers=self._get_headers())
-                logger.info("SMEPlug POST /data/purchase network=%s plan=%s phone=%s status=%d", 
-                            network_id, plan_id, phone, response.status_code)
-                
-                if response.status_code != 200:
-                    logger.error("SMEPlug purchase error: status=%d response=%s", response.status_code, response.text)
-                
-                res_data = self._json_or_none(response) or {}
-                return res_data
+            response = _SMEPLUG_CLIENT.post(url, json=payload, headers=self._get_headers())
+            logger.info("SMEPlug POST /data/purchase network=%s plan=%s phone=%s status=%d", 
+                        network_id, plan_id, phone, response.status_code)
+            
+            if response.status_code != 200:
+                logger.error("SMEPlug purchase error: status=%d response=%s", response.status_code, response.text)
+            
+            res_data = self._json_or_none(response) or {}
+            return res_data
         except Exception as e:
             logger.error(f"SMEPlug purchase_data error: {e}")
             return {"status": False, "msg": str(e)}
@@ -172,19 +175,18 @@ class SMEPlugProvider:
     def query_transaction(self, reference: str) -> Dict[str, Any]:
         url = f"{self.base_url}/transactions/{reference}"
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.get(url, headers=self._get_headers())
-                data = self._json_or_none(response) or {}
-                
-                status_value = str(data.get("status") or "").strip().lower()
-                provider_reference = str(data.get("reference") or "")
-                message = str(data.get("response") or data.get("message") or "")
+            response = _SMEPLUG_CLIENT.get(url, headers=self._get_headers())
+            data = self._json_or_none(response) or {}
+            
+            status_value = str(data.get("status") or "").strip().lower()
+            provider_reference = str(data.get("reference") or "")
+            message = str(data.get("response") or data.get("message") or "")
 
-                if status_value == "success":
-                    return {"status": "success", "provider_reference": provider_reference, "error": message}
-                if status_value == "failed":
-                    return {"status": "failed", "provider_reference": provider_reference, "error": message}
-                return {"status": "pending", "provider_reference": provider_reference, "error": message}
+            if status_value == "success":
+                return {"status": "success", "provider_reference": provider_reference, "error": message}
+            if status_value == "failed":
+                return {"status": "failed", "provider_reference": provider_reference, "error": message}
+            return {"status": "pending", "provider_reference": provider_reference, "error": message}
         except Exception as exc:
             logger.error("SMEPlug query exception: %s", exc)
             return {"status": "pending", "error": str(exc)}

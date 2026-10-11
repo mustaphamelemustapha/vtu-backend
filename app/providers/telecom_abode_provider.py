@@ -8,6 +8,12 @@ from app.models.integration import IntegrationProvider
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+# Persistent connection pool with Keep-Alive to eliminate TLS/TCP handshake latency
+_TELECOM_ABODE_CLIENT = httpx.Client(
+    timeout=httpx.Timeout(connect=8.0, read=25.0, write=10.0, pool=10.0),
+    limits=httpx.Limits(max_keepalive_connections=20, max_connections=50, keepalive_expiry=60.0),
+)
+
 class TelecomAbodeProvider:
     def __init__(self, api_key: str | None = None, base_url: str | None = None, db=None):
         _db = db or SessionLocal()
@@ -22,7 +28,7 @@ class TelecomAbodeProvider:
         finally:
             if db is None:
                 _db.close()
-        self.timeout = float(getattr(settings, "telecom_abode_timeout_seconds", 30))
+        self.timeout = float(getattr(settings, "telecom_abode_timeout_seconds", 25))
 
     def _get_headers(self) -> dict:
         token = (self.api_key or "").strip()
@@ -62,35 +68,34 @@ class TelecomAbodeProvider:
         }
 
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(url, json=payload, headers=self._get_headers())
-                logger.info("TelecomAbode POST %s network=%s phone=%s status=%d", 
-                            url, network, phone, response.status_code)
-                
-                res_data = self._json_or_none(response) or {}
-                
-                status_value = str(res_data.get("status") or "").lower()
-                inner_status = str(res_data.get("Status") or "").lower()
-                message = str(res_data.get("message") or "")
-                
-                if status_value == "success" or inner_status == "successful":
-                    return {
-                        "status": "success",
-                        "provider_reference": str(res_data.get("request-id") or request_id),
-                        "error": message
-                    }
-                elif status_value == "pending" or inner_status == "pending":
-                    return {
-                        "status": "pending",
-                        "provider_reference": str(res_data.get("request-id") or request_id),
-                        "error": message
-                    }
-                
+            response = _TELECOM_ABODE_CLIENT.post(url, json=payload, headers=self._get_headers())
+            logger.info("TelecomAbode POST %s network=%s phone=%s status=%d", 
+                        url, network, phone, response.status_code)
+            
+            res_data = self._json_or_none(response) or {}
+            
+            status_value = str(res_data.get("status") or "").lower()
+            inner_status = str(res_data.get("Status") or "").lower()
+            message = str(res_data.get("message") or "")
+            
+            if status_value == "success" or inner_status == "successful":
                 return {
-                    "status": "failed",
+                    "status": "success",
                     "provider_reference": str(res_data.get("request-id") or request_id),
-                    "error": message or "Purchase failed"
+                    "error": message
                 }
+            elif status_value == "pending" or inner_status == "pending":
+                return {
+                    "status": "pending",
+                    "provider_reference": str(res_data.get("request-id") or request_id),
+                    "error": message
+                }
+            
+            return {
+                "status": "failed",
+                "provider_reference": str(res_data.get("request-id") or request_id),
+                "error": message or "Purchase failed"
+            }
                 
         except Exception as exc:
             logger.error("TelecomAbode purchase exception: %s", exc)
@@ -117,23 +122,22 @@ class TelecomAbodeProvider:
         }
 
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(url, json=payload, headers=self._get_headers())
-                logger.info("TelecomAbode POST %s network=%s phone=%s status=%d", 
-                            url, network, phone, response.status_code)
-                
-                res_data = self._json_or_none(response) or {}
-                status_value = str(res_data.get("status") or "").lower()
-                inner_status = str(res_data.get("Status") or "").lower()
-                message = str(res_data.get("message") or "")
-                
-                if status_value == "success" or inner_status == "successful":
-                    return {"status": "success", "provider_reference": str(res_data.get("request-id") or request_id), "error": message}
-                elif status_value == "pending" or inner_status == "pending":
-                    return {"status": "pending", "provider_reference": str(res_data.get("request-id") or request_id), "error": message}
-                
-                return {"status": "failed", "provider_reference": str(res_data.get("request-id") or request_id), "error": message or "Data purchase failed"}
-                
+            response = _TELECOM_ABODE_CLIENT.post(url, json=payload, headers=self._get_headers())
+            logger.info("TelecomAbode POST %s network=%s phone=%s status=%d", 
+                        url, network, phone, response.status_code)
+            
+            res_data = self._json_or_none(response) or {}
+            status_value = str(res_data.get("status") or "").lower()
+            inner_status = str(res_data.get("Status") or "").lower()
+            message = str(res_data.get("message") or "")
+            
+            if status_value == "success" or inner_status == "successful":
+                return {"status": "success", "provider_reference": str(res_data.get("request-id") or request_id), "error": message}
+            elif status_value == "pending" or inner_status == "pending":
+                return {"status": "pending", "provider_reference": str(res_data.get("request-id") or request_id), "error": message}
+            
+            return {"status": "failed", "provider_reference": str(res_data.get("request-id") or request_id), "error": message or "Data purchase failed"}
+            
         except Exception as exc:
             logger.error("TelecomAbode data exception: %s", exc)
             return {"status": "pending", "error": f"Provider error: {str(exc)}"}
@@ -150,16 +154,13 @@ class TelecomAbodeProvider:
             "request-id": str(request_id),
         }
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(url, json=payload, headers=self._get_headers())
-                res_data = self._json_or_none(response) or {}
-                status_value = str(res_data.get("status") or "").lower()
-                message = str(res_data.get("message") or "")
-                
-                if status_value == "success":
-                    return {"status": "success", "provider_reference": str(res_data.get("request-id") or request_id), "error": message}
-                if status_value == "pending":
-                    return {"status": "pending", "provider_reference": str(res_data.get("request-id") or request_id), "error": message}
-                return {"status": "failed", "provider_reference": str(res_data.get("request-id") or request_id), "error": message or "Cable purchase failed"}
+            response = _TELECOM_ABODE_CLIENT.post(url, json=payload, headers=self._get_headers())
+            res_data = self._json_or_none(response) or {}
+            status_value = str(res_data.get("status") or "").lower()
+            if status_value == "success":
+                return {"status": "success", "provider_reference": str(res_data.get("request-id") or request_id), "error": message}
+            if status_value == "pending":
+                return {"status": "pending", "provider_reference": str(res_data.get("request-id") or request_id), "error": message}
+            return {"status": "failed", "provider_reference": str(res_data.get("request-id") or request_id), "error": message or "Cable purchase failed"}
         except Exception as exc:
             return {"status": "pending", "error": f"Provider error: {str(exc)}"}
