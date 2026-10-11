@@ -20,8 +20,11 @@ def _find_matching_ledger(db: Session, *, wallet: Wallet, amount: Decimal, refer
     )
 
 
-def get_or_create_wallet(db: Session, user_id: int, *, commit: bool = True) -> Wallet:
-    wallet = db.query(Wallet).filter(Wallet.user_id == user_id).first()
+def get_or_create_wallet(db: Session, user_id: int, *, commit: bool = True, for_update: bool = False) -> Wallet:
+    query = db.query(Wallet).filter(Wallet.user_id == user_id)
+    if for_update:
+        query = query.with_for_update()
+    wallet = query.first()
     if not wallet:
         wallet = Wallet(user_id=user_id, balance=0)
         db.add(wallet)

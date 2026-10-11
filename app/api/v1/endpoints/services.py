@@ -191,7 +191,7 @@ def exam_packages(exam: str, user: User = Depends(get_current_user)):
 @limiter.limit("5/minute")
 def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _ensure_service_table(db)
-    wallet = get_or_create_wallet(db, user.id)
+    wallet = get_or_create_wallet(db, user.id, for_update=True)
     base_amount = Decimal(payload.amount)
     charge_amount, margin = get_service_charge_for_user(
         db,
@@ -252,6 +252,8 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
     # 1. DEBIT WALLET
     try:
         debit_wallet(db, wallet, charge_amount, reference, "Airtime purchase")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Wallet debit failed: {e}")
         raise HTTPException(status_code=400, detail="Wallet debit failed.")
@@ -419,7 +421,7 @@ def purchase_airtime(request: Request, payload: AirtimePurchaseRequest, user: Us
 @limiter.limit("5/minute")
 def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _ensure_service_table(db)
-    wallet = get_or_create_wallet(db, user.id)
+    wallet = get_or_create_wallet(db, user.id, for_update=True)
     base_amount = Decimal(payload.amount)
     charge_amount, margin = get_service_charge_for_user(
         db,
@@ -441,6 +443,8 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
     # 1. DEBIT WALLET
     try:
         debit_wallet(db, wallet, charge_amount, reference, "Cable subscription")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Wallet debit failed: {e}")
         raise HTTPException(status_code=400, detail="Wallet debit failed.")
@@ -633,7 +637,7 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
     disco = str(payload.disco or "").strip().lower()
     if disco in {"yola", "yedc"}:
         raise HTTPException(status_code=400, detail="Yola Electricity subscription is temporarily unavailable.")
-    wallet = get_or_create_wallet(db, user.id)
+    wallet = get_or_create_wallet(db, user.id, for_update=True)
     base_amount = Decimal(payload.amount)
     charge_amount, margin = get_service_charge_for_user(
         db,
@@ -655,6 +659,8 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
     # 1. DEBIT WALLET
     try:
         debit_wallet(db, wallet, charge_amount, reference, "Electricity purchase")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Wallet debit failed: {e}")
         raise HTTPException(status_code=400, detail="Wallet debit failed.")
@@ -896,7 +902,7 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
         raise HTTPException(status_code=400, detail="Final amount must be greater than zero")
     enforce_purchase_limits(db, user_id=user.id, amount=charge_amount, tx_type=TransactionType.EXAM.value)
 
-    wallet = get_or_create_wallet(db, user.id)
+    wallet = get_or_create_wallet(db, user.id, for_update=True)
     if Decimal(wallet.balance) < charge_amount:
         raise HTTPException(status_code=400, detail="Insufficient balance")
 
@@ -907,6 +913,8 @@ def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User
     # 1. DEBIT WALLET
     try:
         debit_wallet(db, wallet, charge_amount, reference, "Exam pin purchase")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Wallet debit failed: {e}")
         raise HTTPException(status_code=400, detail="Wallet debit failed.")

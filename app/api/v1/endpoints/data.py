@@ -44,6 +44,14 @@ from app.services.wallet import get_or_create_wallet, debit_wallet, credit_walle
 from app.services.pricing import get_price_for_user
 from app.middlewares.rate_limit import limiter
 
+
+def _client_request_reference(prefix: str, user_id: int, request_id: str | None) -> str | None:
+    raw = str(request_id or "").strip()
+    if not raw:
+        return None
+    digest = hashlib.sha256(f"{prefix}:{user_id}:{raw}".encode()).hexdigest()[:24].upper()
+    return f"{prefix}_{digest}"
+
 router = APIRouter()
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -484,15 +492,29 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
             if promo_price < price:
                 price = promo_price
 
-    wallet = get_or_create_wallet(db, user.id)
-    if wallet.balance < price:
+    wallet = get_or_create_wallet(db, user.id, for_update=True)
+    if Decimal(wallet.balance) < price:
         raise HTTPException(status_code=400, detail="Insufficient wallet balance.")
 
-    reference = f"DATA-{int(time.time())}-{secrets.token_hex(4)}".upper()
-    
+    reference = _client_request_reference("DATA", user.id, getattr(payload, "client_request_id", None)) or f"DATA-{int(time.time())}-{secrets.token_hex(4)}".upper()
+
+    existing = db.query(Transaction).filter(
+        Transaction.user_id == user.id,
+        Transaction.reference == reference
+    ).first()
+    if existing:
+        return {
+            "status": existing.status.value if hasattr(existing.status, "value") else str(existing.status),
+            "message": "Duplicate request: returning existing transaction",
+            "reference": existing.reference,
+            "provider_reference": existing.external_reference or "",
+        }
+
     # 1. DEBIT WALLET
     try:
         debit_wallet(db, wallet, price, reference, f"Data Purchase: {plan.plan_name} ({phone})")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Wallet debit failed: {e}")
         raise HTTPException(status_code=400, detail="Wallet debit failed.")
