@@ -23,6 +23,12 @@ class SystemSettingsUpdate(BaseModel):
     support_whatsapp: Optional[str] = None
     announcement_banner: Optional[str] = None
     maintenance_mode: Optional[bool] = None
+    maintenance_message: Optional[str] = None
+    min_app_version: Optional[str] = None
+    latest_app_version: Optional[str] = None
+    play_store_url: Optional[str] = None
+    app_store_url: Optional[str] = None
+    release_notes: Optional[str] = None
 
 @router.get("/")
 def get_settings(db: Session = Depends(get_db), admin=Depends(require_admin)):

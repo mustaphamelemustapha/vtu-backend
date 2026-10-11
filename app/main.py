@@ -233,6 +233,7 @@ def ensure_tables():
         _ensure_referral_ambassador_columns()
         _ensure_aspfiy_enum()
         _ensure_data_plan_dispatch_columns()
+        _ensure_system_settings_columns()
         _ensure_default_integrations()
         return
 
@@ -265,6 +266,7 @@ def ensure_tables():
     _ensure_aspfiy_enum()
     _ensure_promo_is_fixed_price_column()
     _ensure_data_plan_dispatch_columns()
+    _ensure_system_settings_columns()
     _ensure_default_integrations()
 
 
@@ -761,6 +763,38 @@ def _ensure_data_plan_dispatch_columns() -> None:
         logging.getLogger(__name__).info("Added data_plans dispatch columns.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure data_plans dispatch columns: %s", exc)
+
+
+def _ensure_system_settings_columns() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("system_settings_config"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("system_settings_config")}
+        statements: list[str] = []
+        
+        if "maintenance_message" not in cols:
+            statements.append("ALTER TABLE system_settings_config ADD COLUMN maintenance_message TEXT DEFAULT 'Mele Data is currently undergoing scheduled server upgrades. Services will resume shortly.'")
+        if "min_app_version" not in cols:
+            statements.append("ALTER TABLE system_settings_config ADD COLUMN min_app_version VARCHAR(50) DEFAULT '1.0.0'")
+        if "latest_app_version" not in cols:
+            statements.append("ALTER TABLE system_settings_config ADD COLUMN latest_app_version VARCHAR(50) DEFAULT '1.0.0'")
+        if "play_store_url" not in cols:
+            statements.append("ALTER TABLE system_settings_config ADD COLUMN play_store_url VARCHAR(255) DEFAULT 'https://play.google.com/store/apps/details?id=com.mmtech.axisvtu'")
+        if "app_store_url" not in cols:
+            statements.append("ALTER TABLE system_settings_config ADD COLUMN app_store_url VARCHAR(255) DEFAULT 'https://apps.apple.com/app/meledata'")
+        if "release_notes" not in cols:
+            statements.append("ALTER TABLE system_settings_config ADD COLUMN release_notes TEXT")
+
+        if not statements:
+            return
+
+        with engine.begin() as conn:
+            for statement in statements:
+                conn.execute(text(statement))
+        logging.getLogger(__name__).info("Added system_settings_config columns for app updates and maintenance.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure system_settings_config columns: %s", exc)
 
 
 def _ensure_default_integrations() -> None:

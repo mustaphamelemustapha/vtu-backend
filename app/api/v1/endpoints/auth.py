@@ -21,6 +21,7 @@ from app.services.wallet import get_or_create_wallet
 from app.services.email import send_password_reset_email, send_password_reset_otp_email, send_transaction_pin_reset_email, send_welcome_email
 from app.services.referrals import ensure_user_referral_code, attach_signup_referral
 from app.services.transaction_pin import set_pin
+from app.models.system_settings import SystemSettings
 
 settings = get_settings()
 router = APIRouter()
@@ -336,12 +337,20 @@ def delete_me(
 
 
 @router.get("/app-config")
-def app_config():
+def app_config(db: Session = Depends(get_db)):
+    cfg = db.query(SystemSettings).first()
     return {
-        "min_app_version": settings.min_app_version,
-        "latest_app_version": settings.latest_app_version,
-        "play_store_url": settings.play_store_url,
-        "app_store_url": settings.app_store_url,
+        "app_name": getattr(cfg, "app_name", None) or settings.app_name,
+        "min_app_version": getattr(cfg, "min_app_version", None) or settings.min_app_version,
+        "latest_app_version": getattr(cfg, "latest_app_version", None) or settings.latest_app_version,
+        "play_store_url": getattr(cfg, "play_store_url", None) or settings.play_store_url,
+        "app_store_url": getattr(cfg, "app_store_url", None) or settings.app_store_url,
+        "maintenance_mode": bool(getattr(cfg, "maintenance_mode", False)),
+        "maintenance_message": getattr(cfg, "maintenance_message", None) or "Mele Data is currently undergoing scheduled server upgrades. Services will resume shortly.",
+        "release_notes": getattr(cfg, "release_notes", None) or "",
+        "announcement_banner": getattr(cfg, "announcement_banner", None),
+        "support_phone": getattr(cfg, "support_phone", None),
+        "support_whatsapp": getattr(cfg, "support_whatsapp", None),
     }
 
 

@@ -18,4 +18,10 @@ class SystemSettings(Base):
     support_whatsapp = Column(String(50), nullable=True)
     announcement_banner = Column(Text, nullable=True)
     maintenance_mode = Column(Boolean, default=False)
+    maintenance_message = Column(Text, nullable=True, default="Mele Data is currently undergoing scheduled server upgrades. Services will resume shortly.")
+    min_app_version = Column(String(50), nullable=True, default="1.0.0")
+    latest_app_version = Column(String(50), nullable=True, default="1.0.0")
+    play_store_url = Column(String(255), nullable=True, default="https://play.google.com/store/apps/details?id=com.mmtech.axisvtu")
+    app_store_url = Column(String(255), nullable=True, default="https://apps.apple.com/app/meledata")
+    release_notes = Column(Text, nullable=True)
 
