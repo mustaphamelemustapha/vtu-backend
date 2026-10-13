@@ -2128,29 +2128,75 @@ def get_audit_logs(
         "page_size": page_size
     }
 
-@router.post("/data-plans/clean-legacy")
-def clean_legacy_data_plans(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+@router.post("/data-plans/delete-autosynced")
+def delete_autosynced_data_plans(
+    scope: str = Query("autosynced", description="Scope: 'autosynced', 'all', or provider name"),
+    admin: User = Depends(require_admin), 
+    db: Session = Depends(get_db)
+):
     """
-    Deletes legacy data plans that do not follow the new provider:network:id canonical format,
-    which usually show up as 'unknown' provider.
+    Deletes autosynced data plans (from amigo, autosync, clubkonnect, unknown, or legacy codes)
+    or all data plans if scope='all', while leaving manually added plans intact by default.
     """
     plans = db.query(DataPlan).all()
     deleted = 0
+    scope_lower = (scope or "autosynced").strip().lower()
+    
     for plan in plans:
-        code = str(plan.plan_code or "")
+        code = str(plan.plan_code or "").strip().lower()
         colons = code.count(":")
-        provider = str(plan.provider or "").strip()
+        provider = str(plan.provider or "").strip().lower()
         
-        if colons < 2 or not provider or provider.lower() == "unknown":
+        should_delete = False
+        if scope_lower == "all":
+            should_delete = True
+        elif scope_lower == "autosynced":
+            if (
+                colons < 2
+                or not provider
+                or provider in ("unknown", "amigo", "autosync", "clubkonnect")
+                or code.startswith(("amigo:", "autosync:", "clubkonnect:", "legacy:"))
+            ):
+                should_delete = True
+        else:
+            # Delete plans for a specific provider
+            if provider == scope_lower or code.startswith(f"{scope_lower}:"):
+                should_delete = True
+                
+        if should_delete:
             db.delete(plan)
             deleted += 1
-            
+
     db.commit()
+
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action="data_plans_delete_autosynced",
+        target=scope_lower,
+        details={"deleted_count": deleted, "scope": scope_lower},
+    )
+    db.add(audit_log)
+    db.commit()
+
     try:
         _invalidate_plans_cache()
     except Exception:
         pass
-    return {"status": "ok", "message": f"Successfully deleted {deleted} legacy/unknown data plans!"}
+        
+    return {
+        "status": "ok",
+        "deleted_count": deleted,
+        "message": f"Successfully deleted {deleted} data plan(s) (scope: {scope_lower})."
+    }
+
+
+@router.post("/data-plans/clean-legacy")
+def clean_legacy_data_plans(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    """
+    Deletes legacy data plans and autosynced plans (amigo, autosync, clubkonnect, unknown).
+    """
+    return delete_autosynced_data_plans(scope="autosynced", admin=admin, db=db)
+
 
 @router.post("/data-plans")
 def create_data_plan(payload: DataPlanUpdate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
