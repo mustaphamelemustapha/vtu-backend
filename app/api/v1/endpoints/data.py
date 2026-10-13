@@ -637,6 +637,49 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                     p_res = {"status": "pending", "provider_reference": res.external_reference}
                 else:
                     p_res = {"status": "failed", "error": res.message}
+
+            elif p_name == "meledata" or (p_name and p_name not in ("amigo", "clubkonnect", "smeplug", "sim", "autosync", "mzdata", "boltnet")):
+                from app.core.database import SessionLocal
+                _db = SessionLocal()
+                try:
+                    prov = _db.query(IntegrationProvider).filter(IntegrationProvider.identifier == p_name).first()
+                    if prov and prov.api_key:
+                        tx_provider = p_name
+                        b_url = str(prov.base_url or "https://api.meledata.ng/api/v1").rstrip("/")
+                        buy_url = f"{b_url}/developer/data/purchase"
+                        hdrs = {
+                            "Authorization": f"Bearer {prov.api_key}",
+                            "X-API-Key": prov.api_key,
+                            "Content-Type": "application/json"
+                        }
+                        payload = {
+                            "network": network_key.upper(),
+                            "phone_number": phone,
+                            "plan_id": str(p_plan_id or plan_plan_code),
+                            "reference": target_ref
+                        }
+                        import requests
+                        r = requests.post(buy_url, json=payload, headers=hdrs, timeout=25)
+                        r_data = r.json() if "application/json" in r.headers.get("content-type", "") else {}
+                        if r.status_code == 200 and r_data.get("status"):
+                            p_res = {
+                                "status": "success",
+                                "provider_reference": str(r_data.get("data", {}).get("reference") or target_ref)
+                            }
+                        elif r.status_code in (200, 202) and str(r_data.get("data", {}).get("status", "")).lower() in ("pending", "processing"):
+                            p_res = {
+                                "status": "pending",
+                                "provider_reference": str(r_data.get("data", {}).get("reference") or target_ref)
+                            }
+                        else:
+                            p_res = {
+                                "status": "failed",
+                                "error": r_data.get("message") or f"Upstream error HTTP {r.status_code}"
+                            }
+                    else:
+                        p_res = {"status": "failed", "error": f"Provider '{p_name}' not configured or missing API key."}
+                finally:
+                    _db.close()
                     
             elif network_key == "airtel":
                 sme = SMEPlugProvider()

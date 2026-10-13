@@ -124,8 +124,76 @@ def get_provider_plans(identifier: str, network: Optional[str] = None, db: Sessi
         except Exception as e:
             return {"status": False, "message": f"Failed to fetch ClubKonnect plans: {str(e)}", "plans": []}
 
+    # 4. Generic / MELE DATA / Custom Provider
     else:
-        return {"status": False, "message": f"Live catalog fetching not supported for '{clean_identifier}'.", "plans": []}
+        prov = db.query(IntegrationProvider).filter(IntegrationProvider.identifier == clean_identifier).first()
+        base_url = str((prov.base_url if prov else None) or ("https://api.meledata.ng/api/v1" if clean_identifier == "meledata" else "")).rstrip("/")
+        api_key = (prov.api_key if prov else "") or ""
+
+        if not base_url or not api_key:
+            return {
+                "status": False,
+                "message": f"Provider '{clean_identifier}' is missing API Base URL or API Key in Integrations settings.",
+                "plans": []
+            }
+
+        import requests
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "X-API-Key": api_key,
+            "Accept": "application/json"
+        }
+
+        candidates = [
+            f"{base_url}/developer/data/plans",
+            f"{base_url}/data/plans",
+            f"{base_url}/api/v1/developer/data/plans",
+            f"{base_url}/api/v1/data/plans",
+        ]
+
+        last_error = "Could not reach upstream provider"
+        for url in candidates:
+            try:
+                resp = requests.get(url, headers=headers, timeout=12)
+                if resp.status_code == 200:
+                    data = resp.json() if "application/json" in resp.headers.get("content-type", "") else {}
+                    raw_plans = None
+                    if isinstance(data, dict):
+                        if isinstance(data.get("data"), dict) and "plans" in data["data"]:
+                            raw_plans = data["data"]["plans"]
+                        elif isinstance(data.get("data"), list):
+                            raw_plans = data["data"]
+                        elif isinstance(data.get("plans"), list):
+                            raw_plans = data["plans"]
+                    elif isinstance(data, list):
+                        raw_plans = data
+
+                    if isinstance(raw_plans, list) and len(raw_plans) > 0:
+                        parsed_plans = []
+                        for p in raw_plans:
+                            nw = str(p.get("network") or "").lower()
+                            if network and nw != network.strip().lower():
+                                continue
+                            p_id = str(p.get("plan_id") or p.get("id") or p.get("plan_code") or "")
+                            parsed_plans.append({
+                                "network": nw,
+                                "plan_code": p.get("plan_code") or f"{clean_identifier}:{nw}:{p_id}",
+                                "plan_name": p.get("plan_name") or p.get("name"),
+                                "data_size": p.get("data_size") or p.get("size") or p.get("plan_name"),
+                                "price": float(p.get("price") or p.get("amount") or 0),
+                                "provider": clean_identifier,
+                                "provider_plan_id": p_id
+                            })
+                        return {"status": True, "provider": clean_identifier, "plans": parsed_plans}
+                elif resp.status_code in (401, 403):
+                    last_error = f"Authentication failed (HTTP {resp.status_code}). Please verify your API key."
+                else:
+                    last_error = f"HTTP {resp.status_code}: {resp.text[:120]}"
+            except Exception as e:
+                last_error = str(e)
+                continue
+
+        return {"status": False, "message": f"{clean_identifier.upper()} error: {last_error}", "plans": []}
 
 
 # -----------------
@@ -236,20 +304,27 @@ def test_provider_connection(payload: TestProviderRequest, db: Session = Depends
         except Exception as e:
             return {"status": False, "message": f"ClubKonnect error: {str(e)}"}
 
-    # 4. Generic Provider
+    # 4. Generic / MELE DATA / Custom Provider
     else:
         if not base_url:
             return {"status": False, "message": "API Base URL is required to test custom provider connection."}
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-        for endpoint in ["/account/balance", "/wallet/balance", "/balance", "/user", ""]:
+        headers = {"Authorization": f"Bearer {api_key}", "X-API-Key": api_key} if api_key else {}
+        for endpoint in ["/developer/wallet/balance", "/developer/user", "/wallet/balance", "/account/balance", "/balance", "/user", ""]:
             try:
                 test_url = f"{base_url}{endpoint}"
                 resp = requests.get(test_url, headers=headers, timeout=10)
                 if resp.status_code in (200, 201):
                     data = resp.json() if "application/json" in resp.headers.get("content-type", "") else {"text": resp.text}
+                    bal = None
+                    if isinstance(data, dict):
+                        if isinstance(data.get("data"), dict) and "balance" in data["data"]:
+                            bal = data["data"]["balance"]
+                        elif "balance" in data:
+                            bal = data["balance"]
                     return {
                         "status": True,
                         "message": f"Connected successfully to {test_url} (HTTP {resp.status_code})",
+                        "balance": float(bal) if bal is not None else None,
                         "raw_response": data
                     }
             except Exception:
