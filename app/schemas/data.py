@@ -8,8 +8,8 @@ class DataPlanOut(BaseModel):
     network: str
     plan_code: str
     plan_name: str
-    data_size: str
-    validity: str
+    data_size: Optional[str] = "—"
+    validity: Optional[str] = "30 Days"
     price: Decimal
     base_price: Optional[Decimal] = None
     promo_active: bool = False

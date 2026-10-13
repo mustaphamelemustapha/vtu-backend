@@ -232,61 +232,20 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
         user.email, all_count, len(plans), breakdown
     )
 
-    # 1. AIRTEL -> SMEPlug Sync (If low)
-    if breakdown.get("airtel", 0) < 5:
-        logger.info("Airtel plans low. Syncing from SMEPlug...")
+    # Only if database has absolutely 0 plans in total, attempt a quick bootstrap
+    if all_count == 0:
+        logger.info("Database has 0 data plans. Attempting initial bootstrap sync...")
         try:
             sme = SMEPlugProvider()
             items = sme.get_airtel_plans()
             if items:
-                touched = 0
                 for item in items:
                     item["provider"] = "smeplug"
-                    touched += 1 if _upsert_plan_from_provider(db, item) else 0
-                if touched:
-                    db.commit()
-                    plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
-                    logger.info("SMEPlug sync finished (Airtel). Touched %d plans.", touched)
+                    _upsert_plan_from_provider(db, item)
+                db.commit()
+                plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
         except Exception as exc:
-            logger.warning("SMEPlug Airtel sync failed: %s", exc)
-
-    # 2. 9MOBILE -> ClubKonnect/Bills Sync (If low)
-    if breakdown.get("9mobile", 0) < 5:
-        logger.info("9mobile plans low. Syncing from Bills Provider...")
-        try:
-            provider = get_bills_provider()
-            if hasattr(provider, "fetch_data_variations"):
-                items = provider.fetch_data_variations("9mobile")
-                if items:
-                    touched = 0
-                    for item in items:
-                        item["network"] = "9mobile"
-                        item["provider"] = str(getattr(provider, "name", "clubkonnect")).lower()
-                        touched += 1 if _upsert_plan_from_provider(db, item) else 0
-                    if touched:
-                        db.commit()
-                        plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
-                        logger.info("9mobile sync finished. Touched %d plans.", touched)
-        except Exception as exc:
-            logger.warning("9mobile sync failed: %s", exc)
-
-    # 3. MTN/GLO -> Amigo Sync (If low)
-    if breakdown.get("mtn", 0) < 5 or breakdown.get("glo", 0) < 5:
-        logger.info("MTN or Glo plans low. Syncing from Amigo...")
-        try:
-            amigo = get_amigo_client(db)
-            res = amigo.fetch_data_plans()
-            items = res.get("data", [])
-            if items:
-                touched = 0
-                for item in items:
-                    touched += 1 if _upsert_plan_from_provider(db, item) else 0
-                if touched:
-                    db.commit()
-                    plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
-                    logger.info("Amigo sync finished. Touched %d plans.", touched)
-        except Exception as exc:
-            logger.warning("Amigo sync failed: %s", exc)
+            logger.warning("Bootstrap sync failed: %s", exc)
 
     promo_snapshot = _mtn_1gb_promo_snapshot(db)
     user_promo_used = _user_has_used_mtn_1gb_promo(db, user.id)
@@ -363,12 +322,12 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                 
             priced.append(
                 DataPlanOut(
-                    id=plan.id,
-                    network=plan.network,
-                    plan_code=plan.plan_code,
-                    plan_name=_clean_plan_label(plan.plan_name),
-                    data_size=plan.data_size,
-                    validity=plan.validity,
+                    id=int(plan.id),
+                    network=str(plan.network or "").strip().lower(),
+                    plan_code=str(plan.plan_code or ""),
+                    plan_name=_clean_plan_label(plan.plan_name or "Data Bundle"),
+                    data_size=str(plan.data_size or "—"),
+                    validity=str(plan.validity or "30 Days"),
                     price=price,
                     base_price=plan.base_price,
                     promo_active=promo_active,
@@ -377,7 +336,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                     promo_remaining=promo_remaining,
                     promo_limit=promo_limit,
                     provider=plan.provider,
-                    provider_plan_id=plan.provider_plan_id,
+                    provider_plan_id=str(plan.provider_plan_id or "") if plan.provider_plan_id else None,
                     cashback_amount=cashback_amount,
                     cashback_label=cashback_label,
                     data_type=getattr(plan, "data_type", None),
