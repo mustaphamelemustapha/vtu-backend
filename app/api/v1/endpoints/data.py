@@ -217,7 +217,8 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
 @router.get("/plans", response_model=list[DataPlanOut])
 def list_data_plans(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     all_count = db.query(DataPlan).count()
-    plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
+    # Match plans where is_active is True or NULL (never drop plans unless is_active is explicitly False)
+    plans = db.query(DataPlan).filter(DataPlan.is_active != False).all()
     
     if all_count > 0 and not plans:
         logger.warning("DB has %d plans but none are active. Returning empty list.", all_count)
@@ -232,79 +233,71 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
         user.email, all_count, len(plans), breakdown
     )
 
-    promo_snapshot = _mtn_1gb_promo_snapshot(db)
-    user_promo_used = _user_has_used_mtn_1gb_promo(db, user.id)
+    promo_snapshot = {"active": False, "remaining": 0, "limit": 0, "price": Decimal("250")}
+    try:
+        promo_snapshot = _mtn_1gb_promo_snapshot(db)
+    except Exception as promo_exc:
+        logger.warning("Failed to get promo snapshot: %s", promo_exc)
+
+    user_promo_used = False
+    try:
+        user_promo_used = _user_has_used_mtn_1gb_promo(db, user.id)
+    except Exception as promo_user_exc:
+        logger.warning("Failed to check user promo: %s", promo_user_exc)
     
-    # PERFORMANCE OPTIMIZATION: Fetch pricing rules once to avoid N+1 query timeout
-    from app.models import PricingRule, PricingRole, UserRole
-    pricing_role = PricingRole.RESELLER if user.role == UserRole.AGENT else PricingRole.USER
-    all_rules = db.query(PricingRule).filter(PricingRule.role == pricing_role).all()
-    rule_map = {str(r.network or "").strip().lower(): r for r in all_rules}
+    # PERFORMANCE OPTIMIZATION: Fetch pricing rules safely
+    rule_map = {}
+    pricing_role = None
+    try:
+        from app.models import PricingRule, PricingRole, UserRole
+        pricing_role = PricingRole.RESELLER if getattr(user, "role", None) == UserRole.AGENT else PricingRole.USER
+        all_rules = db.query(PricingRule).filter(PricingRule.role == pricing_role).all()
+        rule_map = {str(r.network or "").strip().lower(): r for r in all_rules}
+    except Exception as rule_exc:
+        logger.warning("Failed to load pricing rules: %s", rule_exc)
     
     priced = []
     for plan in plans:
         try:
-            # User role specific price
+            # 1. Calculate price safely
             display = getattr(plan, "display_price", None)
             agent_price = getattr(plan, "agent_price", None)
+            base = Decimal(str(plan.base_price if plan.base_price is not None else "0"))
             
-            if pricing_role == PricingRole.RESELLER and agent_price is not None:
+            if pricing_role is not None and str(pricing_role).lower() in ("reseller", "agent") and agent_price is not None:
                 price = Decimal(str(agent_price))
             elif display is not None:
                 price = Decimal(str(display))
             else:
                 rule = rule_map.get(str(plan.network or "").strip().lower())
-                margin = Decimal(str(rule.margin)) if rule else Decimal("0")
+                margin = Decimal("0")
+                if rule and getattr(rule, "margin", None) is not None:
+                    try:
+                        margin = Decimal(str(rule.margin))
+                    except Exception:
+                        margin = Decimal("0")
                 margin_type = str(getattr(rule, "margin_type", None) or "fixed").strip().lower()
-                if margin_type not in ("fixed", "percentage"):
-                    margin_type = "fixed"
-                
-                base = Decimal(str(plan.base_price or "0"))
                 if margin_type == "percentage":
                     price = base + (base * margin / Decimal("100"))
                 else:
                     price = base + margin
-            
-            # Promo logic from database fields
-            promo_active = bool(getattr(plan, "promo_active", False))
-            promo_old_price = getattr(plan, "promo_old_price", None)
-            promo_label = getattr(plan, "promo_label", None)
-            cashback_amount = getattr(plan, "cashback_amount", None)
-            cashback_label = getattr(plan, "cashback_label", None)
-            promo_remaining = None
-            promo_limit = None
+        except Exception as price_err:
+            logger.warning("Pricing calculation error for plan %s: %s", plan.id, price_err)
+            price = Decimal(str(getattr(plan, "display_price", None) or getattr(plan, "base_price", None) or "0"))
 
-            # Calculate previous price and percent off if not set but promo is active
-            if promo_active:
-                standard_price = price
-                if display is not None:
-                    # price is already display_price. Standard price would be calculated:
-                    rule = rule_map.get(str(plan.network or "").strip().lower())
-                    margin = Decimal(str(rule.margin)) if rule else Decimal("0")
-                    margin_type = str(getattr(rule, "margin_type", None) or "fixed").strip().lower()
-                    base = Decimal(str(plan.base_price or "0"))
-                    if margin_type == "percentage":
-                        standard_price = base + (base * margin / Decimal("100"))
-                    else:
-                        standard_price = base + margin
-                
-                if promo_old_price is None:
-                    promo_old_price = standard_price
-                
-                # If old price is higher than price, calculate percentage off if label is missing
-                if promo_label is None and promo_old_price > price and promo_old_price > 0:
-                    discount_pct = int(round((promo_old_price - price) / promo_old_price * Decimal("100")))
-                    if discount_pct > 0:
-                        promo_label = f"{discount_pct}% off"
+        # Promo logic
+        promo_active = bool(getattr(plan, "promo_active", False))
+        promo_old_price = getattr(plan, "promo_old_price", None)
+        promo_label = getattr(plan, "promo_label", None)
+        cashback_amount = getattr(plan, "cashback_amount", None)
+        cashback_label = getattr(plan, "cashback_label", None)
+        promo_remaining = None
+        promo_limit = None
 
-            # Fallback/Legacy MTN 1GB Promo config settings compatibility
-            if not promo_active and plan.network == "mtn" and _is_mtn_1gb_promo_plan(plan):
-                promo_active = True
-                promo_old_price = price
-                price = settings.promo_mtn_1gb_price
-                promo_label = "PROMO"
-                promo_limit = settings.promo_mtn_1gb_limit
-                
+        if promo_active and promo_old_price is None:
+            promo_old_price = price
+
+        try:
             priced.append(
                 DataPlanOut(
                     id=int(plan.id),
@@ -314,35 +307,31 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
                     data_size=str(plan.data_size or "—"),
                     validity=str(plan.validity or "30 Days"),
                     price=price,
-                    base_price=plan.base_price,
+                    base_price=Decimal(str(plan.base_price)) if getattr(plan, "base_price", None) is not None else None,
                     promo_active=promo_active,
-                    promo_old_price=promo_old_price,
-                    promo_label=promo_label,
+                    promo_old_price=Decimal(str(promo_old_price)) if promo_old_price is not None else None,
+                    promo_label=str(promo_label) if promo_label is not None else None,
                     promo_remaining=promo_remaining,
                     promo_limit=promo_limit,
-                    provider=plan.provider,
-                    provider_plan_id=str(plan.provider_plan_id or "") if plan.provider_plan_id else None,
-                    cashback_amount=cashback_amount,
-                    cashback_label=cashback_label,
-                    data_type=getattr(plan, "data_type", None),
+                    provider=str(plan.provider) if plan.provider else None,
+                    provider_plan_id=str(plan.provider_plan_id) if plan.provider_plan_id else None,
+                    cashback_amount=Decimal(str(cashback_amount)) if cashback_amount is not None else None,
+                    cashback_label=str(cashback_label) if cashback_label is not None else None,
+                    data_type=str(getattr(plan, "data_type", None)) if getattr(plan, "data_type", None) else None,
                 )
             )
-        except Exception as e:
-            logger.warning("Failed to price plan %s: %s", plan.id, e)
+        except Exception as ser_err:
+            logger.warning("Failed to serialize plan %s: %s", plan.id, ser_err)
             continue
     
     try:
-        # Sort criteria: 
-        # 1. Network (alphabetical: 9mobile, airtel, glo, mtn)
-        # 2. Price (lowest to highest)
-        # 3. Data size (fallback for same-price bundles)
         priced.sort(key=lambda p: (
             str(p.network or "").lower(),
             float(p.price or 0),
             _parse_size_gb(p.data_size or p.plan_name) or 0
         ))
-    except Exception as e:
-        logger.warning("Failed to sort data plans: %s", e)
+    except Exception as sort_err:
+        logger.warning("Failed to sort data plans: %s", sort_err)
         
     logger.info("Returning %d active data plans for user %s", len(priced), user.email)
     return priced
