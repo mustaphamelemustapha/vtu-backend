@@ -2147,6 +2147,7 @@ def delete_autosynced_data_plans(
         colons = code.count(":")
         provider = str(plan.provider or "").strip().lower()
         
+        name = str(plan.plan_name or "").strip().lower()
         should_delete = False
         if scope_lower == "all":
             should_delete = True
@@ -2156,6 +2157,7 @@ def delete_autosynced_data_plans(
                 or not provider
                 or provider in ("unknown", "amigo", "autosync", "clubkonnect")
                 or code.startswith(("amigo:", "autosync:", "clubkonnect:", "legacy:"))
+                or (provider == "smeplug" and ("talk more" in name or "20min" in name or "30min" in name or "min" in name or str(plan.data_size or "").strip() in ("—", "-", "")))
             ):
                 should_delete = True
         else:

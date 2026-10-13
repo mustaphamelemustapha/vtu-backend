@@ -232,21 +232,6 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
         user.email, all_count, len(plans), breakdown
     )
 
-    # Only if database has absolutely 0 plans in total, attempt a quick bootstrap
-    if all_count == 0:
-        logger.info("Database has 0 data plans. Attempting initial bootstrap sync...")
-        try:
-            sme = SMEPlugProvider()
-            items = sme.get_airtel_plans()
-            if items:
-                for item in items:
-                    item["provider"] = "smeplug"
-                    _upsert_plan_from_provider(db, item)
-                db.commit()
-                plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
-        except Exception as exc:
-            logger.warning("Bootstrap sync failed: %s", exc)
-
     promo_snapshot = _mtn_1gb_promo_snapshot(db)
     user_promo_used = _user_has_used_mtn_1gb_promo(db, user.id)
     
