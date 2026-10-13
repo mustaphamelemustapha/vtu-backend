@@ -20,7 +20,7 @@ class SMEPlugProvider:
         _db = db or SessionLocal()
         try:
             db_prov = _db.query(IntegrationProvider).filter(IntegrationProvider.identifier == "smeplug").first()
-            if db_prov and db_prov.is_active:
+            if db_prov and (db_prov.is_active or db_prov.api_key):
                 self.base_url = str(db_prov.base_url or settings.smeplug_base_url).rstrip("/")
                 self.api_key = db_prov.api_key or settings.smeplug_api_key
             else:

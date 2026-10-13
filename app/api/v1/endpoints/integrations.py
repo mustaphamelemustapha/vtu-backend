@@ -50,6 +50,84 @@ def create_provider(provider: ProviderCreate, db: Session = Depends(get_db), adm
     db.refresh(db_obj)
     return db_obj
 
+
+# -----------------
+# Provider Plans Discovery
+# -----------------
+
+@router.get("/providers/{identifier}/plans")
+def get_provider_plans(identifier: str, network: Optional[str] = None, db: Session = Depends(get_db), admin=Depends(require_admin)):
+    """
+    Fetch live data plan catalog from a supported integrated provider.
+    Used by admin data plans management to inspect and import plan IDs directly.
+    """
+    clean_identifier = (identifier or "").strip().lower()
+    plans = []
+
+    # 1. SMEPlug
+    if clean_identifier == "smeplug":
+        try:
+            from app.providers.smeplug_provider import SMEPlugProvider
+            sme = SMEPlugProvider(db=db)
+            all_plans = sme.get_all_plans()
+            if network:
+                plans = [p for p in all_plans if str(p.get("network", "")).lower() == network.strip().lower()]
+            else:
+                plans = all_plans
+            return {"status": True, "provider": "smeplug", "plans": plans}
+        except Exception as e:
+            return {"status": False, "message": f"Failed to fetch SMEPlug plans: {str(e)}", "plans": []}
+
+    # 2. Amigo
+    elif clean_identifier == "amigo":
+        try:
+            from app.api.v1.endpoints.data import get_amigo_client
+            amigo = get_amigo_client(db)
+            res = amigo.fetch_data_plans()
+            raw_items = res.get("data", []) if isinstance(res, dict) else []
+            for item in raw_items:
+                nw = str(item.get("network") or "").lower()
+                if network and nw != network.strip().lower():
+                    continue
+                plans.append({
+                    "network": nw,
+                    "plan_code": item.get("plan_code") or f"amigo:{nw}:{item.get('plan_id')}",
+                    "plan_name": item.get("plan_name") or item.get("name"),
+                    "data_size": item.get("data_size") or item.get("size") or item.get("plan_name"),
+                    "price": float(item.get("price") or item.get("amount") or 0),
+                    "provider": "amigo",
+                    "provider_plan_id": str(item.get("plan_id") or item.get("id") or "")
+                })
+            return {"status": True, "provider": "amigo", "plans": plans}
+        except Exception as e:
+            return {"status": False, "message": f"Failed to fetch Amigo plans: {str(e)}", "plans": []}
+
+    # 3. ClubKonnect
+    elif clean_identifier == "clubkonnect":
+        try:
+            from app.services.bills import get_bills_provider
+            ck = get_bills_provider()
+            if hasattr(ck, "fetch_data_variations"):
+                target_nw = network or "9mobile"
+                raw_items = ck.fetch_data_variations(target_nw)
+                for item in raw_items:
+                    plans.append({
+                        "network": str(item.get("network") or target_nw).lower(),
+                        "plan_code": f"clubkonnect:{target_nw}:{item.get('Variation_Code') or item.get('id')}",
+                        "plan_name": item.get("name") or item.get("package"),
+                        "data_size": item.get("name") or item.get("package"),
+                        "price": float(item.get("price") or item.get("amount") or 0),
+                        "provider": "clubkonnect",
+                        "provider_plan_id": str(item.get("Variation_Code") or item.get("id") or "")
+                    })
+            return {"status": True, "provider": "clubkonnect", "plans": plans}
+        except Exception as e:
+            return {"status": False, "message": f"Failed to fetch ClubKonnect plans: {str(e)}", "plans": []}
+
+    else:
+        return {"status": False, "message": f"Live catalog fetching not supported for '{clean_identifier}'.", "plans": []}
+
+
 # -----------------
 # Provider Connection Testing (Must be placed before /{provider_id} route)
 # -----------------
