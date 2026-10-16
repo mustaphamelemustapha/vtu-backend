@@ -96,11 +96,11 @@ class Settings(BaseSettings):
     pending_reconcile_enabled: bool = True
     pending_reconcile_interval_seconds: int = 25
     pending_reconcile_batch_size: int = 30
-    pending_reconcile_min_age_seconds: int = 5
+    pending_reconcile_min_age_seconds: int = 120
     # If a data transaction stays pending beyond this window with no definitive
     # provider failure signal, we settle it as success to prevent false-negative
     # customer experience for already-delivered data.
-    pending_reconcile_auto_success_seconds: int = 120
+    pending_reconcile_auto_success_seconds: int = 180
     promo_mtn_1gb_enabled: bool = False
     promo_mtn_1gb_limit: int = 50
     promo_mtn_1gb_price: Decimal = Decimal("199")

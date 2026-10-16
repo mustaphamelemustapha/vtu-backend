@@ -107,6 +107,7 @@ def test_multi_dispatch_full_success(test_user, auth_headers, mtn_10gb_split_pla
             assert call2_args[0]["plan"] == "amigo_5gb_sub_code"
 
             # Verify wallet debited by 2700, no refund
+            db.expire_all()
             wallet = db.query(Wallet).filter(Wallet.user_id == test_user.id).first()
             assert wallet.balance == Decimal("7300.00")
 
@@ -161,8 +162,7 @@ def test_multi_dispatch_partial_success_refunds_half(test_user, auth_headers, mt
             data = res.json()
             assert data["status"] == "success"
             
-            # Cost was 2,700. Half is 1,350.
-            # Balance started at 10,000 -> debited 2,700 (7,300) -> refunded 1,350 (8,650).
+            db.expire_all()
             wallet = db.query(Wallet).filter(Wallet.user_id == test_user.id).first()
             assert wallet.balance == Decimal("8650.00")
             

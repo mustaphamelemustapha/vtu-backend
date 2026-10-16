@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.config import get_settings
-from app.dependencies import get_current_user, require_admin
+from app.dependencies import get_current_user, get_optional_user, require_admin
 from app.models import User, UserRole, DataPlan, Transaction, TransactionStatus, TransactionType, ApiLog
 from app.schemas.data import DataPlanOut, BuyDataRequest
 from app.services.amigo import (
@@ -215,7 +215,7 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
 # --- ENDPOINTS ---
 
 @router.get("/plans", response_model=list[DataPlanOut])
-def list_data_plans(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_data_plans(user: Optional[User] = Depends(get_optional_user), db: Session = Depends(get_db)):
     all_count = db.query(DataPlan).count()
     # Match plans where is_active is True or NULL (never drop plans unless is_active is explicitly False)
     plans = db.query(DataPlan).filter(DataPlan.is_active != False).all()
@@ -230,7 +230,7 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
 
     logger.info(
         "User %s requested plans. Total in DB: %d, Active: %d, Breakdown: %s",
-        user.email, all_count, len(plans), breakdown
+        getattr(user, "email", "guest"), all_count, len(plans), breakdown
     )
 
     promo_snapshot = {"active": False, "remaining": 0, "limit": 0, "price": Decimal("250")}
@@ -240,17 +240,18 @@ def list_data_plans(user: User = Depends(get_current_user), db: Session = Depend
         logger.warning("Failed to get promo snapshot: %s", promo_exc)
 
     user_promo_used = False
-    try:
-        user_promo_used = _user_has_used_mtn_1gb_promo(db, user.id)
-    except Exception as promo_user_exc:
-        logger.warning("Failed to check user promo: %s", promo_user_exc)
+    if user:
+        try:
+            user_promo_used = _user_has_used_mtn_1gb_promo(db, user.id)
+        except Exception as promo_user_exc:
+            logger.warning("Failed to check user promo: %s", promo_user_exc)
     
     # PERFORMANCE OPTIMIZATION: Fetch pricing rules safely
     rule_map = {}
     pricing_role = None
     try:
         from app.models import PricingRule, PricingRole, UserRole
-        pricing_role = PricingRole.RESELLER if getattr(user, "role", None) == UserRole.AGENT else PricingRole.USER
+        pricing_role = PricingRole.RESELLER if (user and getattr(user, "role", None) == UserRole.AGENT) else PricingRole.USER
         all_rules = db.query(PricingRule).filter(PricingRule.role == pricing_role).all()
         rule_map = {str(r.network or "").strip().lower(): r for r in all_rules}
     except Exception as rule_exc:
@@ -642,6 +643,18 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
         # Fallback Routing
         if provider_res.get("status") == "failed" and plan_fallback_provider:
             logger.warning(f"Primary provider {plan_provider} failed for {reference} ({provider_res.get('error')}). Routing to fallback: {plan_fallback_provider}")
+            from app.core.database import SessionLocal
+            _db_fb = SessionLocal()
+            try:
+                _tx_fb = _db_fb.query(Transaction).get(tx_id)
+                if _tx_fb:
+                    _tx_fb.provider = plan_fallback_provider
+                    _db_fb.commit()
+            except Exception as _fb_err:
+                logger.warning("Failed to record fallback provider in DB: %s", _fb_err)
+            finally:
+                _db_fb.close()
+
             provider_res, transaction_provider = _execute_provider(plan_fallback_provider, plan_fallback_provider_plan_id, reference)
             plan_provider_plan_id = plan_fallback_provider_plan_id or plan_plan_code
     else:
@@ -667,6 +680,18 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                     "Multi-dispatch part %d/%d failed with %s; falling back to %s",
                     idx + 1, plan_dispatch_count, plan_provider, plan_fallback_provider
                 )
+                from app.core.database import SessionLocal
+                _db_fb = SessionLocal()
+                try:
+                    _tx_fb = _db_fb.query(Transaction).get(tx_id)
+                    if _tx_fb:
+                        _tx_fb.provider = plan_fallback_provider
+                        _db_fb.commit()
+                except Exception as _fb_err:
+                    logger.warning("Failed to record fallback provider in DB: %s", _fb_err)
+                finally:
+                    _db_fb.close()
+
                 sub_res, sub_prov = _execute_provider(plan_fallback_provider, fallback_sub_id, part_ref)
                 
             dispatch_results.append(sub_res)
@@ -723,7 +748,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
             transaction.status = TransactionStatus.SUCCESS
             transaction.external_reference = provider_res.get("provider_reference")
             transaction.failure_reason = f"Partial delivery: {provider_res.get('partial_info')}. ₦{partial_refund_amount:,.2f} refunded."
-            if partial_refund_amount > Decimal("0"):
+            if partial_refund_amount > Decimal("0") and transaction.status != TransactionStatus.REFUNDED:
                 credit_wallet(
                     db2, 
                     wallet, 
@@ -735,12 +760,35 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
             
         elif final_status == "failed":
             transaction.failure_reason = _safe_reason(provider_res.get("error"))
-            credit_wallet(db2, wallet, price, reference, f"Refund: {plan_plan_name} purchase failed")
+            if transaction.status != TransactionStatus.REFUNDED:
+                credit_wallet(db2, wallet, price, reference, f"Refund: {plan_plan_name} purchase failed")
             transaction.status = TransactionStatus.REFUNDED
             
         elif final_status == "success":
+            # CRITICAL SECURITY FIX:
+            # If transaction was already marked REFUNDED by a premature webhook or reconcile worker,
+            # re-debit the user's wallet so they do not receive free data while keeping their money!
+            if transaction.status == TransactionStatus.REFUNDED:
+                logger.warning(
+                    "SECURITY REVERSAL: Transaction %s was prematurely refunded during fallback, but fallback provider %s succeeded. Re-debiting wallet ₦%s",
+                    reference, transaction_provider, price
+                )
+                try:
+                    debit_wallet(
+                        db2,
+                        wallet,
+                        price,
+                        f"{reference}_reversal",
+                        f"Reversal of premature refund: {plan_plan_name} delivered successfully via {transaction_provider}"
+                    )
+                except Exception as debit_err:
+                    logger.critical(
+                        "CRITICAL: Failed to re-debit wallet for prematurely refunded successful transaction %s: %s",
+                        reference, debit_err
+                    )
             transaction.status = TransactionStatus.SUCCESS
             transaction.external_reference = provider_res.get("provider_reference")
+            transaction.failure_reason = None
             
         else:
             transaction.status = TransactionStatus.PENDING

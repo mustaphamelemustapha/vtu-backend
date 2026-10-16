@@ -510,6 +510,18 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
         provider_res = _execute_provider(plan_provider, plan_provider_plan_id, client_ref)
         if provider_res.get("status") == "failed" and plan_fallback_provider:
             logger.warning(f"Developer primary provider {plan_provider} failed; falling back to {plan_fallback_provider}")
+            from app.core.database import SessionLocal
+            _db_fb = SessionLocal()
+            try:
+                _tx_fb = _db_fb.query(Transaction).get(tx_id)
+                if _tx_fb:
+                    _tx_fb.provider = plan_fallback_provider
+                    _db_fb.commit()
+            except Exception as _fb_err:
+                logger.warning("Failed to record developer fallback provider in DB: %s", _fb_err)
+            finally:
+                _db_fb.close()
+
             provider_res = _execute_provider(plan_fallback_provider, plan_fallback_provider_plan_id or plan_provider_plan_id, client_ref)
             transaction_provider = plan_fallback_provider
     else:
@@ -526,6 +538,17 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
             sub_res = _execute_provider(plan_provider, sub_plan_id, part_ref)
             if sub_res.get("status") == "failed" and plan_fallback_provider:
                 fallback_sub_id = plan_fallback_provider_plan_id or sub_plan_id
+                from app.core.database import SessionLocal
+                _db_fb = SessionLocal()
+                try:
+                    _tx_fb = _db_fb.query(Transaction).get(tx_id)
+                    if _tx_fb:
+                        _tx_fb.provider = plan_fallback_provider
+                        _db_fb.commit()
+                except Exception as _fb_err:
+                    logger.warning("Failed to record developer fallback provider in DB: %s", _fb_err)
+                finally:
+                    _db_fb.close()
                 sub_res = _execute_provider(plan_fallback_provider, fallback_sub_id, part_ref)
             dispatch_results.append(sub_res)
 
@@ -564,16 +587,33 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
         # 6. Update Transaction Status
         final_status = provider_res.get("status", "pending")
         if final_status == "success":
+            if tx.status == TransactionStatus.REFUNDED:
+                logger.warning(
+                    "SECURITY REVERSAL: Developer transaction %s was prematurely refunded during fallback, but delivered successfully. Re-debiting wallet ₦%s",
+                    client_ref, price
+                )
+                try:
+                    debit_wallet(
+                        db2,
+                        wallet,
+                        price,
+                        f"{client_ref}_reversal",
+                        f"Reversal of premature refund: {plan_name} delivered successfully via {transaction_provider}"
+                    )
+                except Exception as debit_err:
+                    logger.critical("Failed to re-debit developer wallet: %s", debit_err)
             tx.status = TransactionStatus.SUCCESS
+            tx.failure_reason = None
         elif final_status == "partial_success":
             tx.status = TransactionStatus.SUCCESS
             tx.failure_reason = f"Partial delivery: {provider_res.get('partial_info')}"
-            if partial_refund_amount > 0:
+            if partial_refund_amount > 0 and tx.status != TransactionStatus.REFUNDED:
                 credit_wallet(db2, wallet, partial_refund_amount, f"{client_ref}_refund", f"Partial Refund ({provider_res.get('partial_info')}): {plan_name}")
         elif final_status == "failed":
+            if tx.status != TransactionStatus.REFUNDED:
+                credit_wallet(db2, wallet, price, client_ref, f"Refund: {plan_name} API purchase failed")
             tx.status = TransactionStatus.REFUNDED
             tx.failure_reason = str(provider_res.get("error"))[:255]
-            credit_wallet(db2, wallet, price, client_ref, f"Refund: {plan_name} API purchase failed")
         else:
             tx.status = TransactionStatus.PENDING
 

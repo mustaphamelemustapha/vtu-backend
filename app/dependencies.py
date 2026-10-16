@@ -44,3 +44,20 @@ def require_reseller_or_admin(user: User = Depends(get_current_user)) -> User:
     if user.role not in [UserRole.AGENT, UserRole.ADMIN]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Reseller access required")
     return user
+
+
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
+
+
+def get_optional_user(db: Session = Depends(get_db), token: str | None = Depends(oauth2_scheme_optional)) -> User | None:
+    if not token:
+        return None
+    try:
+        payload = decode_token(token)
+        if payload.get("type") != "access":
+            return None
+        user_id = int(payload.get("sub"))
+        user = db.query(User).filter(User.id == user_id, User.is_active == True).first()
+        return user
+    except Exception:
+        return None

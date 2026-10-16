@@ -7,10 +7,11 @@ from fastapi import APIRouter, Depends, Request, HTTPException
 from sqlalchemy.orm import Session
 from decimal import Decimal
 
+from datetime import datetime, timezone
 import secrets
 from sqlalchemy.exc import IntegrityError
 from app.core.database import get_db
-from app.models import Transaction, TransactionStatus, TransactionType, User, WalletLedger, LedgerType
+from app.models import Transaction, TransactionStatus, TransactionType, User, WalletLedger, LedgerType, DataPlan
 from app.services.wallet import get_or_create_wallet, credit_wallet
 from app.services.monnify import verify_monnify_signature
 from app.services.billstack import verify_billstack_signature
@@ -24,6 +25,15 @@ from app.services.push_notification import PushNotificationService
 router = APIRouter()
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+def _tx_age_seconds(tx: Transaction) -> float:
+    created = getattr(tx, "created_at", None)
+    if not created:
+        return 9999.0
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    return max(0.0, (now - created).total_seconds())
 
 @router.post("/vtpass/webhook")
 async def vtpass_webhook(request: Request, db: Session = Depends(get_db)):
@@ -224,6 +234,14 @@ def smeplug_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), d
         logger.info("SMEPlug Webhook: Transaction %s already in terminal state %s", customer_reference, transaction.status)
         return {"status": "ok"}
 
+    # Provider check: if transaction is handled by another provider (e.g. routed to fallback amigo), ignore
+    if transaction.provider and transaction.provider.lower() not in {"smeplug", "sim"}:
+        logger.info(
+            "SMEPlug Webhook: Transaction %s is handled by %s, not smeplug. Ignoring.",
+            customer_reference, transaction.provider
+        )
+        return {"status": "ok"}
+
     if status == "success":
         transaction.status = TransactionStatus.SUCCESS
         transaction.external_reference = provider_reference
@@ -237,6 +255,30 @@ def smeplug_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), d
         logger.info("SMEPlug Webhook: Transaction %s marked as SUCCESS", customer_reference)
         dispatch_developer_webhook(transaction, transaction.user)
     elif status == "failed":
+        # Check if plan has fallback configured or if transaction is actively running in data.py
+        plan = db.query(DataPlan).filter(DataPlan.plan_code == transaction.data_plan_code).first() if transaction.data_plan_code else None
+        has_fallback = bool(plan and plan.fallback_provider and str(plan.fallback_provider).strip().lower() not in {"", "none"})
+        age_sec = _tx_age_seconds(transaction)
+
+        if has_fallback:
+            logger.warning(
+                "SMEPlug Webhook: Transaction %s failed on primary SMEPlug, but fallback (%s) is configured. Skipping premature webhook refund.",
+                customer_reference, plan.fallback_provider
+            )
+            transaction.external_reference = provider_reference
+            db.commit()
+            return {"status": "ok"}
+
+        if age_sec < 45:
+            # Synchronous purchase route in data.py is actively processing. Let data.py handle the outcome.
+            logger.warning(
+                "SMEPlug Webhook: Transaction %s failed on SMEPlug within %.1fs of creation. Deferring refund to in-flight purchase handler.",
+                customer_reference, age_sec
+            )
+            transaction.external_reference = provider_reference
+            db.commit()
+            return {"status": "ok"}
+
         transaction.status = TransactionStatus.FAILED
         transaction.external_reference = provider_reference
         
@@ -695,6 +737,11 @@ def autosync_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), 
         logger.info("Autosync Webhook: Transaction %s already in terminal state %s", reference, transaction.status)
         return "ok"
         
+    # Provider check: if transaction was rerouted to a different provider, ignore
+    if transaction.provider and transaction.provider.lower() != "autosync":
+        logger.info("Autosync Webhook: Transaction %s is handled by %s, not autosync. Ignoring.", reference, transaction.provider)
+        return "ok"
+
     status = str(tx_data.get("status") or "").strip().lower()
     
     if status == "successful":
@@ -724,6 +771,20 @@ def autosync_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), 
         dispatch_developer_webhook(transaction, transaction.user)
         
     elif status == "failed":
+        plan = db.query(DataPlan).filter(DataPlan.plan_code == transaction.data_plan_code).first() if transaction.data_plan_code else None
+        has_fallback = bool(plan and plan.fallback_provider and str(plan.fallback_provider).strip().lower() not in {"", "none"})
+        age_sec = _tx_age_seconds(transaction)
+
+        if has_fallback or age_sec < 45:
+            logger.warning(
+                "Autosync Webhook: Transaction %s failed on Autosync, but has_fallback=%s (age=%.1fs). Skipping premature refund.",
+                reference, has_fallback, age_sec
+            )
+            if tx_data.get("provider_reference"):
+                transaction.external_reference = tx_data.get("provider_reference")
+            db.commit()
+            return "ok"
+
         transaction.status = TransactionStatus.FAILED
         if tx_data.get("provider_reference"):
             transaction.external_reference = tx_data.get("provider_reference")
@@ -781,6 +842,11 @@ def boltnet_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), d
     if transaction.status in {TransactionStatus.SUCCESS, TransactionStatus.REFUNDED}:
         logger.info("Boltnet Webhook: Transaction %s already in terminal state %s", request_id, transaction.status)
         return "ok"
+
+    # Provider check: if transaction was rerouted to a different provider, ignore
+    if transaction.provider and transaction.provider.lower() != "boltnet":
+        logger.info("Boltnet Webhook: Transaction %s is handled by %s, not boltnet. Ignoring.", request_id, transaction.provider)
+        return "ok"
         
     status = str(payload.get("Status") or payload.get("status") or "").strip().lower()
     
@@ -802,6 +868,20 @@ def boltnet_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), d
         dispatch_developer_webhook(transaction, transaction.user)
         
     elif status in {"failed", "reversed", "declined"}:
+        plan = db.query(DataPlan).filter(DataPlan.plan_code == transaction.data_plan_code).first() if transaction.data_plan_code else None
+        has_fallback = bool(plan and plan.fallback_provider and str(plan.fallback_provider).strip().lower() not in {"", "none"})
+        age_sec = _tx_age_seconds(transaction)
+
+        if has_fallback or age_sec < 45:
+            logger.warning(
+                "Boltnet Webhook: Transaction %s failed on Boltnet, but has_fallback=%s (age=%.1fs). Skipping premature refund.",
+                request_id, has_fallback, age_sec
+            )
+            if ident:
+                transaction.external_reference = str(ident)
+            db.commit()
+            return "ok"
+
         transaction.status = TransactionStatus.FAILED
         if ident:
             transaction.external_reference = str(ident)
