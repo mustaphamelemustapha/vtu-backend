@@ -380,20 +380,20 @@ def get_leak_audit(
         LEFT JOIN (
             SELECT user_id, SUM(amount) as total_funded
             FROM transactions
-            WHERE tx_type = 'wallet_fund' AND status = 'success'
+            WHERE UPPER(CAST(tx_type AS TEXT)) = 'WALLET_FUND' AND UPPER(CAST(status AS TEXT)) = 'SUCCESS'
             GROUP BY user_id
         ) f ON f.user_id = u.id
         LEFT JOIN (
             SELECT user_id, SUM(amount) as total_spent
             FROM transactions
-            WHERE tx_type IN ('data', 'airtime', 'cable', 'electricity', 'exam') 
-              AND status = 'success'
+            WHERE UPPER(CAST(tx_type AS TEXT)) IN ('DATA', 'AIRTIME', 'CABLE', 'ELECTRICITY', 'EXAM') 
+              AND UPPER(CAST(status AS TEXT)) = 'SUCCESS'
             GROUP BY user_id
         ) s ON s.user_id = u.id
         LEFT JOIN (
             SELECT user_id, SUM(amount) as total_refunded
             FROM transactions
-            WHERE status = 'refunded'
+            WHERE UPPER(CAST(status AS TEXT)) = 'REFUNDED'
             GROUP BY user_id
         ) r ON r.user_id = u.id
     """)
