@@ -42,6 +42,11 @@ class PushNotificationService:
             logger.error(f"Failed to initialize Firebase Admin: {e}")
 
     @classmethod
+    def send_push_notification(cls, token: str, title: str, body: str, data: dict = None, sound_type: str = "default") -> bool:
+        """Compatibility alias for webhooks and services calling send_push_notification."""
+        return cls.send_to_token(token=token, title=title, body=body, data=data, sound_type=sound_type)
+
+    @classmethod
     def send_to_token(cls, token: str, title: str, body: str, data: dict = None, sound_type: str = "default") -> bool:
         cls._initialize()
         if not cls._initialized or not token:
