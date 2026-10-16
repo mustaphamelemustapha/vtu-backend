@@ -17,8 +17,12 @@ class PushNotificationService:
             import json
             import base64
             cred = None
-            raw_creds = os.getenv("FIREBASE_CREDENTIALS_JSON") or os.getenv("FIREBASE_CREDENTIALS_BASE64")
-            if raw_creds:
+            cred_dict = None
+            
+            for env_var in ["FIREBASE_CREDENTIALS_BASE64", "FIREBASE_CREDENTIALS_JSON"]:
+                raw_creds = os.getenv(env_var)
+                if not raw_creds:
+                    continue
                 raw_creds = raw_creds.strip()
                 if (raw_creds.startswith("'") and raw_creds.endswith("'")) or (raw_creds.startswith('"') and raw_creds.endswith('"')):
                     raw_creds = raw_creds[1:-1].strip()
@@ -32,7 +36,15 @@ class PushNotificationService:
                     except Exception:
                         pass
                 
-                cred_dict = json.loads(raw_creds)
+                try:
+                    parsed = json.loads(raw_creds)
+                    if isinstance(parsed, dict) and "private_key" in parsed:
+                        cred_dict = parsed
+                        break
+                except Exception:
+                    continue
+
+            if cred_dict:
                 cred = credentials.Certificate(cred_dict)
             else:
                 cred_path = os.getenv("FIREBASE_CREDENTIALS_PATH", "firebase-adminsdk.json")
@@ -52,8 +64,8 @@ class PushNotificationService:
                     cred = credentials.Certificate(found_path)
                 else:
                     logger.warning(
-                        "Firebase credentials not found! Checked env vars FIREBASE_CREDENTIALS_JSON, "
-                        "FIREBASE_CREDENTIALS_BASE64 and paths. Push notifications disabled."
+                        "Firebase credentials not found! Checked env vars FIREBASE_CREDENTIALS_BASE64, "
+                        "FIREBASE_CREDENTIALS_JSON and file paths. Push notifications disabled."
                     )
                     return
 
@@ -137,7 +149,21 @@ class PushNotificationService:
             return False
 
     @classmethod
-    def send_broadcast(cls, title: str, body: str, data: dict = None, image_url: str = None) -> bool:
+    def get_status(cls) -> dict:
+        cls._initialize()
+        app = None
+        try:
+            app = firebase_admin.get_app()
+        except Exception:
+            pass
+        return {
+            "initialized": cls._initialized,
+            "has_app": app is not None,
+            "project_id": app.project_id if app else None,
+        }
+
+    @classmethod
+    def send_broadcast(cls, title: str, body: str, data: dict = None, image_url: str = None, tokens: list = None) -> bool:
         cls._initialize()
         if not cls._initialized:
             return False
@@ -167,15 +193,40 @@ class PushNotificationService:
                 fcm_options=messaging.APNSFCMOptions(image=image_url) if image_url else None
             )
 
-            message = messaging.Message(
-                notification=messaging.Notification(title=title, body=body, image=image_url),
-                data=data or {},
-                topic="meledata_users",
-                android=android_config,
-                apns=apns_config,
-            )
-            response = messaging.send(message)
-            logger.info(f"Successfully sent FCM broadcast: {response}")
+            # 1. Send to standard broadcast topics (both current and legacy)
+            topics = ["meledata_users", "all_users"]
+            for t in topics:
+                try:
+                    message = messaging.Message(
+                        notification=messaging.Notification(title=title, body=body, image=image_url),
+                        data=data or {},
+                        topic=t,
+                        android=android_config,
+                        apns=apns_config,
+                    )
+                    resp = messaging.send(message)
+                    logger.info(f"FCM broadcast to topic '{t}' succeeded: {resp}")
+                except Exception as top_err:
+                    logger.warning(f"FCM broadcast to topic '{t}' skipped/failed: {top_err}")
+
+            # 2. Also send directly to device tokens via multicast (bypasses topic subscription delays)
+            if tokens:
+                unique_tokens = list({str(tok).strip() for tok in tokens if tok and str(tok).strip()})
+                for i in range(0, len(unique_tokens), 500):
+                    batch = unique_tokens[i:i+500]
+                    try:
+                        multicast_msg = messaging.MulticastMessage(
+                            notification=messaging.Notification(title=title, body=body, image=image_url),
+                            data=data or {},
+                            tokens=batch,
+                            android=android_config,
+                            apns=apns_config,
+                        )
+                        batch_res = messaging.send_each_for_multicast(multicast_msg)
+                        logger.info(f"FCM multicast batch sent: {batch_res.success_count} success, {batch_res.failure_count} failures.")
+                    except Exception as multi_err:
+                        logger.warning(f"FCM multicast batch failed: {multi_err}")
+
             return True
         except Exception as e:
             logger.error(f"Error sending FCM broadcast: {e}")

@@ -163,11 +163,17 @@ def admin_create_broadcast(
     if row.is_active:
         try:
             from app.services.push_notification import PushNotificationService
+            tokens = [
+                u.fcm_token for u in db.query(User.fcm_token)
+                .filter(User.fcm_token.isnot(None), User.fcm_token != "")
+                .all() if u.fcm_token
+            ]
             PushNotificationService.send_broadcast(
                 title=row.title,
                 body=row.message,
                 data={"type": "announcement", "id": str(row.id)},
-                image_url=row.image_url
+                image_url=row.image_url,
+                tokens=tokens,
             )
         except Exception as push_exc:
             import logging
@@ -266,20 +272,64 @@ def admin_update_broadcast(
     db.refresh(row)
     return _to_out(row)
 
+@router.get("/broadcast/admin/push-status")
+def admin_get_push_status(
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    _ = admin
+    from app.services.push_notification import PushNotificationService
+    status = PushNotificationService.get_status()
+    user_count_with_token = db.query(User).filter(User.fcm_token.isnot(None), User.fcm_token != "").count()
+    return {
+        "status": "success",
+        "firebase": status,
+        "users_registered_for_push": user_count_with_token,
+    }
+
+@router.post("/broadcast/admin/test-my-device")
+def admin_test_my_device(
+    admin: User = Depends(require_admin),
+):
+    from app.services.push_notification import PushNotificationService
+    if not admin.fcm_token:
+        return {
+            "status": "failed",
+            "message": "Your admin account does not have an FCM token registered yet. Please log into the MELE DATA mobile app on your iPhone or Android phone with this account first."
+        }
+    ok = PushNotificationService.send_to_token(
+        token=admin.fcm_token,
+        title="MELE DATA Test Push",
+        body="If you see this, push notifications are working 100% on your device!",
+        data={"type": "admin_test"},
+    )
+    return {
+        "status": "success" if ok else "failed",
+        "message": "Test push notification dispatched directly to your device!" if ok else "FCM failed to deliver to device token.",
+        "admin_email": admin.email,
+    }
+
 @router.post("/broadcast/admin/push-only")
 def admin_send_push_only(
     payload: PushNotificationSend,
     admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
 ):
     _ = admin
     
     try:
         from app.services.push_notification import PushNotificationService
+        tokens = [
+            u.fcm_token for u in db.query(User.fcm_token)
+            .filter(User.fcm_token.isnot(None), User.fcm_token != "")
+            .all() if u.fcm_token
+        ]
         success = PushNotificationService.send_broadcast(
             title=payload.title.strip(),
             body=payload.message.strip(),
             data={"type": "announcement_push_only"},
-            image_url=payload.image_url.strip() if payload.image_url else None
+            image_url=payload.image_url.strip() if payload.image_url else None,
+            tokens=tokens,
         )
         if not success:
             raise HTTPException(status_code=500, detail="Failed to send push notification")
@@ -288,5 +338,10 @@ def admin_send_push_only(
         logging.getLogger(__name__).warning("Failed to send push notification: %s", push_exc)
         raise HTTPException(status_code=500, detail="Error occurred while sending push notification")
         
-    return {"status": "success", "message": "Push notification sent successfully"}
+    return {
+        "status": "success", 
+        "message": "Push notification sent successfully",
+        "device_recipients_count": len(tokens) if 'tokens' in locals() else 0
+    }
+
 
