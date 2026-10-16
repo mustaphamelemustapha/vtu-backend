@@ -15,21 +15,46 @@ class PushNotificationService:
         
         try:
             import json
+            import base64
             cred = None
-            json_creds = os.getenv("FIREBASE_CREDENTIALS_JSON")
-            if json_creds:
-                cred_dict = json.loads(json_creds)
+            raw_creds = os.getenv("FIREBASE_CREDENTIALS_JSON") or os.getenv("FIREBASE_CREDENTIALS_BASE64")
+            if raw_creds:
+                raw_creds = raw_creds.strip()
+                if (raw_creds.startswith("'") and raw_creds.endswith("'")) or (raw_creds.startswith('"') and raw_creds.endswith('"')):
+                    raw_creds = raw_creds[1:-1].strip()
+                
+                # Check if base64 encoded
+                if not raw_creds.startswith("{"):
+                    try:
+                        decoded = base64.b64decode(raw_creds).decode("utf-8").strip()
+                        if decoded.startswith("{"):
+                            raw_creds = decoded
+                    except Exception:
+                        pass
+                
+                cred_dict = json.loads(raw_creds)
                 cred = credentials.Certificate(cred_dict)
             else:
                 cred_path = os.getenv("FIREBASE_CREDENTIALS_PATH", "firebase-adminsdk.json")
-                render_secret_path = "/etc/secrets/firebase-adminsdk.json"
+                potential_paths = [
+                    cred_path,
+                    os.path.join(os.getcwd(), "firebase-adminsdk.json"),
+                    "/app/firebase-adminsdk.json",
+                    "/etc/secrets/firebase-adminsdk.json",
+                ]
+                found_path = None
+                for p in potential_paths:
+                    if p and os.path.exists(p):
+                        found_path = p
+                        break
                 
-                if os.path.exists(cred_path):
-                    cred = credentials.Certificate(cred_path)
-                elif os.path.exists(render_secret_path):
-                    cred = credentials.Certificate(render_secret_path)
+                if found_path:
+                    cred = credentials.Certificate(found_path)
                 else:
-                    logger.warning(f"Firebase config not found at {cred_path} or {render_secret_path}, and FIREBASE_CREDENTIALS_JSON env var not set. Push disabled.")
+                    logger.warning(
+                        "Firebase credentials not found! Checked env vars FIREBASE_CREDENTIALS_JSON, "
+                        "FIREBASE_CREDENTIALS_BASE64 and paths. Push notifications disabled."
+                    )
                     return
 
             firebase_admin.initialize_app(cred)
