@@ -4,7 +4,7 @@ from typing import Any, List, Optional
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -335,3 +335,131 @@ def get_ledger(
         query = query.filter(FinancialLedger.category == category)
     
     return query.order_by(FinancialLedger.created_at.desc()).offset(skip).limit(limit).all()
+    
+
+@router.get("/leak-audit")
+def get_leak_audit(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_admin)
+) -> Any:
+    """
+    Scan all user accounts for negative equity (spent > funded) and phantom wallet balances.
+    """
+    total_deposits = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
+        Transaction.tx_type == TransactionType.WALLET_FUND,
+        Transaction.status == TransactionStatus.SUCCESS
+    ).scalar() or 0
+
+    service_types = [
+        TransactionType.DATA.value,
+        TransactionType.AIRTIME.value,
+        TransactionType.CABLE.value,
+        TransactionType.ELECTRICITY.value,
+        TransactionType.EXAM.value
+    ]
+    total_spends = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
+        Transaction.tx_type.in_(service_types),
+        Transaction.status == TransactionStatus.SUCCESS
+    ).scalar() or 0
+
+    total_wallet_liability = db.query(func.coalesce(func.sum(Wallet.balance), 0)).scalar() or 0
+
+    # User reconciliation query
+    user_funding_sql = text("""
+        SELECT 
+            u.id as user_id,
+            u.email,
+            u.phone_number,
+            u.full_name,
+            COALESCE(w.balance, 0) as current_balance,
+            COALESCE(f.total_funded, 0) as total_funded,
+            COALESCE(s.total_spent, 0) as total_spent,
+            COALESCE(r.total_refunded, 0) as total_refunded
+        FROM users u
+        LEFT JOIN wallets w ON w.user_id = u.id
+        LEFT JOIN (
+            SELECT user_id, SUM(amount) as total_funded
+            FROM transactions
+            WHERE tx_type = 'wallet_fund' AND status = 'success'
+            GROUP BY user_id
+        ) f ON f.user_id = u.id
+        LEFT JOIN (
+            SELECT user_id, SUM(amount) as total_spent
+            FROM transactions
+            WHERE tx_type IN ('data', 'airtime', 'cable', 'electricity', 'exam') 
+              AND status = 'success'
+            GROUP BY user_id
+        ) s ON s.user_id = u.id
+        LEFT JOIN (
+            SELECT user_id, SUM(amount) as total_refunded
+            FROM transactions
+            WHERE status = 'refunded'
+            GROUP BY user_id
+        ) r ON r.user_id = u.id
+    """)
+
+    rows = db.execute(user_funding_sql).fetchall()
+
+    overspent_users = []
+    phantom_balance_users = []
+    total_real_cash_lost = Decimal("0")
+    total_phantom_balance_in_wallets = Decimal("0")
+
+    for row in rows:
+        curr_bal = Decimal(str(row.current_balance or 0))
+        funded = Decimal(str(row.total_funded or 0))
+        spent = Decimal(str(row.total_spent or 0))
+        refunded = Decimal(str(row.total_refunded or 0))
+
+        expected_balance = funded - spent
+        discrepancy = curr_bal - expected_balance
+
+        if spent > funded:
+            net_loss = spent - funded
+            total_real_cash_lost += net_loss
+            overspent_users.append({
+                "user_id": row.user_id,
+                "email": row.email,
+                "phone_number": row.phone_number,
+                "full_name": row.full_name,
+                "funded": float(funded),
+                "spent": float(spent),
+                "current_balance": float(curr_bal),
+                "overspent": float(net_loss),
+                "refunded": float(refunded)
+            })
+
+        if discrepancy > Decimal("5.00"):
+            phantom_part = min(curr_bal, discrepancy)
+            if phantom_part > Decimal("0"):
+                total_phantom_balance_in_wallets += phantom_part
+                phantom_balance_users.append({
+                    "user_id": row.user_id,
+                    "email": row.email,
+                    "phone_number": row.phone_number,
+                    "full_name": row.full_name,
+                    "current_balance": float(curr_bal),
+                    "expected_balance": float(expected_balance),
+                    "phantom_balance": float(phantom_part),
+                    "funded": float(funded),
+                    "spent": float(spent)
+                })
+
+    overspent_users.sort(key=lambda x: x["overspent"], reverse=True)
+    phantom_balance_users.sort(key=lambda x: x["phantom_balance"], reverse=True)
+
+    return {
+        "summary": {
+            "total_deposits": float(total_deposits),
+            "total_spends": float(total_spends),
+            "total_wallet_liability": float(total_wallet_liability),
+            "total_real_cash_lost": float(total_real_cash_lost),
+            "total_phantom_balance_in_wallets": float(total_phantom_balance_in_wallets),
+            "total_leakage": float(total_real_cash_lost + total_phantom_balance_in_wallets),
+            "overspent_users_count": len(overspent_users),
+            "phantom_balance_users_count": len(phantom_balance_users),
+        },
+        "top_overspent_users": overspent_users[:50],
+        "top_phantom_balance_users": phantom_balance_users[:50]
+    }
+
