@@ -235,6 +235,11 @@ def ensure_tables():
         _ensure_data_plan_dispatch_columns()
         _ensure_system_settings_columns()
         _ensure_default_integrations()
+        try:
+            from app.services.push_notification import PushNotificationService
+            PushNotificationService._initialize()
+        except Exception as e:
+            logging.getLogger(__name__).warning("Firebase Admin initialization on startup skipped: %s", e)
         return
 
     # Optional local fallback for fresh environments.
@@ -268,6 +273,11 @@ def ensure_tables():
     _ensure_data_plan_dispatch_columns()
     _ensure_system_settings_columns()
     _ensure_default_integrations()
+    try:
+        from app.services.push_notification import PushNotificationService
+        PushNotificationService._initialize()
+    except Exception as e:
+        logging.getLogger(__name__).warning("Firebase Admin initialization on startup skipped: %s", e)
 
 
 @app.on_event("shutdown")
