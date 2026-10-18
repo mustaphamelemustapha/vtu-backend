@@ -13,7 +13,7 @@ class SystemSettings(Base):
     monnify_secret_key = Column(String(255), nullable=True)
     monnify_contract_code = Column(String(255), nullable=True)
     paystack_secret_key = Column(String(255), nullable=True)
-    app_name = Column(String(100), default="Kulloma Data")
+    app_name = Column(String(100), default="Mele Data")
     support_phone = Column(String(50), nullable=True)
     support_whatsapp = Column(String(50), nullable=True)
     announcement_banner = Column(Text, nullable=True)

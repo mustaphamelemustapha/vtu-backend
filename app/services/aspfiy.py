@@ -113,7 +113,7 @@ class AspfiyService:
             or target.get("accountName")
             or target.get("customer_name")
             or target.get("customerName")
-            or "Kulloma Data Customer"
+            or "Mele Data Customer"
         )
         bank_name = (
             target.get("bank_name")

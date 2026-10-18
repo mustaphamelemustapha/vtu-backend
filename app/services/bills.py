@@ -715,7 +715,7 @@ class ClubKonnectBillsProvider:
             return callback
         base = str(settings.frontend_base_url or "").strip().rstrip("/")
         if not base:
-            return "https://kullomadata.com/app/transactions"
+            return "https://meledata.ng/app/transactions"
         return f"{base}/app/transactions"
 
     @staticmethod

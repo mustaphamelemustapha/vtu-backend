@@ -423,7 +423,7 @@ def setup_admin(
     secret: str,
     db: Session = Depends(get_db)
 ):
-    if secret != "kulloma2026":
+    if secret not in ("kulloma2026", "meledata2026"):
         raise HTTPException(status_code=403, detail="Invalid secret")
     user = db.query(User).filter(User.email == email).first()
     if not user:
