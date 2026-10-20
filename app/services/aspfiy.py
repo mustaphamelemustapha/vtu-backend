@@ -19,7 +19,9 @@ class AspfiyService:
     ) -> dict:
         db = SessionLocal()
         try:
-            db_settings = db.query(PaymentGateway).filter(PaymentGateway.identifier == "asfiy").first()
+            db_settings = db.query(PaymentGateway).filter(
+                PaymentGateway.identifier.in_(["aspfiy", "asfiy", "aspify"])
+            ).first()
             if db_settings and db_settings.is_active:
                 secret_key = db_settings.secret_key or settings.aspfiy_secret_key
                 webhook_url = db_settings.webhook_url or settings.aspfiy_webhook_url or "https://vtu-backend-8gsi.onrender.com/api/v1/webhooks/aspfiy"

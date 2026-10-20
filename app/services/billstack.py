@@ -19,7 +19,17 @@ def _get_api_key():
     finally:
         db.close()
 
-def generate_billstack_virtual_account(*, email: str, reference: str, phone: str, first_name: str, last_name: str, bank: str) -> dict:
+def generate_billstack_virtual_account(
+    *,
+    email: str,
+    reference: str,
+    phone: str,
+    first_name: str,
+    last_name: str,
+    bank: str,
+    id_type: str | None = None,
+    id_number: str | None = None,
+) -> dict:
     url = "https://api.billstack.co/v2/thirdparty/generateVirtualAccount/"
     headers = {
         "Content-Type": "application/json",
@@ -30,9 +40,13 @@ def generate_billstack_virtual_account(*, email: str, reference: str, phone: str
         "reference": reference,
         "firstName": first_name or "Customer",
         "lastName": last_name or "Customer",
-        "phone": phone or "",
+        "phone": (phone or "08012345678").strip(),
         "bank": bank,
     }
+    if id_type and id_number:
+        payload["idType"] = id_type
+        payload["idNumber"] = id_number
+
     logger.info("Generating Billstack account for %s. Bank: %s, Ref: %s", email, bank, reference)
     with httpx.Client(timeout=20) as client:
         resp = client.post(url, json=payload, headers=headers)
