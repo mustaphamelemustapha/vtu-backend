@@ -40,7 +40,10 @@ from app.models.virtual_account import VirtualAccount, VirtualAccountProvider, V
 from app.models.integration import PaymentGateway
 
 def is_gateway_active(db: Session, identifier: str, fallback_setting: bool) -> bool:
-    gw = db.query(PaymentGateway).filter(PaymentGateway.identifier == identifier).first()
+    aliases = [identifier]
+    if identifier in ("asfiy", "aspfiy", "aspify"):
+        aliases = ["aspfiy", "asfiy", "aspify"]
+    gw = db.query(PaymentGateway).filter(PaymentGateway.identifier.in_(aliases)).first()
     if gw:
         return gw.is_active
     return fallback_setting
@@ -347,180 +350,165 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
                     "account_name": db_acc.account_name,
                 })
 
-        # 3. Fetch/Create Billstack Reserved Account
-        if is_gateway_active(db, "billstack", settings.billstack_enabled):
-            db_billstack = db.query(VirtualAccount).filter(
-                VirtualAccount.user_id == user.id,
-                VirtualAccount.provider == VirtualAccountProvider.BILLSTACK,
-                VirtualAccount.status == VirtualAccountStatus.ACTIVE
-            ).all()
+    # 3. Fetch/Create Billstack Reserved Accounts (9PSB & SAFEHAVEN)
+    if is_gateway_active(db, "billstack", settings.billstack_enabled):
+        db_billstack = db.query(VirtualAccount).filter(
+            VirtualAccount.user_id == user.id,
+            VirtualAccount.provider == VirtualAccountProvider.BILLSTACK,
+            VirtualAccount.status == VirtualAccountStatus.ACTIVE
+        ).all()
 
-            if not db_billstack:
-                try:
-                    first = (user.full_name or "").strip().split(" ")[0] or "Mele"
-                    last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
-                    resp = generate_billstack_virtual_account(
-                        email=user.email,
-                        reference=f"{account_reference}_billstack_{settings.billstack_preferred_bank.lower()}_{secrets.token_hex(4)}",
-                        phone=user.phone_number or "",
-                        first_name=first,
-                        last_name=last,
-                        bank=settings.billstack_preferred_bank,
-                    )
-                    if resp.get("status") is True:
-                        data = resp.get("data", {})
-                        accounts = data.get("account") or []
-                        reservation_ref = data.get("reference") or secrets.token_hex(8)
-                        for acc in accounts:
-                            db_acc = VirtualAccount(
-                                user_id=user.id,
-                                provider=VirtualAccountProvider.BILLSTACK,
-                                account_number=acc["account_number"],
-                                account_name=acc["account_name"],
-                                bank_name=acc["bank_name"],
-                                bank_code=acc.get("bank_id", "000"),
-                                customer_reference=f"{account_reference}_billstack_{settings.billstack_preferred_bank.lower()}",
-                                reservation_reference=reservation_ref,
-                                status=VirtualAccountStatus.ACTIVE,
-                            )
-                            db.add(db_acc)
-                        db.commit()
-                        for acc in accounts:
-                            all_accounts.append({
-                                "bank_name": acc["bank_name"],
-                                "account_number": acc["account_number"],
-                                "account_name": acc["account_name"],
-                            })
-                    else:
-                        messages.append("Billstack account generation is pending.")
-                        # Cache failure to prevent retry loop
-                        db.add(VirtualAccount(
+        existing_bank_codes = set()
+        for acc in db_billstack:
+            if acc.account_number:
+                b_id = (acc.bank_code or "").upper()
+                b_nm = (acc.bank_name or "").upper()
+                if "9PSB" in b_id or "9PSB" in b_nm:
+                    existing_bank_codes.add("9PSB")
+                if "SAFEHAVEN" in b_id or "SAFEHAVEN" in b_nm or "SAFE HAVEN" in b_nm:
+                    existing_bank_codes.add("SAFEHAVEN")
+
+        first = (user.full_name or "").strip().split(" ")[0] or "Mele"
+        last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
+        target_banks = ["9PSB", "SAFEHAVEN"]
+
+        for target_bank in target_banks:
+            if target_bank in existing_bank_codes:
+                continue
+            try:
+                bank_slug = target_bank.lower()
+                resp = generate_billstack_virtual_account(
+                    email=user.email,
+                    reference=f"{account_reference}_billstack_{bank_slug}_{secrets.token_hex(4)}",
+                    phone=user.phone_number or "",
+                    first_name=first,
+                    last_name=last,
+                    bank=target_bank,
+                )
+                if resp.get("status") is True:
+                    data = resp.get("data", {})
+                    accounts = data.get("account") or []
+                    reservation_ref = data.get("reference") or secrets.token_hex(8)
+                    for acc in accounts:
+                        db_acc = VirtualAccount(
                             user_id=user.id,
                             provider=VirtualAccountProvider.BILLSTACK,
-                            account_number="",
-                            account_name="Failed",
-                            bank_name="Billstack",
-                            bank_code="000",
-                            customer_reference=f"failed_{secrets.token_hex(4)}",
-                            reservation_reference=f"failed_{secrets.token_hex(4)}",
-                            status=VirtualAccountStatus.INACTIVE,
-                        ))
-                        db.commit()
-                except Exception as exc:
-                    db.rollback()
-                    logger.warning("Auto-generate Billstack account failed: %s", exc)
-                    messages.append(f"Billstack: {exc}")
-                    # Cache failure to prevent retry loop
-                    db.add(VirtualAccount(
-                        user_id=user.id,
-                        provider=VirtualAccountProvider.BILLSTACK,
-                        account_number="",
-                        account_name="Failed",
-                        bank_name="Billstack",
-                        bank_code="000",
-                        customer_reference=f"failed_{secrets.token_hex(4)}",
-                        reservation_reference=f"failed_{secrets.token_hex(4)}",
-                        status=VirtualAccountStatus.INACTIVE,
-                    ))
+                            account_number=acc["account_number"],
+                            account_name=acc["account_name"],
+                            bank_name=acc["bank_name"],
+                            bank_code=acc.get("bank_id", target_bank),
+                            customer_reference=f"{account_reference}_billstack_{bank_slug}",
+                            reservation_reference=reservation_ref,
+                            status=VirtualAccountStatus.ACTIVE,
+                        )
+                        db.add(db_acc)
+                        db_billstack.append(db_acc)
                     db.commit()
-            else:
-                for db_acc in db_billstack:
-                    if db_acc.status == VirtualAccountStatus.ACTIVE and db_acc.account_number:
-                        all_accounts.append({
-                            "bank_name": db_acc.bank_name,
-                            "account_number": db_acc.account_number,
-                            "account_name": db_acc.account_name,
-                        })
+                else:
+                    logger.warning("Billstack %s account generation failed for user %s: %s", target_bank, user.id, resp)
+            except Exception as exc:
+                db.rollback()
+                logger.warning("Auto-generate Billstack %s account failed for user %s: %s", target_bank, user.id, exc)
+                messages.append(f"Billstack {target_bank}: {exc}")
 
-        # 4. Fetch/Create Aspfiy Reserved Account
-        if is_gateway_active(db, "asfiy", settings.aspfiy_enabled):
-            db_aspfiy = db.query(VirtualAccount).filter(
-                VirtualAccount.user_id == user.id,
-                VirtualAccount.provider == VirtualAccountProvider.ASPFIY,
-            ).all()
-
-            active_aspfiy = [
-                acc for acc in db_aspfiy
-                if acc.status == VirtualAccountStatus.ACTIVE and acc.account_number
-            ]
-
-            if active_aspfiy:
-                for db_acc in active_aspfiy:
+        for db_acc in db_billstack:
+            if db_acc.status == VirtualAccountStatus.ACTIVE and db_acc.account_number:
+                if not any(a["account_number"] == db_acc.account_number for a in all_accounts):
                     all_accounts.append({
                         "bank_name": db_acc.bank_name,
                         "account_number": db_acc.account_number,
                         "account_name": db_acc.account_name,
                     })
-            elif db_aspfiy:
-                # We already have an account record (pending or inactive/failed).
-                # Do NOT hammer Aspfiy on GET requests to prevent runaway account generation loops!
-                logger.info("Aspfiy account already recorded for user %s (status=%s); skipping auto-generation on GET.", user.id, db_aspfiy[0].status)
-            else:
-                try:
-                    first = (user.full_name or "").strip().split(" ")[0] or "Mele"
-                    last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
-                    reference = f"{account_reference}_aspfiy_paga"
-                
-                    resp = AspfiyService.create_reserved_account(
-                        email=user.email,
-                        first_name=first,
-                        last_name=last,
-                        phone=user.phone_number or "08000000000",
-                        reference=reference
+
+    # 4. Fetch/Create Aspfiy Reserved Account
+    if is_gateway_active(db, "asfiy", settings.aspfiy_enabled):
+        db_aspfiy = db.query(VirtualAccount).filter(
+            VirtualAccount.user_id == user.id,
+            VirtualAccount.provider == VirtualAccountProvider.ASPFIY,
+        ).all()
+
+        active_aspfiy = [
+            acc for acc in db_aspfiy
+            if acc.status == VirtualAccountStatus.ACTIVE and acc.account_number
+        ]
+
+        if active_aspfiy:
+            for db_acc in active_aspfiy:
+                all_accounts.append({
+                    "bank_name": db_acc.bank_name,
+                    "account_number": db_acc.account_number,
+                    "account_name": db_acc.account_name,
+                })
+        elif db_aspfiy:
+            # We already have an account record (pending or inactive/failed).
+            # Do NOT hammer Aspfiy on GET requests to prevent runaway account generation loops!
+            logger.info("Aspfiy account already recorded for user %s (status=%s); skipping auto-generation on GET.", user.id, db_aspfiy[0].status)
+        else:
+            try:
+                first = (user.full_name or "").strip().split(" ")[0] or "Mele"
+                last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
+                reference = f"{account_reference}_aspfiy_paga"
+            
+                resp = AspfiyService.create_reserved_account(
+                    email=user.email,
+                    first_name=first,
+                    last_name=last,
+                    phone=user.phone_number or "08000000000",
+                    reference=reference
+                )
+            
+                acc_info = AspfiyService.parse_reserved_account_response(resp)
+                if acc_info:
+                    db_acc = VirtualAccount(
+                        user_id=user.id,
+                        provider=VirtualAccountProvider.ASPFIY,
+                        account_number=acc_info["account_number"],
+                        account_name=acc_info["account_name"],
+                        bank_name=acc_info["bank_name"],
+                        bank_code="000",
+                        customer_reference=reference,
+                        reservation_reference=reference,
+                        status=VirtualAccountStatus.ACTIVE,
                     )
-                
-                    acc_info = AspfiyService.parse_reserved_account_response(resp)
-                    if acc_info:
-                        db_acc = VirtualAccount(
-                            user_id=user.id,
-                            provider=VirtualAccountProvider.ASPFIY,
-                            account_number=acc_info["account_number"],
-                            account_name=acc_info["account_name"],
-                            bank_name=acc_info["bank_name"],
-                            bank_code="000",
-                            customer_reference=reference,
-                            reservation_reference=reference,
-                            status=VirtualAccountStatus.ACTIVE,
-                        )
-                        db.add(db_acc)
-                        db.commit()
-                        all_accounts.append(acc_info)
-                    else:
-                        logger.warning("Aspfiy returned unparseable or empty account for user %s: %s", user.id, resp)
-                        # Cache failure to prevent retry loop on subsequent GET requests
-                        db.add(VirtualAccount(
-                            user_id=user.id,
-                            provider=VirtualAccountProvider.ASPFIY,
-                            account_number="",
-                            account_name="Failed",
-                            bank_name="Paga",
-                            bank_code="000",
-                            customer_reference=reference,
-                            reservation_reference=reference,
-                            status=VirtualAccountStatus.INACTIVE,
-                        ))
-                        db.commit()
-                        messages.append("Failed to reserve Aspfiy account: Invalid response format.")
-                except Exception as exc:
-                    db.rollback()
-                    logger.warning("Auto-generate Aspfiy account failed: %s", exc)
-                    messages.append(f"Aspfiy: {exc}")
+                    db.add(db_acc)
+                    db.commit()
+                    all_accounts.append(acc_info)
+                else:
+                    logger.warning("Aspfiy returned unparseable or empty account for user %s: %s", user.id, resp)
                     # Cache failure to prevent retry loop on subsequent GET requests
-                    try:
-                        db.add(VirtualAccount(
-                            user_id=user.id,
-                            provider=VirtualAccountProvider.ASPFIY,
-                            account_number="",
-                            account_name="Failed",
-                            bank_name="Paga",
-                            bank_code="000",
-                            customer_reference=f"{account_reference}_aspfiy_paga",
-                            reservation_reference=f"{account_reference}_aspfiy_paga",
-                            status=VirtualAccountStatus.INACTIVE,
-                        ))
-                        db.commit()
-                    except Exception:
-                        db.rollback()
+                    db.add(VirtualAccount(
+                        user_id=user.id,
+                        provider=VirtualAccountProvider.ASPFIY,
+                        account_number="",
+                        account_name="Failed",
+                        bank_name="Paga",
+                        bank_code="000",
+                        customer_reference=reference,
+                        reservation_reference=reference,
+                        status=VirtualAccountStatus.INACTIVE,
+                    ))
+                    db.commit()
+                    messages.append("Failed to reserve Aspfiy account: Invalid response format.")
+            except Exception as exc:
+                db.rollback()
+                logger.warning("Auto-generate Aspfiy account failed: %s", exc)
+                messages.append(f"Aspfiy: {exc}")
+                # Cache failure to prevent retry loop on subsequent GET requests
+                try:
+                    db.add(VirtualAccount(
+                        user_id=user.id,
+                        provider=VirtualAccountProvider.ASPFIY,
+                        account_number="",
+                        account_name="Failed",
+                        bank_name="Paga",
+                        bank_code="000",
+                        customer_reference=f"{account_reference}_aspfiy_paga",
+                        reservation_reference=f"{account_reference}_aspfiy_paga",
+                        status=VirtualAccountStatus.INACTIVE,
+                    ))
+                    db.commit()
+                except Exception:
+                    db.rollback()
 
         # Sort accounts: Palmpay/Paga first, then Moniepoint/Monnify, then others
         def sort_key(acc):
@@ -542,244 +530,293 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
         }
 
 
-    @router.post("/bank-transfer-accounts", response_model=BankTransferAccountsResponse)
-    @limiter.limit("5/minute")
-    def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferAccountsRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-        all_accounts = []
-        requires_kyc = False
-        requires_phone = False
-        messages = []
-        account_reference = _transfer_account_reference(user)
+@router.post("/bank-transfer-accounts", response_model=BankTransferAccountsResponse)
+@limiter.limit("5/minute")
+def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferAccountsRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    all_accounts = []
+    requires_kyc = False
+    requires_phone = False
+    messages = []
+    account_reference = _transfer_account_reference(user)
 
-        # 1. Create/Update Paystack Dedicated Account if Enabled
-        if is_gateway_active(db, "paystack", settings.paystack_dedicated_enabled):
-            phone_input = _normalize_phone(payload.phone_number)
-            if payload.phone_number is not None and (not phone_input or len(phone_input) < 10):
-                raise HTTPException(status_code=400, detail="Enter a valid phone number")
+    # 1. Create/Update Paystack Dedicated Account if Enabled
+    if is_gateway_active(db, "paystack", settings.paystack_dedicated_enabled):
+        phone_input = _normalize_phone(payload.phone_number)
+        if payload.phone_number is not None and (not phone_input or len(phone_input) < 10):
+            raise HTTPException(status_code=400, detail="Enter a valid phone number")
 
-            phone = phone_input or _normalize_phone(user.phone_number)
-            paystack_phone = _to_paystack_phone(phone)
-            if phone and not paystack_phone:
-                raise HTTPException(status_code=400, detail="Enter a valid Nigerian phone number")
+        phone = phone_input or _normalize_phone(user.phone_number)
+        paystack_phone = _to_paystack_phone(phone)
+        if phone and not paystack_phone:
+            raise HTTPException(status_code=400, detail="Enter a valid Nigerian phone number")
 
-            canonical_phone = _canonical_phone(phone)
-            if canonical_phone and canonical_phone != (user.phone_number or "").strip():
-                existing = _find_user_by_phone(db, canonical_phone, exclude_user_id=user.id)
-                if existing:
-                    raise HTTPException(status_code=400, detail="Phone number already registered")
-                user.phone_number = canonical_phone
-                db.commit()
-                db.refresh(user)
+        canonical_phone = _canonical_phone(phone)
+        if canonical_phone and canonical_phone != (user.phone_number or "").strip():
+            existing = _find_user_by_phone(db, canonical_phone, exclude_user_id=user.id)
+            if existing:
+                raise HTTPException(status_code=400, detail="Phone number already registered")
+            user.phone_number = canonical_phone
+            db.commit()
+            db.refresh(user)
 
-            first = (user.full_name or "").strip().split(" ")[0] or "Mele"
-            last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
-            try:
-                # Flush existing Paystack virtual accounts for this user in DB
-                db.query(VirtualAccount).filter(
-                    VirtualAccount.user_id == user.id,
-                    VirtualAccount.provider == VirtualAccountProvider.PAYSTACK
-                ).delete()
-                db.commit()
-
-                dedicated = get_or_create_dedicated_account(
-                    email=user.email,
-                    first_name=first,
-                    last_name=last,
-                    phone=paystack_phone,
-                )
-                paystack_accs = _parse_paystack_dedicated_account(dedicated)
-                if paystack_accs:
-                    for acc in paystack_accs:
-                        bank_slug = acc["bank_name"].lower().replace(" ", "_")
-                        db_acc = VirtualAccount(
-                            user_id=user.id,
-                            provider=VirtualAccountProvider.PAYSTACK,
-                            account_number=acc["account_number"],
-                            account_name=acc["account_name"],
-                            bank_name=acc["bank_name"],
-                            bank_code="000",
-                            customer_reference=f"{account_reference}_paystack_{bank_slug}",
-                            reservation_reference=f"paystack_{user.id}_{bank_slug}_{secrets.token_hex(4)}",
-                            status=VirtualAccountStatus.ACTIVE,
-                        )
-                        db.add(db_acc)
-                    db.commit()
-                    all_accounts.extend(paystack_accs)
-            except PaystackError as exc:
-                detail = str(exc)
-                lower_detail = detail.lower()
-                if (not phone) and ("phone" in lower_detail or "mobile" in lower_detail):
-                    requires_phone = True
-                else:
-                    requires_kyc = True
-                messages.append(f"Paystack: {detail}")
-            except Exception as exc:
-                db.rollback()
-                logger.warning("Recreate Paystack account failed: %s", exc)
-                requires_kyc = True
-                messages.append(f"Paystack: {exc}")
-
-        # 2. Clear Database Monnify Cache & Re-generate (Hard Refresh)
-        import hashlib
-        import re
-        bvn = re.sub(r"\D", "", (payload.bvn or "").strip())
-        nin = re.sub(r"\D", "", (payload.nin or "").strip())
-
-        bvn_hash_val = None
-        nin_hash_val = None
-
-        if bvn:
-            bvn_hash_val = hashlib.sha256(bvn.encode()).hexdigest()
-            dup_bvn = db.query(User).filter(User.bvn_hash == bvn_hash_val, User.id != user.id).first()
-            if dup_bvn:
-                raise HTTPException(
-                    status_code=400,
-                    detail="This BVN is already linked to another account on our platform. Please use a unique BVN."
-                )
-
-        if nin:
-            nin_hash_val = hashlib.sha256(nin.encode()).hexdigest()
-            dup_nin = db.query(User).filter(User.nin_hash == nin_hash_val, User.id != user.id).first()
-            if dup_nin:
-                raise HTTPException(
-                    status_code=400,
-                    detail="This NIN is already linked to another account on our platform. Please use a unique NIN."
-                )
-
-        # Flush any existing Monnify virtual accounts for this user first
-        if is_gateway_active(db, "monnify", True):
-            db.query(VirtualAccount).filter(
-            VirtualAccount.user_id == user.id,
-            VirtualAccount.provider == VirtualAccountProvider.MONNIFY
-        ).delete()
-        db.commit()
-
+        first = (user.full_name or "").strip().split(" ")[0] or "Mele"
+        last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
         try:
-            try:
-                resp = reserve_monnify_account(
-                    account_reference=account_reference,
-                    account_name=f"MMTECHGLOBE/{user.full_name}",
-                    customer_email=user.email,
-                    customer_name=user.full_name,
-                    bvn=bvn or None,
-                    nin=nin or None,
-                    get_all_available_banks=True,
-                )
-            except ValueError as exc:
-                if "already exists" in str(exc).lower() or "duplicate" in str(exc).lower() or "exists" in str(exc).lower():
-                    # Account already exists, try to update KYC and fetch it
-                    if bvn or nin:
-                        update_monnify_kyc_info(
-                            account_reference=account_reference,
-                            bvn=bvn or None,
-                            nin=nin or None,
-                        )
-                    resp = get_reserved_account_details(account_reference=account_reference)
-                else:
-                    raise
-            accounts_data = _parse_reserved_accounts(resp)
-            if accounts_data:
-                # Uniqueness check: Prevent duplicate KYC mapping across users
-                for acc in accounts_data:
-                    dup = db.query(VirtualAccount).filter(
-                        VirtualAccount.account_number == acc["account_number"],
-                        VirtualAccount.user_id != user.id
-                    ).first()
-                    if dup:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="This KYC document (BVN/NIN) is already linked to another account on our platform. Please use a unique BVN/NIN."
-                        )
+            # Flush existing Paystack virtual accounts for this user in DB
+            db.query(VirtualAccount).filter(
+                VirtualAccount.user_id == user.id,
+                VirtualAccount.provider == VirtualAccountProvider.PAYSTACK
+            ).delete()
+            db.commit()
 
-                body = resp.get("responseBody") or resp.get("data") or resp.get("response") or {}
-                reservation_ref = body.get("reservationReference") or secrets.token_hex(8)
-                for acc in accounts_data:
+            dedicated = get_or_create_dedicated_account(
+                email=user.email,
+                first_name=first,
+                last_name=last,
+                phone=paystack_phone,
+            )
+            paystack_accs = _parse_paystack_dedicated_account(dedicated)
+            if paystack_accs:
+                for acc in paystack_accs:
                     bank_slug = acc["bank_name"].lower().replace(" ", "_")
                     db_acc = VirtualAccount(
                         user_id=user.id,
-                        provider=VirtualAccountProvider.MONNIFY,
+                        provider=VirtualAccountProvider.PAYSTACK,
                         account_number=acc["account_number"],
                         account_name=acc["account_name"],
                         bank_name=acc["bank_name"],
-                        bank_code=acc.get("bank_code", "000"),
-                        customer_reference=f"{account_reference}_monnify_{bank_slug}",
-                        reservation_reference=f"{reservation_ref}_{bank_slug}",
+                        bank_code="000",
+                        customer_reference=f"{account_reference}_paystack_{bank_slug}",
+                        reservation_reference=f"paystack_{user.id}_{bank_slug}_{secrets.token_hex(4)}",
                         status=VirtualAccountStatus.ACTIVE,
                     )
                     db.add(db_acc)
-                if bvn_hash_val or nin_hash_val:
-                    db_user = db.query(User).filter(User.id == user.id).first()
-                    if db_user:
-                        if bvn_hash_val:
-                            db_user.bvn_hash = bvn_hash_val
-                        if nin_hash_val:
-                            db_user.nin_hash = nin_hash_val
                 db.commit()
-                all_accounts.extend(accounts_data)
+                all_accounts.extend(paystack_accs)
+        except PaystackError as exc:
+            detail = str(exc)
+            lower_detail = detail.lower()
+            if (not phone) and ("phone" in lower_detail or "mobile" in lower_detail):
+                requires_phone = True
             else:
                 requires_kyc = True
-                messages.append("Failed to reserve Monnify account.")
-        except HTTPException:
-            raise
+            messages.append(f"Paystack: {detail}")
         except Exception as exc:
             db.rollback()
+            logger.warning("Recreate Paystack account failed: %s", exc)
             requires_kyc = True
-            messages.append(f"Monnify: {exc}")
+            messages.append(f"Paystack: {exc}")
 
-    # 3. Recreate / Update Billstack Reserved Account
-    if is_gateway_active(db, "billstack", settings.billstack_enabled):
-        # Keep existing Billstack accounts (e.g. 9PSB)
-        # and just generate a Palmpay account alongside them.
+    # 2. Clear Database Monnify Cache & Re-generate (Hard Refresh)
+    import hashlib
+    import re
+    bvn = re.sub(r"\D", "", (payload.bvn or "").strip())
+    nin = re.sub(r"\D", "", (payload.nin or "").strip())
 
-        try:
-            first = (user.full_name or "").strip().split(" ")[0] or "Mele"
-            last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
-            resp = generate_billstack_virtual_account(
-                email=user.email,
-                reference=f"{account_reference}_billstack_palmpay_{secrets.token_hex(4)}",
-                phone=user.phone_number or "",
-                first_name=first,
-                last_name=last,
-                bank="PALMPAY",
+    bvn_hash_val = None
+    nin_hash_val = None
+
+    if bvn:
+        bvn_hash_val = hashlib.sha256(bvn.encode()).hexdigest()
+        dup_bvn = db.query(User).filter(User.bvn_hash == bvn_hash_val, User.id != user.id).first()
+        if dup_bvn:
+            raise HTTPException(
+                status_code=400,
+                detail="This BVN is already linked to another account on our platform. Please use a unique BVN."
             )
-            if resp.get("status") is True:
-                data = resp.get("data", {})
-                accounts = data.get("account") or []
-                reservation_ref = data.get("reference") or secrets.token_hex(8)
-                for acc in accounts:
-                    db_acc = VirtualAccount(
-                        user_id=user.id,
-                        provider=VirtualAccountProvider.BILLSTACK,
-                        account_number=acc["account_number"],
-                        account_name=acc["account_name"],
-                        bank_name=acc["bank_name"],
-                        bank_code=acc.get("bank_id", "000"),
-                        customer_reference=f"{account_reference}_billstack_palmpay_{secrets.token_hex(4)}",
-                        reservation_reference=reservation_ref,
-                        status=VirtualAccountStatus.ACTIVE,
-                        )
-                    db.add(db_acc)
-                db.commit()
-                for acc in accounts:
-                    all_accounts.append({
-                        "bank_name": acc["bank_name"],
-                        "account_number": acc["account_number"],
-                        "account_name": acc["account_name"],
-                    })
-                
-                # Upgrade KYC if BVN is provided
-                if bvn:
-                    try:
-                        upgrade_billstack_kyc(email=user.email, bvn=bvn)
-                    except Exception as kyc_exc:
-                        logger.warning("Billstack KYC upgrade failed: %s", kyc_exc)
-                        messages.append(f"Billstack KYC: {kyc_exc}")
+
+    if nin:
+        nin_hash_val = hashlib.sha256(nin.encode()).hexdigest()
+        dup_nin = db.query(User).filter(User.nin_hash == nin_hash_val, User.id != user.id).first()
+        if dup_nin:
+            raise HTTPException(
+                status_code=400,
+                detail="This NIN is already linked to another account on our platform. Please use a unique NIN."
+            )
+
+    # Flush any existing Monnify virtual accounts for this user first
+    if is_gateway_active(db, "monnify", True):
+        db.query(VirtualAccount).filter(
+        VirtualAccount.user_id == user.id,
+        VirtualAccount.provider == VirtualAccountProvider.MONNIFY
+    ).delete()
+    db.commit()
+
+    try:
+        try:
+            resp = reserve_monnify_account(
+                account_reference=account_reference,
+                account_name=f"MMTECHGLOBE/{user.full_name}",
+                customer_email=user.email,
+                customer_name=user.full_name,
+                bvn=bvn or None,
+                nin=nin or None,
+                get_all_available_banks=True,
+            )
+        except ValueError as exc:
+            if "already exists" in str(exc).lower() or "duplicate" in str(exc).lower() or "exists" in str(exc).lower():
+                # Account already exists, try to update KYC and fetch it
+                if bvn or nin:
+                    update_monnify_kyc_info(
+                        account_reference=account_reference,
+                        bvn=bvn or None,
+                        nin=nin or None,
+                    )
+                resp = get_reserved_account_details(account_reference=account_reference)
             else:
-                messages.append("Failed to reserve Billstack account.")
-        except Exception as exc:
-            db.rollback()
-            logger.warning("Recreate Billstack account failed: %s", exc)
-            messages.append(f"Billstack: {exc}")
+                raise
+        accounts_data = _parse_reserved_accounts(resp)
+        if accounts_data:
+            # Uniqueness check: Prevent duplicate KYC mapping across users
+            for acc in accounts_data:
+                dup = db.query(VirtualAccount).filter(
+                    VirtualAccount.account_number == acc["account_number"],
+                    VirtualAccount.user_id != user.id
+                ).first()
+                if dup:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="This KYC document (BVN/NIN) is already linked to another account on our platform. Please use a unique BVN/NIN."
+                    )
+
+            body = resp.get("responseBody") or resp.get("data") or resp.get("response") or {}
+            reservation_ref = body.get("reservationReference") or secrets.token_hex(8)
+            for acc in accounts_data:
+                bank_slug = acc["bank_name"].lower().replace(" ", "_")
+                db_acc = VirtualAccount(
+                    user_id=user.id,
+                    provider=VirtualAccountProvider.MONNIFY,
+                    account_number=acc["account_number"],
+                    account_name=acc["account_name"],
+                    bank_name=acc["bank_name"],
+                    bank_code=acc.get("bank_code", "000"),
+                    customer_reference=f"{account_reference}_monnify_{bank_slug}",
+                    reservation_reference=f"{reservation_ref}_{bank_slug}",
+                    status=VirtualAccountStatus.ACTIVE,
+                )
+                db.add(db_acc)
+            if bvn_hash_val or nin_hash_val:
+                db_user = db.query(User).filter(User.id == user.id).first()
+                if db_user:
+                    if bvn_hash_val:
+                        db_user.bvn_hash = bvn_hash_val
+                    if nin_hash_val:
+                        db_user.nin_hash = nin_hash_val
+            db.commit()
+            all_accounts.extend(accounts_data)
+        else:
+            requires_kyc = True
+            messages.append("Failed to reserve Monnify account.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        requires_kyc = True
+        messages.append(f"Monnify: {exc}")
+
+    # 3. Recreate / Update Billstack Reserved Accounts (9PSB & SAFEHAVEN)
+    if is_gateway_active(db, "billstack", settings.billstack_enabled):
+        db_billstack = db.query(VirtualAccount).filter(
+            VirtualAccount.user_id == user.id,
+            VirtualAccount.provider == VirtualAccountProvider.BILLSTACK,
+            VirtualAccount.status == VirtualAccountStatus.ACTIVE
+        ).all()
+
+        existing_bank_codes = set()
+        for acc in db_billstack:
+            if acc.account_number:
+                b_id = (acc.bank_code or "").upper()
+                b_nm = (acc.bank_name or "").upper()
+                if "9PSB" in b_id or "9PSB" in b_nm:
+                    existing_bank_codes.add("9PSB")
+                if "SAFEHAVEN" in b_id or "SAFEHAVEN" in b_nm or "SAFE HAVEN" in b_nm:
+                    existing_bank_codes.add("SAFEHAVEN")
+                if "PALMPAY" in b_id or "PALMPAY" in b_nm:
+                    existing_bank_codes.add("PALMPAY")
+
+        first = (user.full_name or "").strip().split(" ")[0] or "Mele"
+        last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
+        target_banks = ["9PSB", "SAFEHAVEN"]
+        if bvn or nin:
+            target_banks.append("PALMPAY")
+
+        for target_bank in target_banks:
+            if target_bank in existing_bank_codes:
+                continue
+            try:
+                bank_slug = target_bank.lower()
+                id_type = ("bvn" if bvn else "nin") if target_bank == "PALMPAY" else None
+                id_number = (bvn or nin) if target_bank == "PALMPAY" else None
+                resp = generate_billstack_virtual_account(
+                    email=user.email,
+                    reference=f"{account_reference}_billstack_{bank_slug}_{secrets.token_hex(4)}",
+                    phone=user.phone_number or "",
+                    first_name=first,
+                    last_name=last,
+                    bank=target_bank,
+                    id_type=id_type,
+                    id_number=id_number,
+                )
+                if resp.get("status") is True:
+                    data = resp.get("data", {})
+                    accounts = data.get("account") or []
+                    reservation_ref = data.get("reference") or secrets.token_hex(8)
+                    for acc in accounts:
+                        db_acc = VirtualAccount(
+                            user_id=user.id,
+                            provider=VirtualAccountProvider.BILLSTACK,
+                            account_number=acc["account_number"],
+                            account_name=acc["account_name"],
+                            bank_name=acc["bank_name"],
+                            bank_code=acc.get("bank_id", target_bank),
+                            customer_reference=f"{account_reference}_billstack_{bank_slug}",
+                            reservation_reference=reservation_ref,
+                            status=VirtualAccountStatus.ACTIVE,
+                        )
+                        db.add(db_acc)
+                        db_billstack.append(db_acc)
+                    db.commit()
+                else:
+                    err_msg = resp.get("message") or "Unknown error"
+                    logger.warning("Billstack %s account generation failed: %s", target_bank, resp)
+                    messages.append(f"Billstack {target_bank}: {err_msg}")
+                    if target_bank == "PALMPAY":
+                        err_lower = err_msg.lower()
+                        if any(w in err_lower for w in ["already", "exist", "duplicate", "registered", "linked"]):
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"This {id_type.upper()} is already registered or linked to an existing PalmPay account."
+                            )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                db.rollback()
+                logger.warning("Recreate Billstack %s account failed: %s", target_bank, exc)
+                messages.append(f"Billstack {target_bank}: {exc}")
+                if target_bank == "PALMPAY":
+                    exc_str = str(exc).lower()
+                    if any(w in exc_str for w in ["already", "exist", "duplicate", "registered", "linked"]):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"This {('NIN' if nin else 'BVN')} is already registered or linked to an existing PalmPay account."
+                        )
+
+        for db_acc in db_billstack:
+            if db_acc.status == VirtualAccountStatus.ACTIVE and db_acc.account_number:
+                if not any(a["account_number"] == db_acc.account_number for a in all_accounts):
+                    all_accounts.append({
+                        "bank_name": db_acc.bank_name,
+                        "account_number": db_acc.account_number,
+                        "account_name": db_acc.account_name,
+                    })
+
+        # Upgrade KYC if BVN is provided
+        if bvn:
+            try:
+                upgrade_billstack_kyc(email=user.email, bvn=bvn)
+            except Exception as kyc_exc:
+                logger.warning("Billstack KYC upgrade failed: %s", kyc_exc)
+                messages.append(f"Billstack KYC: {kyc_exc}")
 
     if not all_accounts and messages:
         raise HTTPException(status_code=502, detail=" | ".join(messages))
@@ -814,7 +851,7 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
                 first = (user.full_name or "").strip().split(" ")[0] or "Mele"
                 last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
                 reference = f"{account_reference}_aspfiy_paga"
-                
+
                 resp = AspfiyService.create_reserved_account(
                     email=user.email,
                     first_name=first,
@@ -822,7 +859,7 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
                     phone=user.phone_number or "08000000000",
                     reference=reference
                 )
-                
+
                 acc_info = AspfiyService.parse_reserved_account_response(resp)
                 if acc_info:
                     db_acc = VirtualAccount(
@@ -883,6 +920,22 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
             return 1
         return 2
     all_accounts.sort(key=sort_key)
+
+    # If user explicitly requested KYC account generation with BVN or NIN and no account could be created:
+    if (bvn or nin) and not all_accounts:
+        kyc_errs = [m for m in messages if any(k in m for k in ["Monnify", "PALMPAY", "Billstack", "KYC"])]
+        err_text = " | ".join(kyc_errs) if kyc_errs else "Failed to verify KYC or create account."
+        err_lower = err_text.lower()
+        doc_name = "NIN" if nin else "BVN"
+        if any(w in err_lower for w in ["already", "exist", "duplicate", "registered", "linked"]):
+            raise HTTPException(
+                status_code=400,
+                detail=f"This {doc_name} is already registered or linked to an existing account. Please enter a different {doc_name}."
+            )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unable to generate account with this {doc_name}: {err_text}"
+        )
 
     return {
         "provider": "combined",
@@ -1032,7 +1085,7 @@ def paystack_verify(reference: str, user: User = Depends(get_current_user), db: 
 
 # --- Backward Compatibility for Webhooks ---
 # Webhooks were moved to webhooks.py, but providers may still have the old /wallet/... URLs configured.
-from app.api.v1.endpoints.webhooks import paystack_webhook, monnify_webhook, billstack_webhook, smeplug_webhook
+from app.api.v1.endpoints.webhooks import paystack_webhook, monnify_webhook, billstack_webhook, smeplug_webhook, aspfiy_webhook
 
 router.post("/paystack/webhook", include_in_schema=False)(paystack_webhook)
 router.post("/monnify/webhook", include_in_schema=False)(monnify_webhook)
@@ -1041,6 +1094,12 @@ router.post("/smeplug/webhook", include_in_schema=False)(smeplug_webhook)
 router.post("/smeplug", include_in_schema=False)(smeplug_webhook)
 router.post("/monnify", include_in_schema=False)(monnify_webhook)
 router.post("/billstack", include_in_schema=False)(billstack_webhook)
+router.post("/aspfiy", include_in_schema=False)(aspfiy_webhook)
+router.post("/aspfiy/", include_in_schema=False)(aspfiy_webhook)
+router.post("/aspify", include_in_schema=False)(aspfiy_webhook)
+router.post("/aspify/", include_in_schema=False)(aspfiy_webhook)
+router.post("/asfiy", include_in_schema=False)(aspfiy_webhook)
+router.post("/asfiy/", include_in_schema=False)(aspfiy_webhook)
 
 @router.post("/transfer/verify", response_model=TransferVerifyResponse)
 @limiter.limit("10/minute")
