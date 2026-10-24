@@ -18,6 +18,7 @@ from app.models.system_settings import SystemSettings
 from app.models.financial_ledger import FinancialLedger, FinancialCategory, EntryType
 from app.models.promo import PromoCode, UserPromo
 from app.models.integration import IntegrationProvider, PaymentGateway, ProviderType
+from app.models.user_pricing_override import UserPricingOverride
 
 __all__ = [
     "User",
@@ -61,4 +62,5 @@ __all__ = [
     "IntegrationProvider",
     "PaymentGateway",
     "ProviderType",
+    "UserPricingOverride",
 ]

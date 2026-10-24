@@ -256,32 +256,51 @@ def list_data_plans(user: Optional[User] = Depends(get_optional_user), db: Sessi
         rule_map = {str(r.network or "").strip().lower(): r for r in all_rules}
     except Exception as rule_exc:
         logger.warning("Failed to load pricing rules: %s", rule_exc)
+        try:
+            from sqlalchemy import cast, String
+            role_val = getattr(pricing_role, "value", str(pricing_role)).lower()
+            all_rules = db.query(PricingRule).filter(cast(PricingRule.role, String) == role_val).all()
+            rule_map = {str(r.network or "").strip().lower(): r for r in all_rules}
+        except Exception:
+            rule_map = {}
     
+    user_overrides = {}
+    if user and getattr(user, "id", None):
+        try:
+            from app.models.user_pricing_override import UserPricingOverride
+            overrides = db.query(UserPricingOverride).filter(UserPricingOverride.user_id == user.id).all()
+            user_overrides = {o.data_plan_id: Decimal(str(o.custom_price)) for o in overrides}
+        except Exception as ov_exc:
+            logger.warning("Failed to fetch user pricing overrides: %s", ov_exc)
+
     priced = []
     for plan in plans:
         try:
-            # 1. Calculate price safely
-            display = getattr(plan, "display_price", None)
-            agent_price = getattr(plan, "agent_price", None)
-            base = Decimal(str(plan.base_price if plan.base_price is not None else "0"))
-            
-            if pricing_role is not None and str(pricing_role).lower() in ("reseller", "agent") and agent_price is not None:
-                price = Decimal(str(agent_price))
-            elif display is not None:
-                price = Decimal(str(display))
+            if plan.id in user_overrides:
+                price = user_overrides[plan.id]
             else:
-                rule = rule_map.get(str(plan.network or "").strip().lower())
-                margin = Decimal("0")
-                if rule and getattr(rule, "margin", None) is not None:
-                    try:
-                        margin = Decimal(str(rule.margin))
-                    except Exception:
-                        margin = Decimal("0")
-                margin_type = str(getattr(rule, "margin_type", None) or "fixed").strip().lower()
-                if margin_type == "percentage":
-                    price = base + (base * margin / Decimal("100"))
+                # 1. Calculate price safely
+                display = getattr(plan, "display_price", None)
+                agent_price = getattr(plan, "agent_price", None)
+                base = Decimal(str(plan.base_price if plan.base_price is not None else "0"))
+                
+                if pricing_role is not None and str(pricing_role).lower() in ("reseller", "agent") and agent_price is not None:
+                    price = Decimal(str(agent_price))
+                elif display is not None:
+                    price = Decimal(str(display))
                 else:
-                    price = base + margin
+                    rule = rule_map.get(str(plan.network or "").strip().lower())
+                    margin = Decimal("0")
+                    if rule and getattr(rule, "margin", None) is not None:
+                        try:
+                            margin = Decimal(str(rule.margin))
+                        except Exception:
+                            margin = Decimal("0")
+                    margin_type = str(getattr(rule, "margin_type", None) or "fixed").strip().lower()
+                    if margin_type == "percentage":
+                        price = base + (base * margin / Decimal("100"))
+                    else:
+                        price = base + margin
         except Exception as price_err:
             logger.warning("Pricing calculation error for plan %s: %s", plan.id, price_err)
             price = Decimal(str(getattr(plan, "display_price", None) or getattr(plan, "base_price", None) or "0"))
@@ -334,7 +353,7 @@ def list_data_plans(user: Optional[User] = Depends(get_optional_user), db: Sessi
     except Exception as sort_err:
         logger.warning("Failed to sort data plans: %s", sort_err)
         
-    logger.info("Returning %d active data plans for user %s", len(priced), user.email)
+    logger.info("Returning %d active data plans for user %s", len(priced), getattr(user, "email", "guest"))
     return priced
 
 
@@ -380,7 +399,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
 
     enforce_purchase_limits(db, user_id=user.id, amount=Decimal(str(plan.base_price)), tx_type="data")
     
-    price = get_price_for_user(db, plan, user.role)
+    price = get_price_for_user(db, plan, user)
     
     # Apply promo discount if provided
     user_promo = None
@@ -572,35 +591,73 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                 else:
                     p_res = {"status": "failed", "error": res.message}
 
-            elif p_name == "meledata" or (p_name and p_name not in ("amigo", "clubkonnect", "smeplug", "sim", "autosync", "mzdata", "boltnet")):
+            elif p_name == "meledata":
+                from app.providers.meledata_provider import MeleDataProvider
+                mele = MeleDataProvider()
+                clean_plan_id = str(p_plan_id or plan_plan_code or "").strip()
+                if ":" in clean_plan_id:
+                    clean_plan_id = clean_plan_id.split(":")[-1]
+                elif clean_plan_id.startswith("meledata.") and clean_plan_id.count(".") >= 2:
+                    clean_plan_id = clean_plan_id.split(".")[-1]
+                p_res = mele.purchase_network_data(
+                    network_id=network_key,
+                    phone=phone,
+                    plan_id=clean_plan_id,
+                    client_request_id=target_ref
+                )
+                tx_provider = "meledata"
+
+            elif p_name and p_name not in ("amigo", "clubkonnect", "smeplug", "sim", "autosync", "mzdata", "boltnet"):
                 from app.core.database import SessionLocal
                 _db = SessionLocal()
                 try:
                     prov = _db.query(IntegrationProvider).filter(IntegrationProvider.identifier == p_name).first()
                     if prov and prov.api_key:
                         tx_provider = p_name
-                        b_url = str(prov.base_url or "https://api.meledata.ng/api/v1").rstrip("/")
+                        raw_b = str(prov.base_url or "").strip().rstrip("/")
+                        if raw_b.endswith("/developer"):
+                            raw_b = raw_b[:-10].rstrip("/")
+                        if not raw_b.endswith("/api/v1"):
+                            b_url = f"{raw_b}/api/v1"
+                            alt_b_url = raw_b
+                        else:
+                            b_url = raw_b
+                            alt_b_url = raw_b[:-7].rstrip("/")
+
                         buy_url = f"{b_url}/developer/data/purchase"
+                        alt_buy_url = f"{alt_b_url}/developer/data/purchase"
+
                         hdrs = {
                             "Authorization": f"Bearer {prov.api_key}",
                             "X-API-Key": prov.api_key,
                             "Content-Type": "application/json"
                         }
+                        clean_plan_id = str(p_plan_id or plan_plan_code or "").strip()
+                        if ":" in clean_plan_id:
+                            clean_plan_id = clean_plan_id.split(":")[-1]
+                        elif clean_plan_id.startswith(f"{p_name}.") and clean_plan_id.count(".") >= 2:
+                            clean_plan_id = clean_plan_id.split(".")[-1]
+
                         payload = {
                             "network": network_key.upper(),
                             "phone_number": phone,
-                            "plan_id": str(p_plan_id or plan_plan_code),
+                            "plan_id": int(clean_plan_id) if clean_plan_id.isdigit() else clean_plan_id,
                             "reference": target_ref
                         }
                         import requests
                         r = requests.post(buy_url, json=payload, headers=hdrs, timeout=25)
+                        if r.status_code == 404 and alt_buy_url != buy_url:
+                            logger.warning("Generic provider 404 on %s, trying %s", buy_url, alt_buy_url)
+                            r = requests.post(alt_buy_url, json=payload, headers=hdrs, timeout=25)
+
                         r_data = r.json() if "application/json" in r.headers.get("content-type", "") else {}
-                        if r.status_code == 200 and r_data.get("status"):
+                        inner_st = str(r_data.get("data", {}).get("status", "")).lower()
+                        if r.status_code in (200, 201) and (inner_st in ("success", "delivered") or (r_data.get("status") and not inner_st)):
                             p_res = {
                                 "status": "success",
                                 "provider_reference": str(r_data.get("data", {}).get("reference") or target_ref)
                             }
-                        elif r.status_code in (200, 202) and str(r_data.get("data", {}).get("status", "")).lower() in ("pending", "processing"):
+                        elif r.status_code in (200, 201, 202) and (inner_st in ("pending", "processing") or str(r_data.get("status", "")).lower() == "pending"):
                             p_res = {
                                 "status": "pending",
                                 "provider_reference": str(r_data.get("data", {}).get("reference") or target_ref)

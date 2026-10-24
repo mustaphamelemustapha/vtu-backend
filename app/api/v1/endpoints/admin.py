@@ -6,14 +6,14 @@ import time
 import logging
 from pydantic import BaseModel
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, select, union_all, String, cast, inspect
 from app.core.database import get_db
 from app.core.config import get_settings
 from app.dependencies import require_admin
 from app.services.monitoring import check_provider_balances
-from app.models import User, UserRole, Wallet, WalletLedger, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, MarginType, ApiLog, DataPlan, TransactionDispute, DisputeStatus, AdminAuditLog, ServiceToggle, Referral
+from app.models import User, UserRole, Wallet, WalletLedger, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, MarginType, ApiLog, DataPlan, TransactionDispute, DisputeStatus, AdminAuditLog, ServiceToggle, Referral, UserPricingOverride
 from app.schemas.admin import (
     FundUserWalletRequest,
     PricingRuleUpdate,
@@ -36,6 +36,9 @@ from app.schemas.admin import (
     AdminAmbassadorsResponse,
     PayCommissionRequest,
     UpdateReferralCodeRequest,
+    UpgradeApiUserResponse,
+    UserPricingOverrideCreate,
+    UserPricingOverrideOut,
 )
 from app.services.wallet import get_or_create_wallet, credit_wallet, debit_wallet
 from app.services.pricing import build_service_pricing_key, parse_pricing_key
@@ -1750,6 +1753,35 @@ def activate_user(user_id: int, admin=Depends(require_admin), db: Session = Depe
     return {"status": "active"}
 
 
+@router.post("/users/{user_id}/reset-pin")
+def reset_user_pin(user_id: int, admin=Depends(require_admin), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.pin_hash = None
+    user.pin_set_at = None
+    user.pin_failed_attempts = 0
+    user.pin_locked_until = None
+    user.pin_reset_token_hash = None
+    user.pin_reset_token_expires_at = None
+    db.commit()
+    return {"status": "success", "message": f"Transaction PIN cleared for {user.email}"}
+
+
+@router.post("/users/{user_id}/set-pin")
+def set_user_pin(user_id: int, payload: dict = Body(...), admin=Depends(require_admin), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    pin = "".join(ch for ch in str(payload.get("pin") or "") if ch.isdigit())
+    if len(pin) != 4:
+        raise HTTPException(status_code=400, detail="PIN must be exactly 4 digits")
+    from app.services.transaction_pin import set_pin
+    set_pin(user, pin)
+    db.commit()
+    return {"status": "success", "message": f"Transaction PIN updated for {user.email}"}
+
+
 @router.delete("/users/{user_id:int}")
 def delete_user(user_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == user_id).first()
@@ -1900,6 +1932,7 @@ def get_data_plans(admin=Depends(require_admin), db: Session = Depends(get_db)):
             "base_price": float(p.base_price),
             "display_price": float(p.display_price) if p.display_price is not None else None,
             "agent_price": float(p.agent_price) if p.agent_price is not None else None,
+            "api_price": float(p.api_price) if getattr(p, "api_price", None) is not None else None,
             "is_active": p.is_active,
             "provider": p.provider,
             "provider_plan_id": p.provider_plan_id,
@@ -1976,6 +2009,16 @@ def update_data_plan(
             raise HTTPException(status_code=400, detail="agent_price must be >= 0")
         plan.agent_price = payload.agent_price
         changes["agent_price"] = float(payload.agent_price)
+
+    if payload.clear_api_price:
+        if plan.api_price is not None:
+            plan.api_price = None
+            changes["api_price"] = None
+    elif payload.api_price is not None:
+        if payload.api_price < 0:
+            raise HTTPException(status_code=400, detail="api_price must be >= 0")
+        plan.api_price = payload.api_price
+        changes["api_price"] = float(payload.api_price)
 
     # Promo / marketing field updates
     if payload.promo_active is not None:
@@ -2223,6 +2266,7 @@ def create_data_plan(payload: DataPlanUpdate, admin: User = Depends(require_admi
         base_price=payload.base_price or Decimal("0"),
         display_price=payload.display_price,
         agent_price=payload.agent_price,
+        api_price=payload.api_price,
         is_active=payload.is_active if payload.is_active is not None else True,
         provider=payload.provider,
         provider_plan_id=payload.provider_plan_id,
@@ -2517,6 +2561,17 @@ def trigger_balance_checks(db: Session = Depends(get_db)):
     return {"status": "ok", "balances": results}
 
 
+@router.post("/system/trigger-daily-report")
+def trigger_daily_report(db: Session = Depends(get_db)):
+    """
+    Cron endpoint to generate and email daily report.
+    """
+    from app.services.reports import generate_daily_report
+    results = generate_daily_report(db)
+    return {"status": "ok", "report": results}
+
+
+
 
 from app.models.agent import AgentStat
 
@@ -2663,18 +2718,117 @@ def pay_ambassador_commission(
         referral.is_ten_percent_paid = True
         
     elif req.commission_type == "50GB_MILESTONE":
-        if referral.is_milestone_bonus_paid:
-            raise HTTPException(status_code=400, detail="Milestone bonus already paid")
-        if not referral.is_50gb_milestone_reached:
-            raise HTTPException(status_code=400, detail="Milestone not reached yet")
-            
-        amount = Decimal('500.00')
-        credit_wallet(db, wallet.id, amount, "Ambassador 50GB Milestone Bonus")
-        
-        referral.is_milestone_bonus_paid = True
+        raise HTTPException(status_code=400, detail="50GB milestone bonuses have been discontinued.")
         
     else:
         raise HTTPException(status_code=400, detail="Invalid commission type")
         
     db.commit()
     return {"status": "success", "message": f"Paid {amount} commission to Ambassador."}
+
+
+@router.post("/users/{user_id}/upgrade-developer", response_model=UpgradeApiUserResponse)
+def upgrade_user_to_developer(
+    user_id: int,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    user.is_developer = True
+    user.developer_status = "approved"
+    
+    sec_plain = None
+    if not user.api_public_key or not user.api_secret_key_hash:
+        from app.api.v1.endpoints.developer import generate_key_pair
+        pub, sec_plain, sec_hash = generate_key_pair()
+        user.api_public_key = pub
+        user.api_secret_key_hash = sec_hash
+        
+    db.commit()
+    db.refresh(user)
+    
+    return {
+        "user_id": user.id,
+        "is_developer": user.is_developer,
+        "developer_status": user.developer_status,
+        "role": user.role.value if hasattr(user.role, "value") else str(user.role),
+        "api_public_key": user.api_public_key,
+        "api_secret_key": sec_plain
+    }
+
+
+@router.post("/users/{user_id}/pricing-overrides", response_model=UserPricingOverrideOut)
+def set_user_pricing_override(
+    user_id: int,
+    payload: UserPricingOverrideCreate,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    plan = db.query(DataPlan).filter(DataPlan.id == payload.data_plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Data plan not found")
+        
+    override = db.query(UserPricingOverride).filter(
+        UserPricingOverride.user_id == user_id,
+        UserPricingOverride.data_plan_id == payload.data_plan_id
+    ).first()
+    
+    if override:
+        override.custom_price = payload.custom_price
+    else:
+        override = UserPricingOverride(
+            user_id=user_id,
+            data_plan_id=payload.data_plan_id,
+            custom_price=payload.custom_price
+        )
+        db.add(override)
+        
+    db.commit()
+    db.refresh(override)
+    _invalidate_plans_cache()
+    return override
+
+
+@router.get("/users/{user_id}/pricing-overrides", response_model=list[UserPricingOverrideOut])
+def get_user_pricing_overrides(
+    user_id: int,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    overrides = db.query(UserPricingOverride).filter(UserPricingOverride.user_id == user_id).all()
+    return overrides
+
+
+@router.delete("/users/{user_id}/pricing-overrides/{override_id}")
+def delete_user_pricing_override(
+    user_id: int,
+    override_id: int,
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    override = db.query(UserPricingOverride).filter(
+        UserPricingOverride.id == override_id,
+        UserPricingOverride.user_id == user_id
+    ).first()
+    if not override:
+        raise HTTPException(status_code=404, detail="Pricing override not found")
+        
+    db.delete(override)
+    db.commit()
+    _invalidate_plans_cache()
+    return {"status": "ok", "message": "Pricing override deleted."}

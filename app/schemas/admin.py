@@ -158,6 +158,8 @@ class DataPlanUpdate(BaseModel):
     clear_display_price: bool = False
     agent_price: Optional[Decimal] = None
     clear_agent_price: bool = False
+    api_price: Optional[Decimal] = None
+    clear_api_price: bool = False
     provider: Optional[str] = None
     provider_plan_id: Optional[str] = None
     data_type: Optional[str] = None
@@ -308,3 +310,27 @@ class PayCommissionRequest(BaseModel):
     ambassador_id: int
     vendor_id: int
     commission_type: str # '10_PERCENT' or '50GB_MILESTONE'
+
+
+class UpgradeApiUserResponse(BaseModel):
+    user_id: int
+    is_developer: bool
+    developer_status: str
+    role: str
+    api_public_key: Optional[str] = None
+    api_secret_key: Optional[str] = None
+
+
+class UserPricingOverrideCreate(BaseModel):
+    data_plan_id: int
+    custom_price: Decimal
+
+
+class UserPricingOverrideOut(BaseModel):
+    id: int
+    user_id: int
+    data_plan_id: int
+    custom_price: Decimal
+
+    class Config:
+        orm_mode = True

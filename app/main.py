@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 from app.core.database import Base, engine, SessionLocal
 from app.core.logging import configure_logging
 from app.middlewares.rate_limit import limiter
-from app.models import User, UserRole
+from app.models import User, UserRole, UserPricingOverride
 from app.services.pending_reconcile import (
     start_pending_reconcile_worker,
     stop_pending_reconcile_worker,
@@ -57,13 +57,13 @@ async def developer_api_exception_handler(request: Request, exc: DeveloperAPIExc
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    from fastapi.responses import JSONResponse
     if request.url.path.startswith("/api/v1/developer"):
         return JSONResponse(
             status_code=400,
             content={"status": False, "message": "Invalid request payload or missing required fields."}
         )
     # Default for non-developer routes
-    from fastapi.responses import JSONResponse
     return JSONResponse(
         status_code=422,
         content={"detail": exc.errors()}
@@ -230,6 +230,7 @@ def ensure_tables():
         _ensure_user_developer_columns()
         _ensure_user_webhook_columns()
         _ensure_user_profile_image_url_column()
+        _ensure_user_pricing_overrides_table()
         _ensure_referral_ambassador_columns()
         _ensure_aspfiy_enum()
         _ensure_data_plan_dispatch_columns()
@@ -267,6 +268,7 @@ def ensure_tables():
     _ensure_user_developer_columns()
     _ensure_user_webhook_columns()
     _ensure_user_profile_image_url_column()
+    _ensure_user_pricing_overrides_table()
     _ensure_referral_ambassador_columns()
     _ensure_aspfiy_enum()
     _ensure_promo_is_fixed_price_column()
@@ -701,6 +703,16 @@ def _ensure_user_profile_image_url_column() -> None:
         logging.getLogger(__name__).warning("Could not ensure users profile_image_url column: %s", exc)
 
 
+def _ensure_user_pricing_overrides_table() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("user_pricing_overrides"):
+            UserPricingOverride.__table__.create(engine, checkfirst=True)
+            logging.getLogger(__name__).info("Ensured user_pricing_overrides table exists.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure user_pricing_overrides table: %s", exc)
+
+
 def _ensure_referral_ambassador_columns() -> None:
     try:
         inspector = inspect(engine)
@@ -763,6 +775,8 @@ def _ensure_data_plan_dispatch_columns() -> None:
             statements.append("ALTER TABLE data_plans ADD COLUMN dispatch_count INTEGER NOT NULL DEFAULT 1")
         if "dispatch_plan_id" not in cols:
             statements.append("ALTER TABLE data_plans ADD COLUMN dispatch_plan_id VARCHAR(64)")
+        if "api_price" not in cols:
+            statements.append("ALTER TABLE data_plans ADD COLUMN api_price NUMERIC(12, 2) DEFAULT NULL")
 
         if not statements:
             return
@@ -868,6 +882,14 @@ def _ensure_default_integrations() -> None:
                 "is_active": bool(getattr(settings, "telecom_abode_api_key", "") or getattr(settings, "telecom_abode_enabled", False)),
                 "supported_services": ["airtime", "data", "cable"],
             },
+            {
+                "name": "Mele Data",
+                "identifier": "meledata",
+                "base_url": getattr(settings, "meledata_base_url", "https://api.meledata.ng/api/v1"),
+                "api_key": getattr(settings, "meledata_api_key", "") or "",
+                "is_active": bool(getattr(settings, "meledata_api_key", "")),
+                "supported_services": ["airtime", "data"],
+            },
         ]
 
         for spec in providers_spec:
@@ -879,9 +901,19 @@ def _ensure_default_integrations() -> None:
                 if spec["api_key"]:
                     existing.api_key = spec["api_key"]
                     existing.is_active = True
-                if spec["base_url"]:
+                if spec["base_url"] and not existing.base_url:
                     existing.base_url = spec["base_url"]
                 existing.supported_services = spec["supported_services"]
+
+        # Ensure meledata base_url has /api/v1 in database
+        mele_prov = db.query(IntegrationProvider).filter(IntegrationProvider.identifier == "meledata").first()
+        if mele_prov and mele_prov.base_url:
+            clean_mele_url = mele_prov.base_url.rstrip("/")
+            if clean_mele_url.endswith("/developer"):
+                clean_mele_url = clean_mele_url[:-10].rstrip("/")
+            if not clean_mele_url.endswith("/api/v1"):
+                mele_prov.base_url = f"{clean_mele_url}/api/v1"
+                db.commit()
 
         gateways_spec = [
             {
@@ -921,6 +953,11 @@ def _ensure_default_integrations() -> None:
                 if not existing_gw.secret_key and g_spec["secret_key"]:
                     existing_gw.secret_key = g_spec["secret_key"]
                     existing_gw.is_active = True
+
+        # Cleanse any legacy Render/Vercel URLs stored in the database
+        for gw in db.query(PaymentGateway).all():
+            if gw.webhook_url and any(bad in gw.webhook_url for bad in ("onrender.com", "vercel.app", "axisvtu")):
+                gw.webhook_url = "https://api.meledata.ng/api/v1/webhooks/aspfiy"
 
         db.commit()
         logging.getLogger(__name__).info("Ensured default integration providers and payment gateways.")
