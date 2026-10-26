@@ -30,13 +30,31 @@ from app.providers.mzdata_provider import MZDataProvider
 from app.providers.boltnet_provider import BoltnetProvider
 from app.models.integration import IntegrationProvider
 
-def get_amigo_client(db: Session) -> AmigoClient:
-    provider = db.query(IntegrationProvider).filter(
-        IntegrationProvider.identifier == "amigo",
-        IntegrationProvider.is_active == True
-    ).first()
-    if provider:
-        return AmigoClient(api_key=provider.api_key, base_url=provider.base_url)
+def get_amigo_client(db: Optional[Session] = None) -> AmigoClient:
+    if db is None:
+        from app.core.database import SessionLocal
+        _db = SessionLocal()
+        try:
+            provider = _db.query(IntegrationProvider).filter(
+                IntegrationProvider.identifier == "amigo",
+                IntegrationProvider.is_active == True
+            ).first()
+            if provider:
+                return AmigoClient(api_key=provider.api_key, base_url=provider.base_url)
+        except Exception:
+            pass
+        finally:
+            _db.close()
+        return AmigoClient()
+    try:
+        provider = db.query(IntegrationProvider).filter(
+            IntegrationProvider.identifier == "amigo",
+            IntegrationProvider.is_active == True
+        ).first()
+        if provider:
+            return AmigoClient(api_key=provider.api_key, base_url=provider.base_url)
+    except Exception:
+        pass
     return AmigoClient()
 from app.services.bills import get_bills_provider
 from app.services.fraud import enforce_purchase_limits
@@ -358,7 +376,7 @@ def list_data_plans(user: Optional[User] = Depends(get_optional_user), db: Sessi
 
 
 @router.post("/purchase")
-@limiter.limit("5/minute")
+@limiter.limit("30/minute")
 def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
         return _buy_data_impl(request, payload, user, db)
@@ -390,14 +408,50 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
         if len(suffix_matches) == 1:
             plan = suffix_matches[0]
             
+    reference = _client_request_reference("DATA", user.id, getattr(payload, "client_request_id", None)) or f"DATA-{int(time.time())}-{secrets.token_hex(4)}".upper()
+
     if not plan:
-        raise HTTPException(status_code=404, detail="Active data plan not found.")
+        inactive_plan = db.query(DataPlan).filter(DataPlan.plan_code == plan_code_input).first()
+        reason = f"Data plan '{plan_code_input}' is currently deactivated" if inactive_plan else f"Unknown or invalid plan code '{plan_code_input}'"
+        try:
+            failed_tx = Transaction(
+                user_id=user.id,
+                amount=Decimal("0"),
+                tx_type=TransactionType.DATA,
+                status=TransactionStatus.FAILED,
+                reference=reference,
+                network=payload_network or (inactive_plan.network if inactive_plan else "unknown"),
+                recipient_phone=phone,
+                data_plan_code=plan_code_input,
+                failure_reason=reason
+            )
+            db.add(failed_tx)
+            db.commit()
+        except Exception:
+            db.rollback()
+        raise HTTPException(status_code=404, detail=f"Active data plan not found: {reason}")
 
-    phone = str(payload.phone_number or "").strip()
-    if not phone:
-        raise HTTPException(status_code=400, detail="Recipient phone number is required.")
-
-    enforce_purchase_limits(db, user_id=user.id, amount=Decimal(str(plan.base_price)), tx_type="data")
+    try:
+        enforce_purchase_limits(db, user_id=user.id, amount=Decimal(str(plan.base_price)), tx_type="data")
+    except HTTPException as lim_err:
+        try:
+            failed_tx = Transaction(
+                user_id=user.id,
+                amount=Decimal(str(plan.base_price)),
+                tx_type=TransactionType.DATA,
+                status=TransactionStatus.FAILED,
+                reference=reference,
+                network=plan.network,
+                recipient_phone=phone,
+                data_plan_code=plan.plan_code,
+                provider=plan.provider,
+                failure_reason=str(lim_err.detail)
+            )
+            db.add(failed_tx)
+            db.commit()
+        except Exception:
+            db.rollback()
+        raise
     
     price = get_price_for_user(db, plan, user)
     
@@ -433,8 +487,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
             discount = price * (discount / Decimal(100))
             price = max(Decimal(0), price - discount)
         elif promo_code.is_fixed_price:
-            # The discount amount IS the final price (e.g. 50 NGN)
-            price = min(price, discount) # Don't increase price if original is lower
+            price = min(price, discount)
         else:
             price = max(Decimal(0), price - discount)
         
@@ -447,9 +500,24 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
 
     wallet = get_or_create_wallet(db, user.id, for_update=True)
     if Decimal(wallet.balance) < price:
-        raise HTTPException(status_code=400, detail="Insufficient wallet balance.")
-
-    reference = _client_request_reference("DATA", user.id, getattr(payload, "client_request_id", None)) or f"DATA-{int(time.time())}-{secrets.token_hex(4)}".upper()
+        try:
+            failed_tx = Transaction(
+                user_id=user.id,
+                amount=price,
+                tx_type=TransactionType.DATA,
+                status=TransactionStatus.FAILED,
+                reference=reference,
+                network=plan.network,
+                recipient_phone=phone,
+                data_plan_code=plan.plan_code,
+                provider=plan.provider,
+                failure_reason=f"Insufficient balance (Available: ₦{Decimal(wallet.balance):,.2f}, Required: ₦{price:,.2f})"
+            )
+            db.add(failed_tx)
+            db.commit()
+        except Exception:
+            db.rollback()
+        raise HTTPException(status_code=400, detail=f"Insufficient wallet balance. (Available: ₦{Decimal(wallet.balance):,.2f}, Required: ₦{price:,.2f})")
 
     existing = db.query(Transaction).filter(
         Transaction.user_id == user.id,
@@ -553,7 +621,7 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                 tx_provider = "boltnet"
 
             elif p_name == "amigo" or (not p_name and network_key in {"mtn", "glo", "airtel", "9mobile"}):
-                amigo = get_amigo_client(db)
+                amigo = get_amigo_client()
                 amigo_network_id = resolve_network_id(network_key)
                 amigo_payload = {
                     "network": amigo_network_id,

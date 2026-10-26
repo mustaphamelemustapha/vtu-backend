@@ -19,7 +19,12 @@ class PushNotificationService:
             cred = None
             cred_dict = None
             
-            for env_var in ["FIREBASE_CREDENTIALS_BASE64", "FIREBASE_CREDENTIALS_JSON"]:
+            for env_var in [
+                "FIREBASE_CREDENTIALS_BASE64",
+                "FIREBASE_CREDENTIALS_JSON",
+                "FIREBASE_CREDENTIALS_KULLOMA_BASE64",
+                "FIREBASE_CREDENTIALS_KULLOMA_JSON",
+            ]:
                 raw_creds = os.getenv(env_var)
                 if not raw_creds:
                     continue
@@ -51,7 +56,9 @@ class PushNotificationService:
                 potential_paths = [
                     cred_path,
                     os.path.join(os.getcwd(), "firebase-adminsdk.json"),
+                    os.path.join(os.getcwd(), "firebase-adminsdk-kullomadata.json"),
                     "/app/firebase-adminsdk.json",
+                    "/app/firebase-adminsdk-kullomadata.json",
                     "/etc/secrets/firebase-adminsdk.json",
                 ]
                 found_path = None
@@ -194,7 +201,7 @@ class PushNotificationService:
             )
 
             # 1. Send to standard broadcast topics (both current and legacy)
-            topics = ["meledata_users", "all_users"]
+            topics = ["kullomadata_users", "meledata_users", "all_users"]
             for t in topics:
                 try:
                     message = messaging.Message(

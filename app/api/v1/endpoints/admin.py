@@ -559,7 +559,10 @@ def list_all_transactions(
                 )
             )
         if status_enum is not None:
-            query = query.filter(Transaction.status == status_enum)
+            if status_enum == TransactionStatus.FAILED:
+                query = query.filter(Transaction.status.in_([TransactionStatus.FAILED, TransactionStatus.REFUNDED]))
+            else:
+                query = query.filter(Transaction.status == status_enum)
         if type_enum is not None:
             query = query.filter(Transaction.tx_type == type_enum)
         if network:
@@ -651,7 +654,10 @@ def list_all_transactions(
             )
         )
     if status_enum is not None:
-        where.append(func.lower(combined.c.status) == status_enum.value.lower())
+        if status_enum == TransactionStatus.FAILED:
+            where.append(func.lower(combined.c.status).in_(["failed", "refunded"]))
+        else:
+            where.append(func.lower(combined.c.status) == status_enum.value.lower())
     if type_enum is not None:
         where.append(func.lower(combined.c.tx_type) == type_enum.value.lower())
     if network:
