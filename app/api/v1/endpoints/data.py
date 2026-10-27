@@ -391,6 +391,9 @@ def buy_data(request: Request, payload: BuyDataRequest, user: User = Depends(get
 def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Session):
     plan_code_input = str(payload.plan_code or "").strip()
     payload_network = str(payload.network or "").strip().lower()
+    phone = str(payload.phone_number or "").strip()
+    if not phone:
+        raise HTTPException(status_code=400, detail="Recipient phone number is required.")
     
     plan_query = db.query(DataPlan).filter(DataPlan.plan_code == plan_code_input, DataPlan.is_active == True)
     if payload_network:
