@@ -2249,6 +2249,44 @@ def clean_legacy_data_plans(admin: User = Depends(require_admin), db: Session = 
     return delete_autosynced_data_plans(scope="autosynced", admin=admin, db=db)
 
 
+@router.delete("/data-plans/by-network/{network}")
+def delete_plans_by_network(
+    network: str,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Deletes all data plans for a particular network (e.g., mtn, airtel, glo, 9mobile).
+    """
+    clean_network = network.strip().lower()
+    plans = db.query(DataPlan).filter(func.lower(DataPlan.network) == clean_network).all()
+    deleted = len(plans)
+    for p in plans:
+        db.delete(p)
+    db.commit()
+
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action="data_plans_delete_by_network",
+        target=clean_network,
+        details={"deleted_count": deleted, "network": clean_network},
+    )
+    db.add(audit_log)
+    db.commit()
+
+    try:
+        _invalidate_plans_cache()
+    except Exception:
+        pass
+        
+    return {
+        "status": "ok",
+        "deleted_count": deleted,
+        "network": clean_network.upper(),
+        "message": f"Successfully deleted all {deleted} {clean_network.upper()} data plan(s)!"
+    }
+
+
 @router.post("/data-plans")
 def create_data_plan(payload: DataPlanUpdate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     """
