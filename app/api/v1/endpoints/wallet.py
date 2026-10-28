@@ -2,6 +2,7 @@ import secrets
 import re
 import logging
 from decimal import Decimal
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
@@ -39,6 +40,8 @@ from app.models import WalletLedger
 from app.models.virtual_account import VirtualAccount, VirtualAccountProvider, VirtualAccountStatus
 from app.models.integration import PaymentGateway
 
+from app.core.tenant import is_meledata_tenant, get_tenant_brand
+
 def is_gateway_active(db: Session, identifier: str, fallback_setting: bool) -> bool:
     aliases = [identifier]
     if identifier in ("asfiy", "aspfiy", "aspify"):
@@ -52,8 +55,13 @@ router = APIRouter()
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
-def _transfer_account_reference(user: User) -> str:
+def _transfer_account_reference(user: User, request: Optional[Request] = None) -> str:
     # Stable per-user reference so we can fetch accounts later without DB storage.
+    brand = get_tenant_brand(request)
+    if brand == "meledata":
+        return f"MELEDATA_{user.id}"
+    elif brand != "default":
+        return f"{brand.upper()}_{user.id}"
     return f"AXISVTU_{user.id}"
 
 
@@ -187,12 +195,33 @@ def _extract_paystack_email(data: dict) -> str:
 
 
 def _resolve_paystack_transfer_user(db: Session, data: dict) -> User | None:
+    # 1. Check VirtualAccount table by receiver account number (most precise for dedicated virtual accounts)
+    account_num = None
+    if isinstance(data.get("dedicated_account"), dict):
+        account_num = data.get("dedicated_account", {}).get("account_number")
+    if not account_num and isinstance(data.get("authorization"), dict):
+        account_num = data.get("authorization", {}).get("receiver_bank_account_number")
+    if not account_num:
+        account_num = data.get("receiver_account_number") or data.get("account_number")
+    if account_num:
+        clean_acc = str(account_num).strip()
+        v_acc = db.query(VirtualAccount).filter(
+            VirtualAccount.account_number == clean_acc,
+            VirtualAccount.provider == VirtualAccountProvider.PAYSTACK,
+        ).first()
+        if v_acc and v_acc.user_id:
+            user = db.query(User).filter(User.id == v_acc.user_id).first()
+            if user:
+                return user
+
+    # 2. Check by customer email
     email = _extract_paystack_email(data)
     if email:
         user = db.query(User).filter(User.email == email).first()
         if user:
             return user
 
+    # 3. Check by customer phone number
     customer = data.get("customer") or {}
     metadata = data.get("metadata") or {}
     authorization = data.get("authorization") or {}
@@ -236,97 +265,90 @@ def get_ledger(user: User = Depends(get_current_user), db: Session = Depends(get
 
 
 @router.get("/bank-transfer-accounts", response_model=BankTransferAccountsResponse)
-def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_bank_transfer_accounts(request: Request = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     all_accounts = []
     requires_kyc = False
     requires_phone = False
     messages = []
-    account_reference = _transfer_account_reference(user)
+    account_reference = _transfer_account_reference(user, request)
 
     # 1. Fetch/Create Paystack Dedicated Account if Enabled
     if is_gateway_active(db, "paystack", settings.paystack_dedicated_enabled):
-        db_paystack = db.query(VirtualAccount).filter(
-            VirtualAccount.user_id == user.id,
-            VirtualAccount.provider == VirtualAccountProvider.PAYSTACK
-        ).all()
-        if db_paystack:
-            for db_acc in db_paystack:
-                if db_acc.status == VirtualAccountStatus.ACTIVE and db_acc.account_number:
-                    all_accounts.append({
-                        "bank_name": db_acc.bank_name,
-                        "account_number": db_acc.account_number,
-                        "account_name": db_acc.account_name,
-                    })
-        else:
-            phone = _to_paystack_phone(user.phone_number)
-            try:
-                first = (user.full_name or "").strip().split(" ")[0] or "Mele"
-                last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
-                dedicated = get_or_create_dedicated_account(
-                    email=user.email,
-                    first_name=first,
-                    last_name=last,
-                    phone=phone,
-                )
-                paystack_accs = _parse_paystack_dedicated_account(dedicated)
-                if paystack_accs:
-                    for acc in paystack_accs:
-                        bank_slug = acc["bank_name"].lower().replace(" ", "_")
-                        db_acc = VirtualAccount(
+        try:
+            db_paystack = db.query(VirtualAccount).filter(
+                VirtualAccount.user_id == user.id,
+                VirtualAccount.provider == VirtualAccountProvider.PAYSTACK
+            ).all()
+            if db_paystack:
+                for db_acc in db_paystack:
+                    if db_acc.status == VirtualAccountStatus.ACTIVE and db_acc.account_number:
+                        all_accounts.append({
+                            "bank_name": db_acc.bank_name,
+                            "account_number": db_acc.account_number,
+                            "account_name": db_acc.account_name,
+                        })
+            else:
+                phone = _to_paystack_phone(user.phone_number)
+                try:
+                    first = (user.full_name or "").strip().split(" ")[0] or "Mele"
+                    last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
+                    dedicated = get_or_create_dedicated_account(
+                        email=user.email,
+                        first_name=first,
+                        last_name=last,
+                        phone=phone,
+                    )
+                    paystack_accs = _parse_paystack_dedicated_account(dedicated)
+                    if paystack_accs:
+                        for acc in paystack_accs:
+                            bank_slug = acc["bank_name"].lower().replace(" ", "_")
+                            db_acc = VirtualAccount(
+                                user_id=user.id,
+                                provider=VirtualAccountProvider.PAYSTACK,
+                                account_number=acc["account_number"],
+                                account_name=acc["account_name"],
+                                bank_name=acc["bank_name"],
+                                bank_code="000",
+                                customer_reference=f"{account_reference}_paystack_{bank_slug}",
+                                reservation_reference=f"paystack_{user.id}_{bank_slug}_{secrets.token_hex(4)}",
+                                status=VirtualAccountStatus.ACTIVE,
+                            )
+                            db.add(db_acc)
+                        db.commit()
+                        all_accounts.extend(paystack_accs)
+                except PaystackError as exc:
+                    detail = str(exc)
+                    lower_detail = detail.lower()
+                    if (not phone) and ("phone" in lower_detail or "mobile" in lower_detail):
+                        requires_phone = True
+                    else:
+                        requires_kyc = True
+                    messages.append(f"Paystack: {detail}")
+                    
+                    # Cache failure to prevent retry loop
+                    try:
+                        db.add(VirtualAccount(
                             user_id=user.id,
                             provider=VirtualAccountProvider.PAYSTACK,
-                            account_number=acc["account_number"],
-                            account_name=acc["account_name"],
-                            bank_name=acc["bank_name"],
+                            account_number="",
+                            account_name="Failed",
+                            bank_name="Paystack",
                             bank_code="000",
-                            customer_reference=f"{account_reference}_paystack_{bank_slug}",
-                            reservation_reference=f"paystack_{user.id}_{bank_slug}_{secrets.token_hex(4)}",
-                            status=VirtualAccountStatus.ACTIVE,
-                        )
-                        db.add(db_acc)
-                    db.commit()
-                    all_accounts.extend(paystack_accs)
-            except PaystackError as exc:
-                detail = str(exc)
-                lower_detail = detail.lower()
-                if (not phone) and ("phone" in lower_detail or "mobile" in lower_detail):
-                    requires_phone = True
-                else:
+                            customer_reference=f"failed_{secrets.token_hex(4)}",
+                            reservation_reference=f"failed_{secrets.token_hex(4)}",
+                            status=VirtualAccountStatus.INACTIVE,
+                        ))
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                except Exception as exc:
+                    db.rollback()
+                    logger.warning("Auto-generate Paystack account failed: %s", exc)
                     requires_kyc = True
-                messages.append(f"Paystack: {detail}")
-                
-                # Cache failure to prevent retry loop
-                db.add(VirtualAccount(
-                    user_id=user.id,
-                    provider=VirtualAccountProvider.PAYSTACK,
-                    account_number="",
-                    account_name="Failed",
-                    bank_name="Paystack",
-                    bank_code="000",
-                    customer_reference=f"failed_{secrets.token_hex(4)}",
-                    reservation_reference=f"failed_{secrets.token_hex(4)}",
-                    status=VirtualAccountStatus.INACTIVE,
-                ))
-                db.commit()
-            except Exception as exc:
-                db.rollback()
-                logger.warning("Auto-generate Paystack account failed: %s", exc)
-                requires_kyc = True
-                messages.append(f"Paystack: {exc}")
-                
-                # Cache failure to prevent retry loop
-                db.add(VirtualAccount(
-                    user_id=user.id,
-                    provider=VirtualAccountProvider.PAYSTACK,
-                    account_number="",
-                    account_name="Failed",
-                    bank_name="Paystack",
-                    bank_code="000",
-                    customer_reference=f"failed_{secrets.token_hex(4)}",
-                    reservation_reference=f"failed_{secrets.token_hex(4)}",
-                    status=VirtualAccountStatus.INACTIVE,
-                ))
-                db.commit()
+                    messages.append(f"Paystack: {exc}")
+        except Exception as paystack_err:
+            db.rollback()
+            logger.warning("Paystack virtual account check error: %s", paystack_err)
 
     # 2. Fetch/Create Monnify Reserved Account
     if is_gateway_active(db, "monnify", True):
@@ -420,8 +442,9 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
                         "account_name": db_acc.account_name,
                     })
 
-    # 4. Fetch/Create Aspfiy Reserved Account
-    if is_gateway_active(db, "asfiy", settings.aspfiy_enabled):
+    # 4. Fetch/Create Aspfiy Reserved Account (Completely skipped for MELE DATA)
+    is_mele = is_meledata_tenant(request)
+    if not is_mele and is_gateway_active(db, "asfiy", settings.aspfiy_enabled):
         db_aspfiy = db.query(VirtualAccount).filter(
             VirtualAccount.user_id == user.id,
             VirtualAccount.provider == VirtualAccountProvider.ASPFIY,
@@ -445,7 +468,7 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
             logger.info("Aspfiy account already recorded for user %s (status=%s); skipping auto-generation on GET.", user.id, db_aspfiy[0].status)
         else:
             try:
-                first = (user.full_name or "").strip().split(" ")[0] or "Mele"
+                first = (user.full_name or "").strip().split(" ")[0] or "User"
                 last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
                 reference = f"{account_reference}_aspfiy_paga"
             
@@ -510,24 +533,38 @@ def get_bank_transfer_accounts(user: User = Depends(get_current_user), db: Sessi
                 except Exception:
                     db.rollback()
 
-        # Sort accounts: Palmpay/Paga first, then Moniepoint/Monnify, then others
-        def sort_key(acc):
-            bank_name = str(acc.get("bank_name", "")).lower()
-            if "palmpay" in bank_name or "paga" in bank_name:
-                return 0
-            if "moniepoint" in bank_name or "monnify" in bank_name:
-                return 1
-            return 2
-        all_accounts.sort(key=sort_key)
+    # For MELE DATA, purge/hide any historical or active Aspfiy/Paga accounts from returned accounts
+    if is_mele:
+        all_accounts = [
+            acc for acc in all_accounts
+            if "paga" not in str(acc.get("bank_name", "")).lower()
+            and "aspfiy" not in str(acc.get("bank_name", "")).lower()
+        ]
 
-        return {
-            "provider": "combined",
-            "account_reference": account_reference,
-            "accounts": all_accounts,
-            "requires_kyc": requires_kyc,
-            "requires_phone": requires_phone if not all_accounts else False,
-            "message": " | ".join(messages) if messages else None,
-        }
+    # Sort accounts: 1. PalmPay, 2. Moniepoint, 3. Safehaven, 4. Paystack, 5. 9PSB
+    def sort_key(acc):
+        bank_name = str(acc.get("bank_name", "")).lower()
+        if "palmpay" in bank_name:
+            return 1
+        if "moniepoint" in bank_name or "monnify" in bank_name:
+            return 2
+        if "safehaven" in bank_name or "safe haven" in bank_name:
+            return 3
+        if "paystack" in bank_name or "titan" in bank_name:
+            return 4
+        if "9psb" in bank_name or "9 payment" in bank_name:
+            return 5
+        return 6
+    all_accounts.sort(key=sort_key)
+
+    return {
+        "provider": "combined",
+        "account_reference": account_reference,
+        "accounts": all_accounts,
+        "requires_kyc": requires_kyc,
+        "requires_phone": requires_phone if not all_accounts else False,
+        "message": " | ".join(messages) if messages else None,
+    }
 
 
 @router.post("/bank-transfer-accounts", response_model=BankTransferAccountsResponse)
@@ -537,7 +574,7 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
     requires_kyc = False
     requires_phone = False
     messages = []
-    account_reference = _transfer_account_reference(user)
+    account_reference = _transfer_account_reference(user, request)
 
     # 1. Create/Update Paystack Dedicated Account if Enabled
     if is_gateway_active(db, "paystack", settings.paystack_dedicated_enabled):
@@ -821,8 +858,9 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
     if not all_accounts and messages:
         raise HTTPException(status_code=502, detail=" | ".join(messages))
 
-    # 4. Fetch/Create Aspfiy Reserved Account
-    if is_gateway_active(db, "asfiy", settings.aspfiy_enabled):
+    # 4. Fetch/Create Aspfiy Reserved Account (Completely skipped for MELE DATA)
+    is_mele = is_meledata_tenant(request)
+    if not is_mele and is_gateway_active(db, "asfiy", settings.aspfiy_enabled):
         db_aspfiy = db.query(VirtualAccount).filter(
             VirtualAccount.user_id == user.id,
             VirtualAccount.provider == VirtualAccountProvider.ASPFIY,
@@ -848,7 +886,7 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
             db.commit()
 
             try:
-                first = (user.full_name or "").strip().split(" ")[0] or "Mele"
+                first = (user.full_name or "").strip().split(" ")[0] or "User"
                 last = " ".join((user.full_name or "").strip().split(" ")[1:]) or first
                 reference = f"{account_reference}_aspfiy_paga"
 
@@ -911,14 +949,28 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
                 except Exception:
                     db.rollback()
 
-    # Sort accounts: Palmpay/Paga first, then Moniepoint/Monnify, then others
+    # For MELE DATA, purge/hide any historical or active Aspfiy/Paga accounts from returned accounts
+    if is_mele:
+        all_accounts = [
+            acc for acc in all_accounts
+            if "paga" not in str(acc.get("bank_name", "")).lower()
+            and "aspfiy" not in str(acc.get("bank_name", "")).lower()
+        ]
+
+    # Sort accounts: 1. PalmPay, 2. Moniepoint, 3. Safehaven, 4. Paystack, 5. 9PSB
     def sort_key(acc):
         bank_name = str(acc.get("bank_name", "")).lower()
-        if "palmpay" in bank_name or "paga" in bank_name:
-            return 0
-        if "moniepoint" in bank_name or "monnify" in bank_name:
+        if "palmpay" in bank_name:
             return 1
-        return 2
+        if "moniepoint" in bank_name or "monnify" in bank_name:
+            return 2
+        if "safehaven" in bank_name or "safe haven" in bank_name:
+            return 3
+        if "paystack" in bank_name or "titan" in bank_name:
+            return 4
+        if "9psb" in bank_name or "9 payment" in bank_name:
+            return 5
+        return 6
     all_accounts.sort(key=sort_key)
 
     # If user explicitly requested KYC account generation with BVN or NIN and no account could be created:

@@ -232,7 +232,7 @@ def ensure_tables():
         _ensure_user_profile_image_url_column()
         _ensure_user_pricing_overrides_table()
         _ensure_referral_ambassador_columns()
-        _ensure_aspfiy_enum()
+        _ensure_virtual_account_provider_enum()
         _ensure_data_plan_dispatch_columns()
         _ensure_system_settings_columns()
         _ensure_default_integrations()
@@ -751,16 +751,19 @@ def _ensure_promo_is_fixed_price_column() -> None:
     finally:
         db.close()
 
-def _ensure_aspfiy_enum() -> None:
+def _ensure_virtual_account_provider_enum() -> None:
     try:
         dialect_name = getattr(engine.dialect, "name", "")
         if dialect_name == "postgresql":
-            with engine.begin() as conn:
-                # Add ASPFIY to the ENUM if it doesn't exist
-                conn.execute(text("ALTER TYPE virtualaccountprovider ADD VALUE IF NOT EXISTS 'ASPFIY'"))
-            logging.getLogger(__name__).info("Ensured ASPFIY is in virtualaccountprovider ENUM.")
+            with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                for val in ["paystack", "monnify", "billstack", "aspfiy", "PAYSTACK", "MONNIFY", "BILLSTACK", "ASPFIY"]:
+                    try:
+                        conn.execute(text(f"ALTER TYPE virtualaccountprovider ADD VALUE IF NOT EXISTS '{val}'"))
+                    except Exception as e:
+                        logging.getLogger(__name__).debug("Enum value %s addition skipped/failed: %s", val, e)
+            logging.getLogger(__name__).info("Ensured all values in virtualaccountprovider ENUM.")
     except Exception as exc:
-        logging.getLogger(__name__).warning("Could not ensure ASPFIY ENUM: %s", exc)
+        logging.getLogger(__name__).warning("Could not ensure virtualaccountprovider ENUM: %s", exc)
 
 
 def _ensure_data_plan_dispatch_columns() -> None:
