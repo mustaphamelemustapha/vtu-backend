@@ -40,19 +40,6 @@ def check_provider_balances(db: Session) -> dict:
         logger.error(f"Monitoring SMEPlug failed: {e}")
         results["smeplug"] = f"Error: {e}"
 
-    # 3. ClubKonnect
-    try:
-        ck = ClubKonnectBillsProvider()
-        ck_bal = ck.get_balance()
-        results["clubkonnect"] = ck_bal
-        if isinstance(ck_bal, (int, float)):
-            if ck_bal < THRESHOLD:
-                _alert_admins(db, "ClubKonnect", ck_bal, alert_type="low_balance")
-            _check_and_update_funding(db, "clubkonnect_last_balance", "ClubKonnect", float(ck_bal))
-    except Exception as e:
-        logger.error(f"Monitoring ClubKonnect failed: {e}")
-        results["clubkonnect"] = f"Error: {e}"
-
     return results
 
 
