@@ -46,7 +46,13 @@ from app.models import WalletLedger
 from app.models.virtual_account import VirtualAccount, VirtualAccountProvider, VirtualAccountStatus
 from app.models.integration import PaymentGateway
 
-from app.core.tenant import is_meledata_tenant, get_tenant_brand
+try:
+    from app.core.tenant import is_meledata_tenant, get_tenant_brand
+except ImportError:
+    def is_meledata_tenant(request=None) -> bool:
+        return False
+    def get_tenant_brand(request=None) -> str:
+        return "default"
 
 def is_gateway_active(db: Session, identifier: str, fallback_setting: bool) -> bool:
     aliases = [identifier]
