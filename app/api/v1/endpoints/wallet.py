@@ -34,7 +34,13 @@ from app.services.billstack import (
     generate_billstack_virtual_account,
     upgrade_billstack_kyc,
 )
-from app.services.aspfiy import AspfiyService
+try:
+    from app.services.aspfiy import AspfiyService
+except ImportError:
+    try:
+        from app.services.aspify import AspfiyService
+    except ImportError:
+        AspfiyService = None
 from app.middlewares.rate_limit import limiter
 from app.models import WalletLedger
 from app.models.virtual_account import VirtualAccount, VirtualAccountProvider, VirtualAccountStatus
@@ -1137,7 +1143,14 @@ def paystack_verify(reference: str, user: User = Depends(get_current_user), db: 
 
 # --- Backward Compatibility for Webhooks ---
 # Webhooks were moved to webhooks.py, but providers may still have the old /wallet/... URLs configured.
-from app.api.v1.endpoints.webhooks import paystack_webhook, monnify_webhook, billstack_webhook, smeplug_webhook, aspfiy_webhook
+from app.api.v1.endpoints.webhooks import paystack_webhook, monnify_webhook, billstack_webhook, smeplug_webhook
+try:
+    from app.api.v1.endpoints.webhooks import aspfiy_webhook
+except ImportError:
+    try:
+        from app.api.v1.endpoints.webhooks import aspify_webhook as aspfiy_webhook
+    except ImportError:
+        aspfiy_webhook = None
 
 router.post("/paystack/webhook", include_in_schema=False)(paystack_webhook)
 router.post("/monnify/webhook", include_in_schema=False)(monnify_webhook)
@@ -1146,12 +1159,13 @@ router.post("/smeplug/webhook", include_in_schema=False)(smeplug_webhook)
 router.post("/smeplug", include_in_schema=False)(smeplug_webhook)
 router.post("/monnify", include_in_schema=False)(monnify_webhook)
 router.post("/billstack", include_in_schema=False)(billstack_webhook)
-router.post("/aspfiy", include_in_schema=False)(aspfiy_webhook)
-router.post("/aspfiy/", include_in_schema=False)(aspfiy_webhook)
-router.post("/aspify", include_in_schema=False)(aspfiy_webhook)
-router.post("/aspify/", include_in_schema=False)(aspfiy_webhook)
-router.post("/asfiy", include_in_schema=False)(aspfiy_webhook)
-router.post("/asfiy/", include_in_schema=False)(aspfiy_webhook)
+if aspfiy_webhook:
+    router.post("/aspfiy", include_in_schema=False)(aspfiy_webhook)
+    router.post("/aspfiy/", include_in_schema=False)(aspfiy_webhook)
+    router.post("/aspify", include_in_schema=False)(aspfiy_webhook)
+    router.post("/aspify/", include_in_schema=False)(aspfiy_webhook)
+    router.post("/asfiy", include_in_schema=False)(aspfiy_webhook)
+    router.post("/asfiy/", include_in_schema=False)(aspfiy_webhook)
 
 @router.post("/transfer/verify", response_model=TransferVerifyResponse)
 @limiter.limit("10/minute")
