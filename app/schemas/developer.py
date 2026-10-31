@@ -81,12 +81,22 @@ class DeveloperDataStatusResponse(BaseModel):
 
 
 from typing import Optional, Union
+from pydantic import root_validator
 
 class DeveloperDataPurchaseRequest(BaseModel):
     phone_number: str = Field(..., description="Recipient phone number")
     network: str = Field(..., description="MTN, GLO, AIRTEL, or 9MOBILE")
-    plan_id: Union[int, str] = Field(..., description="The numerical plan ID")
+    plan_id: Optional[Union[int, str]] = Field(None, description="The numerical plan ID")
+    plan_code: Optional[str] = Field(None, description="Plan code as alternative to plan_id")
     reference: str = Field(..., description="Unique developer transaction reference")
+
+    @root_validator(pre=True)
+    def check_plan_identifier(cls, values):
+        if not values.get("plan_id") and values.get("plan_code"):
+            values["plan_id"] = values["plan_code"]
+        if not values.get("plan_id"):
+            raise ValueError("Either 'plan_id' or 'plan_code' is required.")
+        return values
 
 
 class DeveloperAirtimePurchaseRequest(BaseModel):
