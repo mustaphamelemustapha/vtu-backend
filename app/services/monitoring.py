@@ -6,10 +6,22 @@ from app.models.user import User, UserRole
 from app.models.system_setting import SystemSetting
 from app.models.integration import IntegrationProvider
 from app.services.push_notification import PushNotificationService
-from app.services.amigo import AmigoClient
-from app.providers.smeplug_provider import SMEPlugProvider
-from app.services.bills import ClubKonnectBillsProvider
 from app.services.email import send_admin_low_balance_email
+
+try:
+    from app.services.amigo import AmigoClient
+except ImportError:
+    AmigoClient = None
+
+try:
+    from app.providers.smeplug_provider import SMEPlugProvider
+except ImportError:
+    SMEPlugProvider = None
+
+try:
+    from app.services.bills import ClubKonnectBillsProvider
+except ImportError:
+    ClubKonnectBillsProvider = None
 
 logger = logging.getLogger(__name__)
 
