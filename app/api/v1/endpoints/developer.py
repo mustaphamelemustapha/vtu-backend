@@ -368,10 +368,7 @@ def list_data_plans(user: User = Depends(get_developer_user), db: Session = Depe
 def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
     from app.core.exceptions import DeveloperAPIException
 
-    try:
-        plan_id_int = int(payload.plan_id)
-    except (ValueError, TypeError):
-        raise DeveloperAPIException("plan_id must be a valid integer.", 400)
+    # Allow integer ID or string plan_code/provider_plan_id
 
     # 1. Idempotency Check
     client_ref = f"DEV_{user.id}_{payload.reference.strip()}"
@@ -402,10 +399,22 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
     except (ValueError, TypeError):
         pass
 
-    if not plan:
-        plan_code_val = str(payload.plan_id).strip()
+    plan_code_val = str(payload.plan_id).strip()
+    if not plan and plan_code_val:
         plan = db.query(DataPlan).filter(
             DataPlan.plan_code == plan_code_val,
+            func.lower(DataPlan.network) == network_key,
+            DataPlan.is_active == True
+        ).first()
+
+    if not plan and plan_code_val:
+        clean_suffix = plan_code_val.split(":")[-1] if ":" in plan_code_val else plan_code_val
+        plan = db.query(DataPlan).filter(
+            (
+                (DataPlan.provider_plan_id == clean_suffix)
+                | (DataPlan.plan_code == f"{network_key}:{clean_suffix}")
+                | (DataPlan.plan_code.like(f"%:{clean_suffix}"))
+            ),
             func.lower(DataPlan.network) == network_key,
             DataPlan.is_active == True
         ).first()
