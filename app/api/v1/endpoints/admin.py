@@ -12,7 +12,7 @@ from sqlalchemy import func, or_, select, union_all, String, cast, inspect
 from app.core.database import get_db
 from app.core.config import get_settings
 from app.dependencies import require_admin
-from app.services.monitoring import check_provider_balances
+from app.services.monitoring import check_provider_balances, check_provider_balances_detailed
 from app.models import User, UserRole, Wallet, WalletLedger, Transaction, ServiceTransaction, TransactionStatus, TransactionType, PricingRule, PricingRole, MarginType, ApiLog, DataPlan, TransactionDispute, DisputeStatus, AdminAuditLog, ServiceToggle, Referral, UserPricingOverride
 from app.schemas.admin import (
     FundUserWalletRequest,
@@ -2592,8 +2592,8 @@ def get_provider_balances(admin: User = Depends(require_admin), db: Session = De
     """
     Get current balances of all API providers.
     """
-    results = check_provider_balances(db)
-    return {"status": "ok", "balances": results}
+    results, providers = check_provider_balances_detailed(db)
+    return {"status": "ok", "balances": results, "providers": providers}
 
 
 @router.post("/system/trigger-balance-checks")
@@ -2601,8 +2601,8 @@ def trigger_balance_checks(db: Session = Depends(get_db)):
     """
     Cron endpoint to periodically check balances.
     """
-    results = check_provider_balances(db)
-    return {"status": "ok", "balances": results}
+    results, providers = check_provider_balances_detailed(db)
+    return {"status": "ok", "balances": results, "providers": providers}
 
 
 @router.post("/system/trigger-daily-report")

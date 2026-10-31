@@ -220,17 +220,37 @@ def test_provider_connection(payload: TestProviderRequest, db: Session = Depends
     base_url = (payload.base_url or "").strip().rstrip("/")
     api_key = (payload.api_key or "").strip()
 
+    prov = None
+    if payload.provider_id:
+        prov = db.query(IntegrationProvider).filter(IntegrationProvider.id == payload.provider_id).first()
+    elif identifier:
+        prov = db.query(IntegrationProvider).filter(IntegrationProvider.identifier == identifier).first()
+
     # If api_key was not sent from client, look it up in the database
-    if not api_key:
-        prov = None
-        if payload.provider_id:
-            prov = db.query(IntegrationProvider).filter(IntegrationProvider.id == payload.provider_id).first()
-        elif identifier:
-            prov = db.query(IntegrationProvider).filter(IntegrationProvider.identifier == identifier).first()
-        if prov:
-            api_key = prov.api_key or ""
-            base_url = (prov.base_url or "").rstrip("/")
-            identifier = prov.identifier.lower()
+    if not api_key and prov:
+        api_key = prov.api_key or ""
+        base_url = (prov.base_url or "").rstrip("/")
+        identifier = prov.identifier.lower()
+
+    if identifier == "meledata":
+        if not base_url:
+            base_url = "https://api.meledata.ng/api/v1"
+        for bad_host in ("https://www.meledata.ng", "https://meledata.ng", "http://www.meledata.ng", "http://meledata.ng"):
+            if base_url.lower().startswith(bad_host):
+                base_url = "https://api.meledata.ng" + base_url[len(bad_host):]
+                break
+        if api_key.startswith("mele_test_pub_"):
+            api_key = "mele_pub_" + api_key[len("mele_test_pub_"):]
+        elif api_key.startswith("mele_test_"):
+            api_key = "mele_live_" + api_key[len("mele_test_"):]
+
+    def _persist_bal(b):
+        if prov is not None and b is not None:
+            try:
+                prov.balance = float(b)
+                db.commit()
+            except Exception:
+                db.rollback()
 
     if not api_key:
         return {"status": False, "message": "No API key found for this provider. Please configure an API key first."}
@@ -254,6 +274,7 @@ def test_provider_connection(payload: TestProviderRequest, db: Session = Depends
                             bal = data["data"].get("balance")
                         elif "balance" in data:
                             bal = data.get("balance")
+                    _persist_bal(bal)
                     return {
                         "status": True,
                         "message": "Connection to SMEPlug verified successfully!",
@@ -275,6 +296,7 @@ def test_provider_connection(payload: TestProviderRequest, db: Session = Depends
             data = resp.json() if "application/json" in resp.headers.get("content-type", "") else {"text": resp.text}
             if resp.status_code == 200:
                 bal = data.get("balance") if isinstance(data, dict) else None
+                _persist_bal(bal)
                 return {
                     "status": True,
                     "message": "Connection to Amigo verified successfully!",
@@ -295,6 +317,8 @@ def test_provider_connection(payload: TestProviderRequest, db: Session = Depends
             from app.services.bills import ClubKonnectBillsProvider
             ck = ClubKonnectBillsProvider()
             bal = ck.get_balance()
+            if isinstance(bal, (int, float)):
+                _persist_bal(bal)
             return {
                 "status": True,
                 "message": f"ClubKonnect balance retrieved successfully",
@@ -309,9 +333,28 @@ def test_provider_connection(payload: TestProviderRequest, db: Session = Depends
         if not base_url:
             return {"status": False, "message": "API Base URL is required to test custom provider connection."}
         headers = {"Authorization": f"Bearer {api_key}", "X-API-Key": api_key} if api_key else {}
-        for endpoint in ["/developer/wallet/balance", "/developer/user", "/wallet/balance", "/account/balance", "/balance", "/user", ""]:
+        
+        clean_base = base_url.rstrip("/")
+        endpoints_to_try = []
+        if not clean_base.endswith("/api/v1"):
+            api_base = f"{clean_base}/api/v1"
+            endpoints_to_try.extend([
+                f"{api_base}/developer/wallet/balance",
+                f"{api_base}/developer/user",
+                f"{api_base}/wallet/balance"
+            ])
+        endpoints_to_try.extend([
+            f"{clean_base}/developer/wallet/balance",
+            f"{clean_base}/developer/user",
+            f"{clean_base}/wallet/balance",
+            f"{clean_base}/account/balance",
+            f"{clean_base}/balance",
+            f"{clean_base}/user",
+            clean_base
+        ])
+
+        for test_url in endpoints_to_try:
             try:
-                test_url = f"{base_url}{endpoint}"
                 resp = requests.get(test_url, headers=headers, timeout=10)
                 if resp.status_code in (200, 201):
                     data = resp.json() if "application/json" in resp.headers.get("content-type", "") else {"text": resp.text}
@@ -321,6 +364,7 @@ def test_provider_connection(payload: TestProviderRequest, db: Session = Depends
                             bal = data["data"]["balance"]
                         elif "balance" in data:
                             bal = data["balance"]
+                    _persist_bal(bal)
                     return {
                         "status": True,
                         "message": f"Connected successfully to {test_url} (HTTP {resp.status_code})",
