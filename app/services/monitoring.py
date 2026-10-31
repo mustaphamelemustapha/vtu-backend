@@ -157,18 +157,17 @@ def check_provider_balances_detailed(db: Session) -> tuple[dict, list[dict]]:
     providers_out: list[dict] = []
 
     all_providers = db.query(IntegrationProvider).order_by(IntegrationProvider.name.asc()).all()
-    has_explicit_choice = any(
-        isinstance(p.additional_config, dict) and "show_balance_on_dashboard" in p.additional_config
-        for p in all_providers
-    )
 
     for prov in all_providers:
+        # Never show or alert on the admin homepage if the provider is turned off in Integrations
+        if not prov.is_active:
+            continue
+
         cfg = dict(prov.additional_config or {}) if isinstance(prov.additional_config, dict) else {}
-        if has_explicit_choice:
-            show_on_dashboard = bool(cfg.get("show_balance_on_dashboard", False))
+        if "show_balance_on_dashboard" in cfg:
+            show_on_dashboard = bool(cfg.get("show_balance_on_dashboard"))
         else:
-            # Default to active providers when admin hasn't toggled specific ones yet
-            show_on_dashboard = bool(prov.is_active)
+            show_on_dashboard = True
 
         if not show_on_dashboard:
             continue
