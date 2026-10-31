@@ -270,7 +270,7 @@ def ensure_tables():
     _ensure_user_profile_image_url_column()
     _ensure_user_pricing_overrides_table()
     _ensure_referral_ambassador_columns()
-    _ensure_aspfiy_enum()
+    _ensure_virtual_account_provider_enum()
     _ensure_promo_is_fixed_price_column()
     _ensure_data_plan_dispatch_columns()
     _ensure_system_settings_columns()
@@ -1000,3 +1000,6 @@ def readyz():
         )
     finally:
         db.close()
+
+
+_ensure_aspfiy_enum = _ensure_virtual_account_provider_enum
