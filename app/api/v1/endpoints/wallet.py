@@ -803,10 +803,10 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
 
     # 3. Recreate / Update Billstack Reserved Accounts (9PSB, SAFEHAVEN & PALMPAY)
     if is_gateway_active(db, "billstack", bool(getattr(settings, "billstack_enabled", False) or getattr(settings, "billstack_api_key", ""))):
-        # Bind KYC on Billstack first BEFORE attempting PALMPAY account generation
-        if bvn or nin:
+        # Bind BVN on Billstack first BEFORE attempting PALMPAY account generation when BVN is provided
+        if bvn:
             try:
-                upgrade_billstack_kyc(email=user.email, bvn=bvn or nin, nin=nin or None)
+                upgrade_billstack_kyc(email=user.email, bvn=bvn)
             except Exception as kyc_exc:
                 logger.warning("Billstack pre-generation KYC upgrade note: %s", kyc_exc)
         db_billstack = db.query(VirtualAccount).filter(

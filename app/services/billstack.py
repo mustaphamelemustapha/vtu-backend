@@ -49,16 +49,15 @@ def generate_billstack_virtual_account(
     }
     if id_number:
         clean_id = str(id_number).strip()
-        payload["bvn"] = clean_id
-        payload["licenseNumber"] = clean_id
         payload["idNumber"] = clean_id
         if id_type:
             payload["idType"] = id_type
             if id_type.lower() == "nin":
                 payload["nin"] = clean_id
-                payload["identityType"] = "personal_nin"
             else:
-                payload["identityType"] = "personal"
+                payload["bvn"] = clean_id
+        else:
+            payload["bvn"] = clean_id
 
     logger.info("Generating Billstack account for %s. Bank: %s, Ref: %s", email, bank, reference)
     with httpx.Client(timeout=20) as client:
