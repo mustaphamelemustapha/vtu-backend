@@ -70,6 +70,29 @@ router = APIRouter()
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+def format_bank_display_name(raw_name: str) -> str:
+    if not raw_name:
+        return "Bank"
+    name = str(raw_name).strip()
+    lower = name.lower()
+    if "9psb" in lower or "9 payment" in lower:
+        return "9 Payment Service Bank (9PSB)"
+    if "safehaven" in lower or "safe haven" in lower:
+        return "Safehaven Microfinance Bank"
+    if "moniepoint" in lower or "monnify" in lower:
+        return "Moniepoint Microfinance Bank"
+    if "palmpay" in lower:
+        return "PalmPay"
+    if "titan" in lower or "paystack" in lower:
+        return "Titan Trust Bank"
+    if "paga" in lower or "aspfiy" in lower or "aspify" in lower:
+        return "Paga"
+    if "wema" in lower:
+        return "Wema Bank"
+    if "sterling" in lower:
+        return "Sterling Bank"
+    return name
+
 def _transfer_account_reference(user: User, request: Optional[Request] = None) -> str:
     # Stable per-user reference so we can fetch accounts later without DB storage.
     brand = get_tenant_brand(request)
@@ -607,6 +630,10 @@ def get_bank_transfer_accounts(request: Request = None, user: User = Depends(get
         return 6
     all_accounts.sort(key=sort_key)
 
+    # Format bank display names so all clients and older APKs display full official names
+    for acc in all_accounts:
+        acc["bank_name"] = format_bank_display_name(acc.get("bank_name", ""))
+
     return {
         "provider": "combined",
         "account_reference": account_reference,
@@ -1090,6 +1117,10 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
                 status_code=400,
                 detail=f"Unable to generate PalmPay/KYC account with this {doc_name}: {err_text}"
             )
+
+    # Format bank display names so all clients and older APKs display full official names
+    for acc in all_accounts:
+        acc["bank_name"] = format_bank_display_name(acc.get("bank_name", ""))
 
     return {
         "provider": "combined",
