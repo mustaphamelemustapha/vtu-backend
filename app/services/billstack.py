@@ -39,7 +39,7 @@ def generate_billstack_virtual_account(
         "Content-Type": "application/json",
         "Authorization": f"Bearer {_get_api_key()}",
     }
-    payload = {
+    base_payload = {
         "email": email,
         "reference": reference,
         "firstName": first_name or "Customer",
@@ -47,17 +47,15 @@ def generate_billstack_virtual_account(
         "phone": (phone or "08012345678").strip(),
         "bank": bank,
     }
+    payload = dict(base_payload)
     if id_number:
         clean_id = str(id_number).strip()
-        payload["idNumber"] = clean_id
+        payload["bvn"] = clean_id
         if id_type:
             payload["idType"] = id_type
+            payload["idNumber"] = clean_id
             if id_type.lower() == "nin":
                 payload["nin"] = clean_id
-            else:
-                payload["bvn"] = clean_id
-        else:
-            payload["bvn"] = clean_id
 
     logger.info("Generating Billstack account for %s. Bank: %s, Ref: %s", email, bank, reference)
     with httpx.Client(timeout=20) as client:
@@ -68,7 +66,25 @@ def generate_billstack_virtual_account(
             except Exception:
                 detail = {"message": resp.text}
             raise ValueError(f"Billstack generate account failed: {detail}")
-        return resp.json()
+        data = resp.json()
+
+        # If PALMPAY fails with LicenseNumber verification failed when idType/idNumber are sent,
+        # retry once with the clean base payload (after KYC has been bound via upgradeVirtualAccount).
+        if (
+            bank == "PALMPAY"
+            and data.get("status") is not True
+            and id_number
+            and "licensenumber" in str(data.get("message", "")).lower()
+        ):
+            retry_payload = dict(base_payload)
+            retry_payload["reference"] = f"{reference}_r"
+            logger.info("Retrying Billstack PALMPAY generation with base payload for %s", email)
+            retry_resp = client.post(url, json=retry_payload, headers=headers)
+            if retry_resp.status_code < 400:
+                retry_data = retry_resp.json()
+                if retry_data.get("status") is True:
+                    return retry_data
+        return data
 
 def upgrade_billstack_kyc(*, email: str, bvn: str, nin: str | None = None) -> dict:
     url = "https://api.billstack.co/v2/thirdparty/upgradeVirtualAccount/"

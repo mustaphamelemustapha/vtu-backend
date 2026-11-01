@@ -803,12 +803,6 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
 
     # 3. Recreate / Update Billstack Reserved Accounts (9PSB, SAFEHAVEN & PALMPAY)
     if is_gateway_active(db, "billstack", bool(getattr(settings, "billstack_enabled", False) or getattr(settings, "billstack_api_key", ""))):
-        # Bind BVN on Billstack first BEFORE attempting PALMPAY account generation when BVN is provided
-        if bvn:
-            try:
-                upgrade_billstack_kyc(email=user.email, bvn=bvn)
-            except Exception as kyc_exc:
-                logger.warning("Billstack pre-generation KYC upgrade note: %s", kyc_exc)
         db_billstack = db.query(VirtualAccount).filter(
             VirtualAccount.user_id == user.id,
             VirtualAccount.provider == VirtualAccountProvider.BILLSTACK,
@@ -836,6 +830,12 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
         for target_bank in target_banks:
             if target_bank in existing_bank_codes:
                 continue
+            # Bind KYC on Billstack right before generating PALMPAY (after 9PSB/SAFEHAVEN exist for this email)
+            if target_bank == "PALMPAY" and (bvn or nin):
+                try:
+                    upgrade_billstack_kyc(email=user.email, bvn=(bvn or nin), nin=nin)
+                except Exception as kyc_exc:
+                    logger.warning("Billstack pre-PALMPAY KYC upgrade note: %s", kyc_exc)
             try:
                 bank_slug = target_bank.lower()
                 id_type = ("bvn" if bvn else "nin") if target_bank == "PALMPAY" else None
@@ -1080,11 +1080,11 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
                 if nin and not bvn:
                     raise HTTPException(
                         status_code=400,
-                        detail="PalmPay KYC verification failed for NIN: Billstack's PalmPay channel requires a valid 11-digit BVN (not NIN) matching your account name. Please select BVN and enter your 11-digit BVN."
+                        detail="PalmPay KYC verification failed for NIN: Billstack's PalmPay channel requires a valid 11-digit BVN (not NIN) matching your profile name. Please select BVN and enter your 11-digit BVN."
                     )
                 raise HTTPException(
                     status_code=400,
-                    detail="PalmPay BVN verification failed: Please ensure your 11-digit BVN is valid and matches your registered profile name."
+                    detail="PalmPay BVN verification failed (Billstack: LicenseNumber verification failed). Please ensure your 11-digit BVN is valid and matches your profile name, or verify that PalmPay KYC/LicenseNumber is active on your Billstack merchant account."
                 )
             raise HTTPException(
                 status_code=400,
