@@ -12,7 +12,27 @@ from app.core.security import verify_pin
 from app.dependencies import get_current_user, require_admin
 from app.models import User, Transaction, TransactionType, TransactionStatus
 from sqlalchemy import or_
-from app.schemas.wallet import WalletOut, FundWalletRequest, LedgerOut, BankTransferAccountsResponse, CreateBankTransferAccountsRequest, BankAccountOut, TransferVerifyRequest, TransferVerifyResponse, TransferRequest
+import uuid
+from app.models.wallet_ledger import LedgerType
+from app.services.transaction_pin import verify_pin_for_user
+from app.schemas.wallet import (
+    WalletOut,
+    FundWalletRequest,
+    LedgerOut,
+    BankTransferAccountsResponse,
+    CreateBankTransferAccountsRequest,
+    BankAccountOut,
+    TransferVerifyRequest,
+    TransferVerifyResponse,
+    TransferRequest,
+    BankOut,
+    BankResolveRequest,
+    BankResolveResponse,
+    BankWithdrawalRequest,
+    BankWithdrawalResponse,
+    LinkKycRequest,
+    LinkKycResponse,
+)
 from app.services.wallet import get_or_create_wallet, credit_wallet, verify_transfer_recipient, execute_wallet_transfer
 from app.services.referrals import record_referral_first_deposit_reward
 from app.services.paystack import (
@@ -22,6 +42,11 @@ from app.services.paystack import (
     get_or_create_dedicated_account,
     get_paystack_customer,
     PaystackError,
+    list_nigerian_banks,
+    resolve_bank_account,
+    create_transfer_recipient,
+    initiate_transfer,
+    verify_paystack_transfer,
 )
 from app.services.monnify import (
     init_monnify_transaction,
@@ -748,6 +773,19 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
                 detail="This NIN is already linked to another account on our platform. Please use a unique NIN."
             )
 
+    # Immediately persist the validated BVN / NIN hash to the user record
+    if bvn_hash_val or nin_hash_val:
+        db_user = db.query(User).filter(User.id == user.id).first()
+        if db_user:
+            if bvn_hash_val:
+                db_user.bvn_hash = bvn_hash_val
+                user.bvn_hash = bvn_hash_val
+            if nin_hash_val:
+                db_user.nin_hash = nin_hash_val
+                user.nin_hash = nin_hash_val
+            db.commit()
+            db.refresh(db_user)
+
     # 2. Clear Database Monnify Cache & Re-generate (Hard Refresh) only if Monnify is active
     if is_gateway_active(db, "monnify", bool(settings.monnify_secret_key)):
         db.query(VirtualAccount).filter(
@@ -1332,3 +1370,243 @@ def execute_transfer(request: Request, payload: TransferRequest, user: User = De
         raise HTTPException(status_code=400, detail="Insufficient wallet balance.")
         
     return {"status": "success", "message": f"Successfully transferred NGN{payload.amount:,.2f} to {recipient.full_name}"}
+
+
+@router.get("/banks", response_model=list[BankOut])
+@limiter.limit("30/minute")
+def get_bank_list(request: Request):
+    """
+    Returns list of supported Nigerian banks for withdrawals.
+    """
+    banks = list_nigerian_banks()
+    return banks
+
+
+@router.post("/resolve-bank-account", response_model=BankResolveResponse)
+@limiter.limit("20/minute")
+def resolve_account_endpoint(request: Request, payload: BankResolveRequest, user: User = Depends(get_current_user)):
+    """
+    Resolves account number against bank code via Paystack.
+    """
+    clean_acc = str(payload.account_number or "").strip()
+    clean_code = str(payload.bank_code or "").strip()
+    if len(clean_acc) != 10 or not clean_acc.isdigit():
+        raise HTTPException(status_code=400, detail="Account number must be exactly 10 digits.")
+    if not clean_code:
+        raise HTTPException(status_code=400, detail="Bank code is required.")
+
+    try:
+        data = resolve_bank_account(clean_acc, clean_code)
+        return BankResolveResponse(
+            account_number=data.get("account_number") or clean_acc,
+            account_name=data.get("account_name"),
+            bank_id=data.get("bank_id"),
+        )
+    except PaystackError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Error resolving account: %s", exc)
+        raise HTTPException(status_code=400, detail="Could not resolve account details. Please check the bank and account number.")
+
+
+@router.post("/withdraw", response_model=BankWithdrawalResponse)
+@limiter.limit("5/minute")
+def withdraw_to_bank(
+    request: Request,
+    payload: BankWithdrawalRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Withdraws funds from wallet to a Nigerian bank account via Paystack Transfer.
+    Restricted to MELE DATA tenant and requires verified KYC (NIN/BVN).
+    Fee structure:
+      <= ₦5,000  -> ₦25
+      >  ₦5,000  -> ₦50
+    Limits:
+      Min: ₦100
+      Max: ₦100,000
+    """
+    # 1. Tenant Check: MELE DATA only
+    if not is_meledata_tenant(request):
+        raise HTTPException(
+            status_code=403,
+            detail="Bank withdrawal is currently only available on MELE DATA."
+        )
+
+    # 2. KYC Check: Must have verified KYC (BVN/NIN or active verified virtual account)
+    if not (user.kyc_verified or user.bvn_hash or user.nin_hash):
+        raise HTTPException(
+            status_code=403,
+            detail="Account verification required before making a withdrawal. Please link your NIN or BVN to proceed."
+        )
+
+    # 3. Amount limits
+    if payload.amount < Decimal("100.00"):
+        raise HTTPException(status_code=400, detail="Minimum withdrawal amount is ₦100.00")
+    if payload.amount > Decimal("100000.00"):
+        raise HTTPException(status_code=400, detail="Maximum withdrawal amount per transaction is ₦100,000.00")
+
+    # 4. Fee calculation
+    if payload.amount <= Decimal("5000.00"):
+        fee = Decimal("25.00")
+    else:
+        fee = Decimal("50.00")
+    total_debit = payload.amount + fee
+
+    # 5. Transaction PIN verification
+    ok, pin_err = verify_pin_for_user(user, payload.pin)
+    if not ok:
+        raise HTTPException(status_code=400, detail=pin_err or "Invalid transaction PIN.")
+
+    # 6. Wallet balance check
+    wallet = get_or_create_wallet(db, user.id)
+    if wallet.balance < total_debit:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient wallet balance. Available: ₦{wallet.balance:,.2f}, Required: ₦{total_debit:,.2f} (Amount: ₦{payload.amount:,.2f} + Fee: ₦{fee:,.2f})"
+        )
+
+    # 7. Atomic Debit & Transaction Recording
+    transfer_ref = f"WD_{uuid.uuid4().hex[:18]}"
+    wallet.balance -= total_debit
+    debit_ledger = WalletLedger(
+        wallet_id=wallet.id,
+        amount=total_debit,
+        entry_type=LedgerType.DEBIT,
+        reference=transfer_ref,
+        description=f"Withdrawal to {payload.bank_name} ({payload.account_number}) - {payload.account_name}"
+    )
+    db.add(debit_ledger)
+
+    tx = Transaction(
+        user_id=user.id,
+        reference=transfer_ref,
+        amount=payload.amount,
+        status=TransactionStatus.PENDING,
+        tx_type=TransactionType.WALLET_TRANSFER,
+        network=payload.bank_name,
+        recipient_phone=payload.account_number,
+        data_plan_code=f"FEE_{fee}",
+        provider="paystack",
+    )
+    db.add(tx)
+    db.commit()
+    db.refresh(tx)
+
+    # 8. Paystack Transfer Execution
+    try:
+        # Create transfer recipient
+        recipient_res = create_transfer_recipient(
+            name=payload.account_name,
+            account_number=payload.account_number,
+            bank_code=payload.bank_code,
+        )
+        recipient_code = recipient_res.get("recipient_code")
+        if not recipient_code:
+            raise PaystackError("Failed to create transfer recipient on Paystack.")
+
+        # Initiate transfer from balance
+        amount_kobo = int(payload.amount * 100)
+        transfer_res = initiate_transfer(
+            amount_kobo=amount_kobo,
+            recipient_code=recipient_code,
+            reference=transfer_ref,
+            reason=payload.narration or "Wallet withdrawal",
+        )
+        transfer_data = transfer_res.get("data") or transfer_res
+        tx.external_reference = str(transfer_data.get("transfer_code") or transfer_data.get("id") or "")
+        if transfer_data.get("status") == "success":
+            tx.status = TransactionStatus.SUCCESS
+        db.commit()
+    except Exception as exc:
+        # Immediate rollback & refund on Paystack initiation failure
+        wallet.balance += total_debit
+        tx.status = TransactionStatus.FAILED
+        tx.failure_reason = str(exc)[:255]
+        refund_ledger = WalletLedger(
+            wallet_id=wallet.id,
+            amount=total_debit,
+            entry_type=LedgerType.CREDIT,
+            reference=f"REF_{transfer_ref}",
+            description=f"Refund for failed withdrawal #{transfer_ref}"
+        )
+        db.add(refund_ledger)
+        db.commit()
+        logging.getLogger(__name__).error("Paystack withdrawal error: %s", exc)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Withdrawal could not be processed: {exc}"
+        )
+
+    return BankWithdrawalResponse(
+        status=tx.status.value,
+        message=f"Withdrawal of ₦{payload.amount:,.2f} to {payload.account_name} ({payload.bank_name}) initiated successfully.",
+        reference=transfer_ref,
+        amount=payload.amount,
+        fee=fee,
+        total_debited=total_debit,
+        bank_name=payload.bank_name,
+        account_number=payload.account_number,
+        account_name=payload.account_name,
+    )
+
+
+@router.post("/link-kyc", response_model=LinkKycResponse)
+@limiter.limit("5/minute")
+def link_kyc(
+    request: Request,
+    payload: LinkKycRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    import hashlib
+    import re
+    bvn = re.sub(r"\D", "", (payload.bvn or "").strip())
+    nin = re.sub(r"\D", "", (payload.nin or "").strip())
+
+    if not bvn and not nin:
+        raise HTTPException(status_code=400, detail="Please provide an 11-digit BVN or NIN.")
+
+    db_user = db.query(User).filter(User.id == user.id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    if bvn:
+        if len(bvn) != 11:
+            raise HTTPException(status_code=400, detail="BVN must be exactly 11 digits.")
+        bvn_hash_val = hashlib.sha256(bvn.encode()).hexdigest()
+        dup_bvn = db.query(User).filter(User.bvn_hash == bvn_hash_val, User.id != user.id).first()
+        if dup_bvn:
+            raise HTTPException(
+                status_code=400,
+                detail="This BVN is already linked to another account on our platform."
+            )
+        db_user.bvn_hash = bvn_hash_val
+        user.bvn_hash = bvn_hash_val
+
+    if nin:
+        if len(nin) != 11:
+            raise HTTPException(status_code=400, detail="NIN must be exactly 11 digits.")
+        nin_hash_val = hashlib.sha256(nin.encode()).hexdigest()
+        dup_nin = db.query(User).filter(User.nin_hash == nin_hash_val, User.id != user.id).first()
+        if dup_nin:
+            raise HTTPException(
+                status_code=400,
+                detail="This NIN is already linked to another account on our platform."
+            )
+        db_user.nin_hash = nin_hash_val
+        user.nin_hash = nin_hash_val
+
+    db.commit()
+    db.refresh(db_user)
+
+    return LinkKycResponse(
+        status=True,
+        message="Identity verified and linked successfully.",
+        kyc_verified=True,
+        has_bvn=bool(db_user.bvn_hash),
+        has_nin=bool(db_user.nin_hash),
+    )
+
+

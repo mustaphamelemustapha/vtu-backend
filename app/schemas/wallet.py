@@ -55,3 +55,57 @@ class TransferVerifyResponse(BaseModel):
 class TransferRequest(BaseModel):
     identifier: str
     amount: Decimal
+
+
+class BankOut(BaseModel):
+    name: str
+    code: str
+    slug: str | None = None
+    active: bool = True
+
+
+class BankResolveRequest(BaseModel):
+    account_number: str
+    bank_code: str
+
+
+class BankResolveResponse(BaseModel):
+    account_number: str
+    account_name: str
+    bank_id: int | None = None
+
+
+class BankWithdrawalRequest(BaseModel):
+    account_number: str
+    bank_code: str
+    bank_name: str
+    account_name: str
+    amount: Decimal
+    pin: str
+    narration: str | None = None
+
+
+class BankWithdrawalResponse(BaseModel):
+    status: str
+    message: str
+    reference: str
+    amount: Decimal
+    fee: Decimal
+    total_debited: Decimal
+    bank_name: str
+    account_number: str
+    account_name: str
+
+
+class LinkKycRequest(BaseModel):
+    bvn: str | None = None
+    nin: str | None = None
+
+
+class LinkKycResponse(BaseModel):
+    status: bool = True
+    message: str
+    kyc_verified: bool = True
+    has_bvn: bool = False
+    has_nin: bool = False
+

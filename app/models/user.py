@@ -11,6 +11,7 @@ class UserRole(str, enum.Enum):
     AMBASSADOR = "ambassador"
     ADMIN = "admin"
     USER = "customer"
+    RESELLER = "agent"
 
 
 class User(Base, TimestampMixin):
@@ -72,6 +73,37 @@ class User(Base, TimestampMixin):
     api_logs = relationship("ApiLog", back_populates="user")
     virtual_accounts = relationship("VirtualAccount", back_populates="user")
     promos = relationship("UserPromo", back_populates="user")
+
+    @property
+    def has_bvn(self) -> bool:
+        return bool(self.bvn_hash)
+
+    @property
+    def has_nin(self) -> bool:
+        return bool(self.nin_hash)
+
+    @property
+    def kyc_verified(self) -> bool:
+        if bool(self.bvn_hash or self.nin_hash):
+            return True
+        # If user has an active virtual account from CBN-regulated rails requiring KYC
+        # (Moniepoint, PalmPay, Monnify, Safehaven), they are verified
+        try:
+            if self.virtual_accounts:
+                for va in self.virtual_accounts:
+                    status_str = str(getattr(va, "status", "")).lower()
+                    if "active" in status_str:
+                        bank = str(getattr(va, "bank_name", "") or "").lower()
+                        provider = str(getattr(va, "provider", "") or "").lower()
+                        if any(b in bank for b in ("moniepoint", "palmpay", "monnify", "safehaven")) or "monnify" in provider:
+                            return True
+        except Exception:
+            pass
+        return False
+
+    @property
+    def has_api_keys(self) -> bool:
+        return bool(self.api_public_key and self.api_secret_key_hash)
 
 
 Index("ix_users_role_active", User.role, User.is_active)

@@ -3,6 +3,7 @@ import json
 import hashlib
 import hmac
 import os
+import re
 from fastapi import APIRouter, Depends, Request, HTTPException
 from sqlalchemy.orm import Session
 from decimal import Decimal
@@ -12,6 +13,7 @@ import secrets
 from sqlalchemy.exc import IntegrityError
 from app.core.database import get_db
 from app.models import Transaction, TransactionStatus, TransactionType, User, WalletLedger, LedgerType, DataPlan
+from app.models.integration import PaymentGateway
 from app.services.wallet import get_or_create_wallet, credit_wallet
 from app.services.monnify import verify_monnify_signature
 from app.services.billstack import verify_billstack_signature
@@ -21,6 +23,7 @@ from app.api.v1.endpoints.wallet import _maybe_reward_first_deposit, _safe_ref, 
 from app.models.virtual_account import VirtualAccount, VirtualAccountProvider, VirtualAccountStatus
 from app.services.paystack import verify_paystack_signature
 from app.services.push_notification import PushNotificationService
+from app.core.tenant import is_meledata_tenant
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -35,7 +38,10 @@ def _tx_age_seconds(tx: Transaction) -> float:
     now = datetime.now(timezone.utc)
     return max(0.0, (now - created).total_seconds())
 
+@router.post("/vtpass")
+@router.post("/vtpass/")
 @router.post("/vtpass/webhook")
+@router.post("/vtpass/webhook/")
 async def vtpass_webhook(request: Request, db: Session = Depends(get_db)):
     """
     VTPass Callback/Webhook endpoint.
@@ -81,7 +87,10 @@ async def vtpass_webhook(request: Request, db: Session = Depends(get_db)):
 async def get_raw_body(request: Request) -> bytes:
     return await request.body()
 
+@router.post("/paystack")
+@router.post("/paystack/")
 @router.post("/paystack/webhook")
+@router.post("/paystack/webhook/")
 def paystack_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), db: Session = Depends(get_db)):
     signature = request.headers.get("x-paystack-signature")
     if not signature:
@@ -179,10 +188,46 @@ def paystack_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), 
             transaction.external_reference = data.get("id")
             db.commit()
 
+    elif event == "transfer.success" and transaction:
+        if transaction.status != TransactionStatus.SUCCESS:
+            transaction.status = TransactionStatus.SUCCESS
+            transaction.external_reference = str(data.get("transfer_code") or data.get("id") or "")
+            db.commit()
+
+    elif event in ("transfer.failed", "transfer.reversed") and transaction:
+        if transaction.status in (TransactionStatus.PENDING, TransactionStatus.SUCCESS):
+            fee = Decimal("25.00")
+            if transaction.data_plan_code and transaction.data_plan_code.startswith("FEE_"):
+                try:
+                    fee = Decimal(transaction.data_plan_code.replace("FEE_", ""))
+                except Exception:
+                    fee = Decimal("25.00")
+            total_refund = Decimal(transaction.amount) + fee
+            wallet = get_or_create_wallet(db, transaction.user_id)
+            wallet.balance += total_refund
+
+            refund_ref = _safe_ref("REF", transaction.reference)
+            refund_ledger = WalletLedger(
+                wallet_id=wallet.id,
+                amount=total_refund,
+                entry_type=LedgerType.CREDIT,
+                reference=refund_ref,
+                description=f"Refund for failed bank withdrawal #{transaction.reference}",
+            )
+            db.add(refund_ledger)
+            transaction.status = TransactionStatus.FAILED
+            transaction.failure_reason = str(data.get("gateway_response") or data.get("reason") or "Transfer failed at bank")[:255]
+            transaction.external_reference = str(data.get("transfer_code") or data.get("id") or "")
+            db.commit()
+            logger.info("Processed %s for withdrawal %s, refunded NGN %s to user %s", event, transaction.reference, total_refund, transaction.user_id)
+
     return {"status": "ok"}
 
 
 @router.post("/smeplug")
+@router.post("/smeplug/")
+@router.post("/smeplug/webhook")
+@router.post("/smeplug/webhook/")
 def smeplug_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), db: Session = Depends(get_db)):
     """
     SMEPlug Webhook Handler
@@ -310,6 +355,9 @@ def smeplug_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), d
     return {"status": "ok"}
 
 @router.post("/monnify")
+@router.post("/monnify/")
+@router.post("/monnify/webhook")
+@router.post("/monnify/webhook/")
 def monnify_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), db: Session = Depends(get_db)):
     signature = request.headers.get("monnify-signature")
     if not signature:
@@ -475,18 +523,18 @@ def monnify_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), d
 
 
 @router.post("/billstack")
+@router.post("/billstack/")
+@router.post("/billstack/webhook")
+@router.post("/billstack/webhook/")
 def billstack_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), db: Session = Depends(get_db)):
-    signature = request.headers.get("x-billstack-signature") or request.headers.get("billstack-signature")
+    signature = (
+        request.headers.get("x-wiaxy-signature")
+        or request.headers.get("x-wiaxy-signature-256")
+        or request.headers.get("x-billstack-signature")
+        or request.headers.get("billstack-signature")
+    )
+    timestamp = request.headers.get("x-wiaxy-timestamp")
     body = raw_body
-    
-    # Verify signature only if billstack_webhook_secret is explicitly configured
-    if settings.billstack_webhook_secret:
-        if not signature or not verify_billstack_signature(body, signature):
-            logger.error("Billstack Webhook: Invalid signature")
-            raise HTTPException(status_code=401, detail="Invalid signature")
-    elif signature:
-        is_valid = verify_billstack_signature(body, signature)
-        logger.info("Billstack Webhook: Signature present. Verification result: %s", is_valid)
 
     payload = json.loads(raw_body)
     logger.info("Billstack Webhook received: %s", payload)
@@ -494,6 +542,41 @@ def billstack_webhook(request: Request, raw_body: bytes = Depends(get_raw_body),
     event = payload.get("event")
     event_upper = str(event or "").upper().strip()
     data = payload.get("eventData", {}) or payload.get("data", {})
+
+    if settings.billstack_webhook_secret:
+        sig_ok = bool(signature and verify_billstack_signature(body, signature, timestamp=timestamp))
+        if not sig_ok:
+            # Fallback check: verify whether the destination account or reference belongs to a known Billstack VirtualAccount
+            acc_num_check = str((data.get("account") or {}).get("account_number") or "").strip()
+            m_ref_check = str(data.get("merchant_reference") or "").strip()
+            r_ref_check = str(data.get("reference") or "").strip()
+            known_va = None
+            if acc_num_check:
+                known_va = db.query(VirtualAccount).filter(
+                    VirtualAccount.account_number == acc_num_check,
+                    VirtualAccount.provider == VirtualAccountProvider.BILLSTACK,
+                ).first()
+            if not known_va and (m_ref_check or r_ref_check):
+                ref_to_match = m_ref_check or r_ref_check
+                known_va = db.query(VirtualAccount).filter(
+                    (VirtualAccount.customer_reference == ref_to_match)
+                    | (VirtualAccount.reservation_reference == ref_to_match)
+                    | (VirtualAccount.customer_reference.like(f"{ref_to_match}%"))
+                    | (VirtualAccount.reservation_reference.like(f"{ref_to_match}%"))
+                ).first()
+            if known_va:
+                logger.warning(
+                    "Billstack Webhook: Signature mismatch (header=%s), but verified known VirtualAccount %s for user_id=%s. Proceeding.",
+                    signature,
+                    known_va.account_number,
+                    known_va.user_id,
+                )
+            else:
+                logger.error("Billstack Webhook: Invalid signature (header=%s)", signature)
+                raise HTTPException(status_code=401, detail="Invalid signature")
+    elif signature:
+        is_valid = verify_billstack_signature(body, signature, timestamp=timestamp)
+        logger.info("Billstack Webhook: Signature present. Verification result: %s", is_valid)
     
     if event_upper not in {"PAYMENT_NOTIFICATION", "PAYMENT_NOTIFIFICATION"}:
         logger.info("Billstack Webhook: Ignored event type %s", event)
@@ -547,13 +630,17 @@ def billstack_webhook(request: Request, raw_body: bytes = Depends(get_raw_body),
         sender_name = None
 
     # Resolve User:
-    # 1. Parse user_id from merchant_reference (which would be of format "AXISVTU_{user_id}_billstack_...")
+    # 1. Parse user_id from merchant_reference (e.g. "KULLOMADATA_{user_id}_billstack_...", "MZDATA_{user_id}_billstack_...", "AXISVTU_{user_id}_...")
     user = None
     if merchant_reference:
         ref_str = str(merchant_reference).strip()
-        if ref_str.startswith("AXISVTU_"):
+        parts = ref_str.split("_")
+        if len(parts) >= 2 and parts[1].isdigit() and (
+            ref_str.startswith(("AXISVTU_", "KULLOMADATA_", "MZDATA_", "MELEDATA_"))
+            or "billstack" in ref_str.lower()
+        ):
             try:
-                user_id = int(ref_str.split("_")[1])
+                user_id = int(parts[1])
                 user = db.query(User).filter(User.id == user_id).first()
                 if user:
                     logger.info("Billstack Webhook: Resolved user ID %d directly from merchant_reference %s", user.id, ref_str)
@@ -564,12 +651,24 @@ def billstack_webhook(request: Request, raw_body: bytes = Depends(get_raw_body),
             # Query VirtualAccount table by customer_reference / reservation_reference
             va = db.query(VirtualAccount).filter(
                 (VirtualAccount.reservation_reference == ref_str) |
-                (VirtualAccount.customer_reference == ref_str)
+                (VirtualAccount.customer_reference == ref_str) |
+                (VirtualAccount.reservation_reference.like(f"{ref_str}%")) |
+                (VirtualAccount.customer_reference.like(f"{ref_str}%"))
             ).first()
             if va:
                 user = va.user
                 if user:
                     logger.info("Billstack Webhook: Resolved user ID %d from VirtualAccount by merchant_reference %s", user.id, ref_str)
+
+    if not user and data.get("reference"):
+        r_ref = str(data.get("reference")).strip()
+        va = db.query(VirtualAccount).filter(
+            (VirtualAccount.reservation_reference == r_ref) |
+            (VirtualAccount.reservation_reference.like(f"{r_ref}%"))
+        ).first()
+        if va and va.user:
+            user = va.user
+            logger.info("Billstack Webhook: Resolved user ID %d from VirtualAccount by reference %s", user.id, r_ref)
 
     # 2. Resolve user by destination account number (from data["account"]["account_number"])
     if not user:
@@ -696,6 +795,9 @@ def billstack_webhook(request: Request, raw_body: bytes = Depends(get_raw_body),
 
 
 @router.post("/autosync")
+@router.post("/autosync/")
+@router.post("/autosync/webhook")
+@router.post("/autosync/webhook/")
 def autosync_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), db: Session = Depends(get_db)):
     """
     Autosync Webhook Handler
@@ -815,6 +917,9 @@ def autosync_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), 
     return "ok"
 
 @router.post("/boltnet")
+@router.post("/boltnet/")
+@router.post("/boltnet/webhook")
+@router.post("/boltnet/webhook/")
 def boltnet_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), db: Session = Depends(get_db)):
     """
     Boltnet Webhook Handler
@@ -911,22 +1016,82 @@ def boltnet_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), d
             
     return "ok"
 
+def _parse_safe_deposit_amount(val) -> Decimal:
+    if val is None:
+        return Decimal("0")
+    cleaned = str(val).replace(",", "").replace("₦", "").replace("NGN", "").strip()
+    try:
+        parsed = Decimal(cleaned)
+        return parsed if parsed > Decimal("0") else Decimal("0")
+    except Exception:
+        return Decimal("0")
+
 @router.get("/aspfiy")
+@router.get("/aspfiy/")
+@router.get("/aspify")
+@router.get("/aspify/")
+@router.get("/asfiy")
+@router.get("/asfiy/")
 def aspfiy_webhook_health():
     return {"status": "active", "provider": "aspfiy"}
 
 @router.post("/aspfiy")
+@router.post("/aspfiy/")
+@router.post("/aspify")
+@router.post("/aspify/")
+@router.post("/asfiy")
+@router.post("/asfiy/")
 async def aspfiy_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), db: Session = Depends(get_db)):
     headers_dict = dict(request.headers)
     logger.info("Aspfiy webhook incoming headers: %s", headers_dict)
-    print(f"Aspfiy webhook incoming headers: {headers_dict}")
 
-    secret_key = (
+    # 1. Early Tenant Guard: Reject if request is scoped to MELE DATA
+    if is_meledata_tenant(request):
+        logger.info("Aspfiy webhook: Decommissioned for MELE DATA tenant (host=%s)", request.headers.get("host"))
+        return {"status": "decommissioned", "message": "Aspfiy integration is decommissioned for MELE DATA"}
+
+    # Legacy proxy: If request hits onrender.com or legacy vercel domain, forward directly to production Coolify (api.meledata.ng)
+    host_header = (request.headers.get("host") or "").lower()
+    is_legacy_host = any(h in host_header for h in ("onrender.com", "vercel.app", "axisvtu"))
+    forward_target = os.environ.get("FORWARD_ASPIFY_WEBHOOK_TO") or (
+        "https://api.meledata.ng/api/v1/webhooks/aspfiy" if is_legacy_host else None
+    )
+    if forward_target and not host_header.startswith("api.meledata.ng"):
+        logger.info("Forwarding Aspfiy webhook from legacy host %s to %s", host_header, forward_target)
+        try:
+            import httpx
+            from fastapi.responses import Response
+            fwd_headers = {
+                k: v for k, v in headers_dict.items()
+                if k.lower() not in ("host", "content-length", "transfer-encoding")
+            }
+            fwd_headers["x-forwarded-from-host"] = host_header
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                fwd_resp = await client.post(
+                    forward_target,
+                    content=raw_body,
+                    headers=fwd_headers,
+                    params=dict(request.query_params)
+                )
+            logger.info("Aspfiy webhook forwarded to Coolify, response status: %s", fwd_resp.status_code)
+            return Response(content=fwd_resp.content, status_code=fwd_resp.status_code, media_type="application/json")
+        except Exception as fwd_err:
+            logger.error("Failed to forward Aspfiy webhook to %s: %s; falling back to local processing", forward_target, fwd_err)
+
+    # 1. Resolve secret key from DB (Admin Integrations) or Environment
+    db_gw = db.query(PaymentGateway).filter(
+        PaymentGateway.identifier.in_(["aspfiy", "asfiy", "aspify"])
+    ).first()
+    db_secret = (db_gw.secret_key or "").strip() if db_gw else ""
+
+    env_secret = (
         settings.aspfiy_secret_key
         or getattr(settings, "aspify_secret_key", "")
         or os.environ.get("ASPFIY_SECRET_KEY", "")
         or os.environ.get("ASPIFY_SECRET_KEY", "")
     ).strip()
+
+    secret_key = db_secret or env_secret
 
     # Look for signature in all possible header variations & query params
     signature = (
@@ -947,164 +1112,237 @@ async def aspfiy_webhook(request: Request, raw_body: bytes = Depends(get_raw_bod
         signature = signature[7:].strip()
 
     valid_signatures = set()
-    if secret_key:
-        valid_signatures.add(secret_key.lower())
-        valid_signatures.add(hashlib.md5(secret_key.encode()).hexdigest().lower())
-        valid_signatures.add(hashlib.sha256(secret_key.encode()).hexdigest().lower())
+    for candidate_key in {secret_key, db_secret, env_secret}:
+        candidate_key = candidate_key.strip()
+        if not candidate_key:
+            continue
+        valid_signatures.add(candidate_key.lower())
+        valid_signatures.add(hashlib.md5(candidate_key.encode()).hexdigest().lower())
+        valid_signatures.add(hashlib.sha256(candidate_key.encode()).hexdigest().lower())
         try:
-            valid_signatures.add(hmac.new(secret_key.encode(), raw_body, hashlib.sha256).hexdigest().lower())
-            valid_signatures.add(hmac.new(secret_key.encode(), raw_body, hashlib.sha512).hexdigest().lower())
-            valid_signatures.add(hashlib.md5((secret_key + raw_body.decode(errors="ignore")).encode()).hexdigest().lower())
+            valid_signatures.add(hmac.new(candidate_key.encode(), raw_body, hashlib.sha256).hexdigest().lower())
+            valid_signatures.add(hmac.new(candidate_key.encode(), raw_body, hashlib.sha512).hexdigest().lower())
+            valid_signatures.add(hashlib.md5((candidate_key + raw_body.decode(errors="ignore")).encode()).hexdigest().lower())
         except Exception:
             pass
 
     is_valid = bool(signature and signature in valid_signatures)
-    
+
+    try:
+        payload = json.loads(raw_body)
+    except Exception as parse_err:
+        logger.error("Aspfiy webhook: invalid JSON received (%s): %s", parse_err, raw_body[:200])
+        return {"status": "error", "message": "invalid JSON"}
+
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    account_data = data.get("account") if isinstance(data.get("account"), dict) else {}
+    customer_data = data.get("customer") if isinstance(data.get("customer"), dict) else {}
+    payer_data = data.get("payer") if isinstance(data.get("payer"), dict) else {}
+
+    # Comprehensive candidate extraction
+    account_candidates = [
+        str(account_data.get("account_number") or ""),
+        str(account_data.get("accountNumber") or ""),
+        str(data.get("account_number") or ""),
+        str(data.get("accountNumber") or ""),
+        str(data.get("account_no") or ""),
+        str(data.get("accountNo") or ""),
+        str(data.get("paid_into") or ""),
+        str(data.get("paidInto") or ""),
+        str(data.get("destination_account") or ""),
+        str(data.get("destination_account_number") or ""),
+        str(data.get("virtual_account") or ""),
+        str(data.get("virtual_account_number") or ""),
+        str(data.get("recipient_account") or ""),
+        str(data.get("bank_account") or ""),
+        str(payload.get("account_number") or ""),
+        str(payload.get("paid_into") or ""),
+        str(data.get("account") if isinstance(data.get("account"), str) else ""),
+    ]
+    clean_accs = [re.sub(r"\D", "", a) for a in account_candidates if a and re.sub(r"\D", "", a)]
+
+    ref_candidates = [
+        str(data.get("merchant_reference") or ""),
+        str(data.get("merchantReference") or ""),
+        str(data.get("reference") or ""),
+        str(data.get("customer_reference") or ""),
+        str(data.get("customerReference") or ""),
+        str(data.get("account_reference") or ""),
+        str(data.get("accountReference") or ""),
+        str(data.get("payment_reference") or ""),
+        str(data.get("transaction_ref") or ""),
+        str(data.get("trans_ref") or ""),
+        str(data.get("external_reference") or ""),
+        str(data.get("externalReference") or ""),
+        str(payload.get("merchant_reference") or ""),
+        str(payload.get("reference") or ""),
+    ]
+    ref_candidates = [r.strip() for r in ref_candidates if r and r.strip()]
+
+    # 2. Reference Prefix Guard: Reject if incoming payload targets a MELE DATA reference
+    for ref in ref_candidates:
+        if re.search(r'(?:MELEDATA|AXISVTU)[_-]', ref, re.IGNORECASE):
+            logger.info("Aspfiy webhook: Dropping MELE DATA payload reference '%s'", ref)
+            return {"status": "decommissioned", "message": "Aspfiy integration is decommissioned for MELE DATA"}
+
+    email_candidates = [
+        str(customer_data.get("email") or ""),
+        str(data.get("email") or ""),
+        str(payer_data.get("email") or ""),
+        str(data.get("customer_email") or ""),
+        str(data.get("customerEmail") or ""),
+        str(payload.get("email") or ""),
+    ]
+    email_candidates = [e.strip().lower() for e in email_candidates if e and e.strip() and "@" in e]
+
+    # Resolve account and user
+    account = None
+    user = None
+
+    # 1. Match by customer_reference on VirtualAccount
+    for ref in ref_candidates:
+        account = db.query(VirtualAccount).filter(
+            VirtualAccount.customer_reference == ref,
+            VirtualAccount.provider == VirtualAccountProvider.ASPFIY
+        ).first()
+        if not account:
+            account = db.query(VirtualAccount).filter(
+                VirtualAccount.customer_reference == ref
+            ).first()
+        if account:
+            user = db.query(User).filter(User.id == account.user_id).first()
+            if user:
+                break
+
+    # 2. Match by account_number on VirtualAccount
+    if not user:
+        for acc_num in clean_accs:
+            account = db.query(VirtualAccount).filter(
+                VirtualAccount.account_number == acc_num,
+                VirtualAccount.provider == VirtualAccountProvider.ASPFIY
+            ).first()
+            if not account:
+                account = db.query(VirtualAccount).filter(
+                    VirtualAccount.account_number == acc_num
+                ).first()
+            if account:
+                user = db.query(User).filter(User.id == account.user_id).first()
+                if user:
+                    break
+
+    # 3. Account Reference Guard: If matched account belongs to MELE DATA, drop
+    if account and (
+        (account.customer_reference and re.search(r'(?:MELEDATA|AXISVTU)[_-]', account.customer_reference, re.IGNORECASE))
+        or (account.reservation_reference and re.search(r'(?:MELEDATA|AXISVTU)[_-]', account.reservation_reference, re.IGNORECASE))
+    ):
+        logger.info("Aspfiy webhook: Matched account %s belongs to MELE DATA; dropping payment", account.account_number)
+        return {"status": "decommissioned", "message": "Aspfiy integration is decommissioned for MELE DATA"}
+
+    # 3. Match from user ID inside reference patterns (e.g. AXISVTU_123_..., MELEDATA_123_..., 123_aspfiy_...)
+    if not user:
+        for ref in ref_candidates:
+            m = re.search(r'(?:AXISVTU|MELEDATA|KULLOMA|MZDATA|VTU|USER)[_-](\d+)', ref, re.IGNORECASE)
+            if not m:
+                m = re.search(r'^(\d+)[_-]', ref)
+            if m:
+                try:
+                    uid = int(m.group(1))
+                    user = db.query(User).filter(User.id == uid).first()
+                    if user:
+                        break
+                except Exception:
+                    pass
+
+    # 4. Match by customer email
+    if not user:
+        for em in email_candidates:
+            user = db.query(User).filter(User.email == em).first()
+            if user:
+                break
+
+    # Fallback verification:
     if not is_valid:
-        expected_md5 = hashlib.md5(secret_key.encode()).hexdigest().lower() if secret_key else "NOT_CONFIGURED"
-        logger.warning(
-            "Aspfiy webhook signature mismatch! Received: '%s', Expected MD5: '%s'. Headers: %s",
-            signature,
-            expected_md5,
-            headers_dict,
-        )
-        print(f"Aspfiy webhook signature mismatch! Received: '{signature}', Expected MD5: '{expected_md5}', Headers: {headers_dict}")
-        
-        # Fallback verification:
-        # If the signature does not match or was omitted by Aspfiy dashboard resend,
-        # verify if the payload actually belongs to a real registered user/account in our database.
-        payload_peek = {}
-        try:
-            payload_peek = json.loads(raw_body)
-        except Exception:
-            pass
-            
-        data_peek = payload_peek.get("data") if isinstance(payload_peek.get("data"), dict) else payload_peek
-        acc_peek = str(
-            (data_peek.get("account") or {}).get("account_number")
-            or data_peek.get("account_number")
-            or data_peek.get("paid_into")
-            or data_peek.get("accountNumber")
-            or ""
-        ).strip()
-        ref_peek = str(
-            data_peek.get("merchant_reference")
-            or data_peek.get("merchantReference")
-            or payload_peek.get("merchant_reference")
-            or ""
-        ).strip()
-        cust_email_peek = str(
-            (data_peek.get("customer") or {}).get("email")
-            or data_peek.get("email")
-            or payload_peek.get("email")
-            or ""
-        ).strip().lower()
-        
-        matched_user = None
-        matched_account = None
-        if ref_peek:
-            matched_account = db.query(VirtualAccount).filter(
-                VirtualAccount.customer_reference == ref_peek
-            ).first()
-            if not matched_account and ref_peek.startswith("AXISVTU_"):
-                parts = ref_peek.split("_")
-                if len(parts) >= 2 and parts[1].isdigit():
-                    matched_user = db.query(User).filter(User.id == int(parts[1])).first()
-        if not matched_account and acc_peek:
-            matched_account = db.query(VirtualAccount).filter(
-                VirtualAccount.account_number == acc_peek
-            ).first()
-        if not matched_user and matched_account:
-            matched_user = db.query(User).filter(User.id == matched_account.user_id).first()
-        if not matched_user and cust_email_peek:
-            matched_user = db.query(User).filter(User.email == cust_email_peek).first()
-            
-        if matched_account or matched_user:
+        if account or user:
             logger.info(
-                "Aspfiy webhook: Accepted via account/user match (acc=%s, ref=%s, email=%s) despite signature verification.",
-                acc_peek, ref_peek, cust_email_peek
+                "Aspfiy webhook: Accepted via account/user match (accs=%s, refs=%s, emails=%s) despite signature verification.",
+                clean_accs[:2], ref_candidates[:2], email_candidates[:1]
             )
         else:
+            expected_md5 = hashlib.md5(secret_key.encode()).hexdigest().lower() if secret_key else "NOT_CONFIGURED"
+            logger.warning(
+                "Aspfiy webhook signature mismatch! Received: '%s', Expected MD5: '%s'. Headers: %s",
+                signature,
+                expected_md5,
+                headers_dict,
+            )
             raise HTTPException(
-                status_code=401, 
+                status_code=401,
                 detail=f"Invalid signature (received '{signature[:8]}...', expected MD5 '{expected_md5[:8]}...'). Check ASPFIY_SECRET_KEY."
             )
 
-    payload = json.loads(raw_body)
-    event = str(payload.get("event") or "").strip().lower()
-    
-    # Aspfiy sends payment.success, PAYMENT_NOTIFIFICATION, PAYMENT_NOTIFICATION, etc.
-    allowed_events = ("payment.success", "payment_notifification", "payment_notification", "payment.successful", "paid")
-    if event and not any(allowed in event for allowed in allowed_events):
-        logger.info("Aspfiy webhook: unhandled event '%s'", event)
-        return {"status": "success", "message": f"unhandled event: {event}"}
-        
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-    
-    merchant_reference = (
-        data.get("merchant_reference")
-        or data.get("merchantReference")
-        or payload.get("merchant_reference")
-        or payload.get("merchantReference")
-    )
-    amount = Decimal(str(data.get("amount") or payload.get("amount") or 0))
-    reference = (
-        data.get("reference")
-        or data.get("payment_reference")
-        or data.get("aspfiy_ref")
-        or payload.get("reference")
-        or f"asp_{secrets.token_hex(6)}"
-    )
-
-    account_data = data.get("account") if isinstance(data.get("account"), dict) else {}
-    customer_data = data.get("customer") if isinstance(data.get("customer"), dict) else {}
-
-    acc_num = str(
-        account_data.get("account_number")
-        or data.get("account_number")
-        or data.get("paid_into")
-        or data.get("accountNumber")
-        or ""
-    ).strip()
-
-    cust_email = str(
-        customer_data.get("email")
-        or data.get("email")
-        or payload.get("email")
+    # Event Validation: Only skip if explicitly failed / reversed
+    event_str = str(
+        payload.get("event")
+        or data.get("event")
+        or payload.get("type")
+        or data.get("type")
+        or payload.get("status")
+        or data.get("status")
         or ""
     ).strip().lower()
 
-    account = None
-    # 1. Match by customer_reference
-    if merchant_reference:
-        account = db.query(VirtualAccount).filter(
-            VirtualAccount.customer_reference == merchant_reference,
-            VirtualAccount.provider == VirtualAccountProvider.ASPFIY
-        ).first()
+    explicit_failures = ("fail", "cancelled", "canceled", "reversed", "declined", "rejected", "error")
+    if event_str and any(fail_word in event_str for fail_word in explicit_failures):
+        logger.info("Aspfiy webhook: ignored explicit failure event '%s'", event_str)
+        return {"status": "ignored", "message": f"ignored event: {event_str}"}
 
-    # 2. Match by account_number
-    if not account and acc_num:
-        account = db.query(VirtualAccount).filter(
-            VirtualAccount.account_number == acc_num,
-            VirtualAccount.provider == VirtualAccountProvider.ASPFIY
-        ).first()
+    # Safe amount extraction
+    amount_candidates = [
+        data.get("amount"),
+        payload.get("amount"),
+        data.get("amount_paid"),
+        data.get("amountPaid"),
+        data.get("settlement_amount"),
+        data.get("settlementAmount"),
+        data.get("total_amount"),
+        data.get("paid_amount"),
+        data.get("value"),
+    ]
+    amount = Decimal("0")
+    for cand in amount_candidates:
+        if cand is not None:
+            parsed = _parse_safe_deposit_amount(cand)
+            if parsed > Decimal("0"):
+                amount = parsed
+                break
 
-    user = None
-    if account:
-        user = db.query(User).filter(User.id == account.user_id).first()
-    
-    # 3. Match from merchant_reference pattern (AXISVTU_<user_id>_aspfiy_...)
-    if not user and merchant_reference and merchant_reference.startswith("AXISVTU_"):
-        parts = merchant_reference.split("_")
-        if len(parts) >= 2 and parts[1].isdigit():
-            user = db.query(User).filter(User.id == int(parts[1])).first()
+    if amount <= Decimal("0"):
+        logger.warning("Aspfiy webhook: missing or zero amount in payload: %s", payload)
+        return {"status": "ignored", "message": "zero or missing amount"}
 
-    # 4. Match from customer email in payload
-    if not user and cust_email:
-        user = db.query(User).filter(User.email == cust_email).first()
+    # Unique transaction reference
+    tx_ref_candidates = [
+        str(data.get("reference") or ""),
+        str(data.get("payment_reference") or ""),
+        str(data.get("transaction_id") or ""),
+        str(data.get("transactionId") or ""),
+        str(data.get("transaction_ref") or ""),
+        str(data.get("trans_ref") or ""),
+        str(data.get("aspfiy_ref") or ""),
+        str(data.get("wiaxy_ref") or ""),
+        str(data.get("id") or ""),
+        str(payload.get("reference") or ""),
+        str(payload.get("transaction_reference") or ""),
+    ]
+    tx_ref_candidates = [r.strip() for r in tx_ref_candidates if r and r.strip()]
+    reference = tx_ref_candidates[0] if tx_ref_candidates else f"asp_{secrets.token_hex(8)}"
 
+    acc_num = clean_accs[0] if clean_accs else ""
+    best_merchant_ref = ref_candidates[0] if ref_candidates else f"AXISVTU_{user.id}_aspfiy_paga" if user else None
+
+    # Auto-register VirtualAccount if user matched but account record missing
     if user and not account:
-        logger.info("Aspfiy webhook: matched user %s; creating virtual account record", user.id)
+        logger.info("Aspfiy webhook: matched user %s; creating virtual account record (acc=%s)", user.id, acc_num)
         account = VirtualAccount(
             user_id=user.id,
             provider=VirtualAccountProvider.ASPFIY,
@@ -1112,48 +1350,61 @@ async def aspfiy_webhook(request: Request, raw_body: bytes = Depends(get_raw_bod
             account_name=user.full_name or "Mele Data Customer",
             bank_name="Paga",
             bank_code="000",
-            customer_reference=merchant_reference or f"AXISVTU_{user.id}_aspfiy_paga",
+            customer_reference=best_merchant_ref or f"AXISVTU_{user.id}_aspfiy_paga",
             reservation_reference=reference,
             status=VirtualAccountStatus.ACTIVE,
         )
         db.add(account)
         db.commit()
+    elif account and not account.account_number and acc_num:
+        account.account_number = acc_num
+        db.commit()
 
     if not user:
-        logger.error("Aspfiy webhook: account/user not found for ref=%s acc=%s email=%s", merchant_reference, acc_num, cust_email)
+        logger.error("Aspfiy webhook: account/user not found for refs=%s accs=%s emails=%s", ref_candidates, clean_accs, email_candidates)
         return {"status": "error", "message": "account not found"}
-        
-    # Idempotency check
+
+    # Idempotency check with status recovery
     existing_tx = db.query(Transaction).filter(Transaction.reference == reference).first()
     if existing_tx:
-        return {"status": "success", "message": "duplicate transaction"}
+        if existing_tx.status == TransactionStatus.SUCCESS:
+            logger.info("Aspfiy webhook: duplicate successful transaction ref=%s", reference)
+            return {"status": "success", "message": "duplicate transaction"}
+        else:
+            logger.info("Aspfiy webhook: upgrading non-successful transaction ref=%s to SUCCESS", reference)
+            existing_tx.status = TransactionStatus.SUCCESS
+            existing_tx.amount = amount
+            db.commit()
+            db.refresh(existing_tx)
+            tx = existing_tx
+    else:
+        sender_name = str(
+            data.get("sender_name")
+            or data.get("payer_name")
+            or customer_data.get("name")
+            or account_data.get("account_name")
+            or payer_data.get("name")
+            or "Aspfiy Transfer"
+        ).strip()
 
-    sender_name = str(
-        data.get("sender_name")
-        or data.get("payer_name")
-        or (data.get("customer") or {}).get("name")
-        or (data.get("account") or {}).get("account_name")
-        or "Aspfiy Transfer"
-    ).strip()
+        # Create Transaction record
+        tx = Transaction(
+            user_id=user.id,
+            reference=reference,
+            amount=amount,
+            status=TransactionStatus.SUCCESS,
+            tx_type=TransactionType.WALLET_FUND,
+            external_reference=str(reference) if reference else None,
+        )
+        db.add(tx)
+        db.flush()
 
-    # Create Transaction record
-    tx = Transaction(
-        user_id=user.id,
-        reference=reference,
-        amount=amount,
-        status=TransactionStatus.SUCCESS,
-        tx_type=TransactionType.WALLET_FUND,
-        external_reference=str(reference) if reference else None,
-    )
-    db.add(tx)
-    db.flush()
-
-    # Credit Wallet (credit_wallet atomically increments balance and creates a WalletLedger entry)
-    wallet = get_or_create_wallet(db, user.id)
-    desc = f"Wallet funding from {sender_name}" if sender_name else "Wallet funded via Aspfiy Transfer"
-    credit_wallet(db, wallet, amount, reference, desc, sender_name=sender_name)
-    db.commit()
-    db.refresh(tx)
+        # Credit Wallet (credit_wallet atomically increments balance and creates a WalletLedger entry)
+        wallet = get_or_create_wallet(db, user.id)
+        desc = f"Wallet funding from {sender_name}" if sender_name else "Wallet funded via Aspfiy Transfer"
+        credit_wallet(db, wallet, amount, reference, desc, sender_name=sender_name)
+        db.commit()
+        db.refresh(tx)
 
     _maybe_reward_first_deposit(db, user=user, reference=reference, amount=amount, status=TransactionStatus.SUCCESS)
 

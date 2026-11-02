@@ -181,3 +181,121 @@ def get_or_create_dedicated_account(email: str, first_name: str, last_name: str,
 
     created = create_dedicated_account(customer_code, settings.paystack_dedicated_preferred_bank)
     return created.get("data") or created
+
+
+_BANK_CACHE = {"timestamp": 0, "banks": []}
+
+POPULAR_NIGERIAN_BANKS = [
+    {"name": "Access Bank", "code": "044", "slug": "access-bank"},
+    {"name": "Guaranty Trust Bank (GTBank)", "code": "058", "slug": "guaranty-trust-bank"},
+    {"name": "Zenith Bank", "code": "057", "slug": "zenith-bank"},
+    {"name": "United Bank for Africa (UBA)", "code": "033", "slug": "united-bank-for-africa"},
+    {"name": "First Bank of Nigeria", "code": "011", "slug": "first-bank-of-nigeria"},
+    {"name": "OPay (Paycom)", "code": "999992", "slug": "paycom"},
+    {"name": "PalmPay", "code": "999991", "slug": "palmpay"},
+    {"name": "Moniepoint MFB", "code": "50515", "slug": "moniepoint-mfb-ng"},
+    {"name": "Kuda Bank", "code": "50211", "slug": "kuda-bank"},
+    {"name": "Fidelity Bank", "code": "070", "slug": "fidelity-bank"},
+    {"name": "Stanbic IBTC Bank", "code": "221", "slug": "stanbic-ibtc-bank"},
+    {"name": "Sterling Bank", "code": "232", "slug": "sterling-bank"},
+    {"name": "Union Bank of Nigeria", "code": "032", "slug": "union-bank-of-nigeria"},
+    {"name": "Wema Bank (ALAT)", "code": "035", "slug": "wema-bank"},
+    {"name": "First City Monument Bank (FCMB)", "code": "214", "slug": "first-city-monument-bank"},
+    {"name": "Polaris Bank", "code": "076", "slug": "polaris-bank"},
+    {"name": "Keystone Bank", "code": "082", "slug": "keystone-bank"},
+    {"name": "Jaiz Bank", "code": "301", "slug": "jaiz-bank"},
+    {"name": "TAJ Bank", "code": "302", "slug": "taj-bank"},
+    {"name": "VFD Microfinance Bank", "code": "566", "slug": "vfd"},
+    {"name": "FairMoney Microfinance Bank", "code": "51318", "slug": "fairmoney-mfb"},
+    {"name": "Rubies MFB", "code": "125", "slug": "rubies-mfb"},
+    {"name": "Carbon", "code": "565", "slug": "carbon"},
+    {"name": "Titan Trust Bank", "code": "102", "slug": "titan-bank"},
+    {"name": "Providus Bank", "code": "101", "slug": "providus-bank"},
+]
+
+
+def list_nigerian_banks() -> list[dict]:
+    """
+    Returns list of Nigerian banks from Paystack, falling back to curated list if API fails.
+    Results are cached in-memory for 1 hour.
+    """
+    global _BANK_CACHE
+    now = time.time()
+    if _BANK_CACHE["banks"] and (now - _BANK_CACHE["timestamp"] < 3600):
+        return _BANK_CACHE["banks"]
+
+    try:
+        resp = _request("GET", "/bank", params={"country": "nigeria", "perPage": 100})
+        banks_data = resp.get("data") or []
+        if banks_data:
+            formatted = [
+                {
+                    "name": b.get("name"),
+                    "code": str(b.get("code") or "").strip(),
+                    "slug": b.get("slug"),
+                    "active": b.get("active", True),
+                }
+                for b in banks_data
+                if b.get("name") and b.get("code")
+            ]
+            formatted.sort(key=lambda x: x["name"])
+            _BANK_CACHE = {"timestamp": now, "banks": formatted}
+            return formatted
+    except Exception:
+        pass
+
+    return POPULAR_NIGERIAN_BANKS
+
+
+def resolve_bank_account(account_number: str, bank_code: str) -> dict:
+    """
+    Resolves account number against bank code using Paystack.
+    Returns: {"account_number": str, "account_name": str, "bank_id": int}
+    """
+    clean_acc = str(account_number or "").strip()
+    clean_code = str(bank_code or "").strip()
+    resp = _request("GET", "/bank/resolve", params={"account_number": clean_acc, "bank_code": clean_code})
+    data = resp.get("data") or {}
+    if not data.get("account_name"):
+        raise PaystackError("Could not resolve account name. Please verify bank and account number.")
+    return data
+
+
+def create_transfer_recipient(name: str, account_number: str, bank_code: str, currency: str = "NGN") -> dict:
+    """
+    Creates a Paystack transfer recipient (NUBAN).
+    Returns dict containing 'recipient_code' (e.g. RCP_...).
+    """
+    payload = {
+        "type": "nuban",
+        "name": str(name).strip(),
+        "account_number": str(account_number).strip(),
+        "bank_code": str(bank_code).strip(),
+        "currency": currency,
+    }
+    resp = _request("POST", "/transferrecipient", payload=payload)
+    return resp.get("data") or resp
+
+
+def initiate_transfer(amount_kobo: int, recipient_code: str, reference: str, reason: str = "Wallet withdrawal") -> dict:
+    """
+    Initiates a transfer from Paystack balance to a recipient.
+    """
+    payload = {
+        "source": "balance",
+        "amount": amount_kobo,
+        "recipient": recipient_code,
+        "reference": reference,
+        "reason": reason,
+    }
+    resp = _request("POST", "/transfer", payload=payload)
+    return resp.get("data") or resp
+
+
+def verify_paystack_transfer(reference: str) -> dict:
+    """
+    Verifies transfer status via Paystack API.
+    """
+    resp = _request("GET", f"/transfer/verify/{reference}")
+    return resp.get("data") or resp
+
