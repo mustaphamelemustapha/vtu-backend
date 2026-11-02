@@ -503,24 +503,10 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
 
     wallet = get_or_create_wallet(db, user.id, for_update=True)
     if Decimal(wallet.balance) < price:
-        try:
-            failed_tx = Transaction(
-                user_id=user.id,
-                amount=price,
-                tx_type=TransactionType.DATA,
-                status=TransactionStatus.FAILED,
-                reference=reference,
-                network=plan.network,
-                recipient_phone=phone,
-                data_plan_code=plan.plan_code,
-                provider=plan.provider,
-                failure_reason=f"Insufficient balance (Available: ₦{Decimal(wallet.balance):,.2f}, Required: ₦{price:,.2f})"
-            )
-            db.add(failed_tx)
-            db.commit()
-        except Exception:
-            db.rollback()
-        raise HTTPException(status_code=400, detail=f"Insufficient wallet balance. (Available: ₦{Decimal(wallet.balance):,.2f}, Required: ₦{price:,.2f})")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient wallet balance. (Available: ₦{Decimal(wallet.balance):,.2f}, Required: ₦{price:,.2f}). Please fund your wallet to continue."
+        )
 
     existing = db.query(Transaction).filter(
         Transaction.user_id == user.id,
