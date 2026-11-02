@@ -1069,6 +1069,7 @@ def list_wallets(
     admin=Depends(require_admin),
     db: Session = Depends(get_db),
     q: Optional[str] = None,
+    role: Optional[str] = None,
     page: int = 1,
     page_size: int = 50,
 ):
@@ -1080,8 +1081,15 @@ def list_wallets(
     query = (
         db.query(User, Wallet)
         .outerjoin(Wallet, Wallet.user_id == User.id)
-        .filter(User.role != UserRole.ADMIN)
     )
+
+    if role == "admin":
+        query = query.filter(User.role == UserRole.ADMIN)
+    elif role in ("customer", "user"):
+        query = query.filter(User.role != UserRole.ADMIN)
+    elif role == "agent":
+        query = query.filter(User.role == UserRole.AGENT)
+
     if q:
         needle = f"%{q.strip()}%"
         query = query.filter(
@@ -1101,33 +1109,49 @@ def list_wallets(
     )
 
     from sqlalchemy import func
-    balance_query = (
+
+    # Platform-wide overall totals
+    user_bal_res = (
         db.query(func.sum(Wallet.balance))
         .select_from(User)
         .outerjoin(Wallet, Wallet.user_id == User.id)
         .filter(User.role != UserRole.ADMIN)
+        .scalar()
     )
-    if q:
-        needle = f"%{q.strip()}%"
-        balance_query = balance_query.filter(
-            or_(
-                User.email.ilike(needle),
-                User.full_name.ilike(needle),
-                User.phone_number.ilike(needle),
-            )
-        )
-    total_balance_res = balance_query.scalar()
-    aggregate_balance = float(total_balance_res) if total_balance_res is not None else 0.0
+    users_balance = float(user_bal_res) if user_bal_res is not None else 0.0
+
+    admin_bal_res = (
+        db.query(func.sum(Wallet.balance))
+        .select_from(User)
+        .outerjoin(Wallet, Wallet.user_id == User.id)
+        .filter(User.role == UserRole.ADMIN)
+        .scalar()
+    )
+    admins_balance = float(admin_bal_res) if admin_bal_res is not None else 0.0
+
+    overall_bal_res = (
+        db.query(func.sum(Wallet.balance))
+        .select_from(User)
+        .outerjoin(Wallet, Wallet.user_id == User.id)
+        .scalar()
+    )
+    aggregate_balance = float(overall_bal_res) if overall_bal_res is not None else 0.0
+
+    total_users_count = db.query(User).filter(User.role != UserRole.ADMIN).count()
+    total_admins_count = db.query(User).filter(User.role == UserRole.ADMIN).count()
 
     items = []
     for user, wallet in rows:
         balance = float(wallet.balance) if wallet and wallet.balance is not None else 0.0
+        role_str = user.role.value if hasattr(user.role, 'value') else str(user.role)
         items.append(
             {
                 "user_id": user.id,
                 "full_name": user.full_name,
                 "email": user.email,
                 "phone_number": user.phone_number,
+                "role": role_str,
+                "is_admin": user.role == UserRole.ADMIN,
                 "is_active": user.is_active,
                 "wallet_balance": round(balance, 2),
                 "wallet_locked": bool(wallet.is_locked) if wallet else False,
@@ -1141,6 +1165,10 @@ def list_wallets(
         "page": page,
         "page_size": page_size,
         "aggregate_balance": round(aggregate_balance, 2),
+        "users_balance": round(users_balance, 2),
+        "admins_balance": round(admins_balance, 2),
+        "total_users_count": total_users_count,
+        "total_admins_count": total_admins_count,
     }
 
 
