@@ -1,6 +1,6 @@
 import os
 from typing import Optional
-from fastapi import Request
+from starlette.requests import Request
 from app.core.config import get_settings
 
 settings = get_settings()

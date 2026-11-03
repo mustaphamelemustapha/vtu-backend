@@ -1,3 +1,4 @@
+
 import hashlib
 import httpx
 import logging
@@ -660,7 +661,9 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                     network_id=network_key,
                     phone=phone,
                     plan_id=clean_plan_id,
-                    client_request_id=target_ref
+                    client_request_id=target_ref,
+                    data_size=plan_data_size,
+                    plan_name=plan_plan_name,
                 )
                 tx_provider = "meledata"
 
@@ -919,6 +922,20 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                 db2.commit()
             except Exception as ref_exc:
                 logger.error("Failed to record referral activity: %s", ref_exc)
+
+            try:
+                from app.services.commissions import record_agent_data_commission
+                record_agent_data_commission(
+                    db2,
+                    user=user,
+                    amount=price - partial_refund_amount,
+                    reference=reference,
+                    network=plan_network,
+                    plan_name=plan_plan_name,
+                    request=request,
+                )
+            except Exception as comm_exc:
+                logger.warning("Failed to record agent data commission for %s: %s", reference, comm_exc)
 
         from app.services.push_notification import PushNotificationService
         if partial_refund_amount > Decimal("0") and fcm_token:

@@ -3,7 +3,11 @@ import json
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import AnyHttpUrl, BaseSettings, PostgresDsn
+from pydantic import AnyHttpUrl, PostgresDsn
+try:
+    from pydantic_settings import BaseSettings
+except ImportError:
+    from pydantic import BaseSettings
 
 
 def parse_cors_origins(value: str) -> list[str]:
@@ -32,8 +36,9 @@ class Settings(BaseSettings):
 
     # Security
     secret_key: str = ""
-    access_token_expire_minutes: int = 144000
-    refresh_token_expire_days: int = 7
+    legacy_secret_keys: str = ""  # Comma-separated fallback secret keys (e.g. from Render or legacy migrations)
+    access_token_expire_minutes: int = 525600  # 1 full year (365 days)
+    refresh_token_expire_days: int = 365
     password_bcrypt_rounds: int = 12
     pin_bcrypt_rounds: int = 12
     pin_max_failed_attempts: int = 5
@@ -82,7 +87,7 @@ class Settings(BaseSettings):
     aspfiy_secret_key: str = ""
     aspfiy_base_url: str = "https://api-v1.aspfiy.com"
     aspfiy_enabled: bool = False
-    aspfiy_webhook_url: str = "https://vtu-backend-8gsi.onrender.com/api/v1/webhooks/aspfiy"
+    aspfiy_webhook_url: str = "https://api.meledata.ng/api/v1/webhooks/aspfiy"
 
     # Amigo API
     amigo_base_url: str = "https://amigo.ng/api"
@@ -150,6 +155,10 @@ class Settings(BaseSettings):
     mzdata_base_url: str = "https://mzdata-1.onrender.com/api/v1"
     mzdata_api_key: str = ""
 
+    # MELE DATA API (Airtime & Data provider)
+    meledata_base_url: str = "https://api.meledata.ng/api/v1"
+    meledata_api_key: str = ""
+
     # Telecom Abode API
     telecom_abode_base_url: str = "https://telecomabode.com.ng/api"
     telecom_abode_api_key: str = ""
@@ -173,7 +182,7 @@ class Settings(BaseSettings):
 
     # Email (password reset)
     email_provider: str = "console"  # console|resend|smtp|brevo
-    email_from: str = "MELE DATA <mmtechglobe@gmail.com>"
+    email_from: str = "KULLOMA DATA <no-reply@axisvtu.local>"
 
     # Resend
     resend_api_key: str = ""

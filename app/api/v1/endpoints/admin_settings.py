@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
@@ -54,3 +54,36 @@ def update_settings(payload: SystemSettingsUpdate, db: Session = Depends(get_db)
     db.commit()
     db.refresh(settings)
     return settings
+
+
+class CommissionSettingsUpdate(BaseModel):
+    ambassador_deposit_percent: Optional[float] = None
+    agent_data_commission_percent: Optional[float] = None
+    enable_agent_data_commission: Optional[bool] = None
+
+
+@router.get("/commissions")
+def get_commissions(
+    request: Request,
+    db: Session = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    from app.services.commissions import get_brand_commission_config
+    return get_brand_commission_config(db, request=request)
+
+
+@router.put("/commissions")
+def update_commissions(
+    payload: CommissionSettingsUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    from app.services.commissions import update_brand_commission_config
+    return update_brand_commission_config(
+        db,
+        ambassador_deposit_percent=payload.ambassador_deposit_percent,
+        agent_data_commission_percent=payload.agent_data_commission_percent,
+        enable_agent_data_commission=payload.enable_agent_data_commission,
+    )
+

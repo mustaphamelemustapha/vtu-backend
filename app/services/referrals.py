@@ -199,6 +199,7 @@ def record_referral_first_deposit_reward(
     transaction_reference: str,
     deposit_amount: Decimal | int | float | str,
     transaction_status: str,
+    request: Request | None = None,
 ) -> Referral | None:
     referral = _get_or_create_referral_row(db, referred_user=user)
     if not referral:
@@ -254,7 +255,12 @@ def record_referral_first_deposit_reward(
     if referrer:
         if referrer.role == UserRole.AMBASSADOR:
             if not referral.is_ten_percent_paid:
-                ambassador_reward = (amount * Decimal("0.10")).quantize(Decimal("0.01"))
+                from app.services.commissions import get_brand_commission_config
+                cfg = get_brand_commission_config(db, request=request)
+                amb_rate = cfg["ambassador_deposit_rate"]
+                amb_pct = cfg["ambassador_deposit_percent"]
+                amb_pct_str = f"{amb_pct:.0f}%" if float(amb_pct).is_integer() else f"{amb_pct:.1f}%"
+                ambassador_reward = (amount * amb_rate).quantize(Decimal("0.01"))
                 _grant_reward(
                     db,
                     referral=referral,
@@ -262,7 +268,7 @@ def record_referral_first_deposit_reward(
                     first_deposit_amount=amount,
                     reward_amount=ambassador_reward,
                     source_reference=reference,
-                    description="Ambassador 10% Onboarding Commission",
+                    description=f"Ambassador {amb_pct_str} Onboarding Commission",
                 )
                 referral.is_ten_percent_paid = True
         else:

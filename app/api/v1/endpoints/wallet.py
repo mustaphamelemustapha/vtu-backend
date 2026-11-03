@@ -164,7 +164,7 @@ def _safe_ref(prefix: str, value: str) -> str:
     return cleaned[:64] if len(cleaned) <= 64 else cleaned[:64]
 
 
-def _maybe_reward_first_deposit(db: Session, *, user: User, reference: str, amount: Decimal, status: TransactionStatus) -> None:
+def _maybe_reward_first_deposit(db: Session, *, user: User, reference: str, amount: Decimal, status: TransactionStatus, request: Request | None = None) -> None:
     try:
         record_referral_first_deposit_reward(
             db,
@@ -172,6 +172,7 @@ def _maybe_reward_first_deposit(db: Session, *, user: User, reference: str, amou
             transaction_reference=reference,
             deposit_amount=amount,
             transaction_status=status.value if hasattr(status, "value") else str(status),
+            request=request,
         )
     except Exception as exc:
         db.rollback()
