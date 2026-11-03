@@ -1516,14 +1516,18 @@ def withdraw_to_bank(
         )
         transfer_data = transfer_res.get("data") or transfer_res
         tx.external_reference = str(transfer_data.get("transfer_code") or transfer_data.get("id") or "")
-        if transfer_data.get("status") == "success":
+        t_status = str(transfer_data.get("status") or "").lower()
+        if t_status == "success":
             tx.status = TransactionStatus.SUCCESS
+        elif t_status in ("pending", "processing"):
+            tx.status = TransactionStatus.PENDING
         db.commit()
     except Exception as exc:
         # Immediate rollback & refund on Paystack initiation failure
         wallet.balance += total_debit
         tx.status = TransactionStatus.FAILED
-        tx.failure_reason = str(exc)[:255]
+        err_msg = str(exc)
+        tx.failure_reason = err_msg[:255]
         refund_ledger = WalletLedger(
             wallet_id=wallet.id,
             amount=total_debit,
@@ -1534,9 +1538,17 @@ def withdraw_to_bank(
         db.add(refund_ledger)
         db.commit()
         logging.getLogger(__name__).error("Paystack withdrawal error: %s", exc)
+
+        if "balance is not enough" in err_msg.lower():
+            clean_detail = "Payout channel currently has insufficient liquidity. Please top up your Paystack Transfer Balance or try again shortly."
+        elif "otp" in err_msg.lower():
+            clean_detail = "Transfer requires OTP approval. Please disable transfer OTP in your Paystack Dashboard settings to allow automated payouts."
+        else:
+            clean_detail = f"Withdrawal could not be processed: {err_msg}"
+
         raise HTTPException(
             status_code=400,
-            detail=f"Withdrawal could not be processed: {exc}"
+            detail=clean_detail
         )
 
     return BankWithdrawalResponse(

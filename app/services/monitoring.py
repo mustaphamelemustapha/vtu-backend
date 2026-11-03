@@ -34,6 +34,14 @@ def _fetch_single_provider_balance(db: Session, prov: IntegrationProvider) -> fl
     base_url = (prov.base_url or "").strip().rstrip("/")
     api_key = (prov.api_key or "").strip()
 
+    # 0. Paystack
+    if identifier in ("paystack", "paystack_transfer"):
+        try:
+            from app.services.paystack import get_paystack_balance
+            return float(get_paystack_balance())
+        except Exception as e:
+            return f"Error: {e}"
+
     # 1. SMEPlug
     if identifier == "smeplug":
         if api_key:

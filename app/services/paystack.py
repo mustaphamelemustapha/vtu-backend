@@ -299,3 +299,20 @@ def verify_paystack_transfer(reference: str) -> dict:
     resp = _request("GET", f"/transfer/verify/{reference}")
     return resp.get("data") or resp
 
+
+def get_paystack_balance() -> float:
+    """
+    Fetches the Paystack balance for transfers (in NGN).
+    Paystack returns amount in kobo, so we divide by 100.
+    """
+    try:
+        resp = _request("GET", "/balance")
+        data = resp.get("data")
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and item.get("currency") == "NGN":
+                    return float(item.get("balance", 0)) / 100.0
+        return 0.0
+    except Exception as exc:
+        raise PaystackError(f"Failed to fetch Paystack balance: {exc}")
+
