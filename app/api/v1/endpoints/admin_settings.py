@@ -87,3 +87,14 @@ def update_commissions(
         enable_agent_data_commission=payload.enable_agent_data_commission,
     )
 
+
+@router.post("/commissions/reconcile-agents")
+def reconcile_commissions(
+    request: Request,
+    db: Session = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    from app.services.commissions import reconcile_missing_agent_commissions
+    reconciled = reconcile_missing_agent_commissions(db, request=request)
+    return {"status": "ok", "count": len(reconciled), "items": reconciled}
+

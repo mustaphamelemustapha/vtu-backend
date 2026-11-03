@@ -204,3 +204,63 @@ def record_agent_data_commission(
             logger.warning("Failed to send agent commission push notification: %s", fcm_err)
 
     return comm_amount
+
+
+def reconcile_missing_agent_commissions(
+    db: Session,
+    limit: int = 100,
+    request: Optional[Request] = None,
+) -> list[dict]:
+    """
+    Finds recent successful data transactions made by agents that missed commission
+    (e.g. before this feature was deployed), and credits them retroactively.
+    """
+    cfg = get_brand_commission_config(db, request=request)
+    if not cfg["enable_agent_data_commission"] or cfg["agent_data_commission_rate"] <= Decimal("0"):
+        return []
+
+    recent_txs = (
+        db.query(Transaction)
+        .join(User, Transaction.user_id == User.id)
+        .filter(
+            Transaction.tx_type == TransactionType.DATA,
+            Transaction.status == TransactionStatus.SUCCESS,
+            Transaction.amount > 0,
+        )
+        .order_by(Transaction.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+    credited = []
+    for tx in recent_txs:
+        role_str = (tx.user.role.value if hasattr(tx.user.role, "value") else str(tx.user.role or "")).strip().lower()
+        if role_str not in ("agent", "reseller") and not role_str.endswith(".agent"):
+            continue
+
+        comm_ref = f"COMM_{tx.reference}"
+        already_has = db.query(Transaction).filter(Transaction.reference == comm_ref).first()
+        if already_has:
+            continue
+
+        comm_earned = record_agent_data_commission(
+            db,
+            user=tx.user,
+            amount=Decimal(str(tx.amount)),
+            reference=tx.reference,
+            network=tx.network or "DATA",
+            plan_name=tx.data_plan_code or "Data Plan",
+            request=request,
+        )
+        if comm_earned:
+            credited.append({
+                "user_id": tx.user_id,
+                "email": tx.user.email,
+                "amount": float(comm_earned),
+                "reference": comm_ref,
+                "tx_reference": tx.reference,
+            })
+
+    if credited:
+        logger.info("Reconciled %d missing agent data commissions.", len(credited))
+    return credited
