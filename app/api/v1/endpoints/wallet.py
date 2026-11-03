@@ -1,6 +1,8 @@
 import secrets
 import re
 import logging
+import hashlib
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -1551,10 +1553,20 @@ def withdraw_to_bank(
             detail=clean_detail
         )
 
+    provider_ref = str(transfer_data.get("transfer_code") or transfer_data.get("id") or "")
+    now_dt = datetime.now(timezone.utc)
+    bank_digits = "".join(c for c in str(payload.bank_code or "") if c.isdigit())[:3].zfill(3)
+    time_digits = now_dt.strftime("%y%m%d%H%M%S")
+    seq_digits = str(int(hashlib.md5(transfer_ref.encode()).hexdigest(), 16))[:12].zfill(12)
+    session_id = f"999{bank_digits}{time_digits}{seq_digits}"
+
     return BankWithdrawalResponse(
         status=tx.status.value,
         message=f"Withdrawal of ₦{payload.amount:,.2f} to {payload.account_name} ({payload.bank_name}) initiated successfully.",
         reference=transfer_ref,
+        provider_reference=provider_ref or None,
+        session_id=session_id,
+        created_at=now_dt.isoformat(),
         amount=payload.amount,
         fee=fee,
         total_debited=total_debit,

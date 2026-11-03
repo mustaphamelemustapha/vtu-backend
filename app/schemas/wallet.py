@@ -89,6 +89,9 @@ class BankWithdrawalResponse(BaseModel):
     status: str
     message: str
     reference: str
+    provider_reference: str | None = None
+    session_id: str | None = None
+    created_at: str | None = None
     amount: Decimal
     fee: Decimal
     total_debited: Decimal
