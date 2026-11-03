@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import Optional
 from starlette.requests import Request
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 
 from app.core.tenant import get_tenant_brand
 from app.models.user import User, UserRole
@@ -43,6 +44,18 @@ def get_brand_commission_config(db: Session, request: Optional[Request] = None, 
     Checks DB (system_settings) overrides first; falls back to brand-specific defaults.
     """
     effective_brand = (brand or get_tenant_brand(request)).strip().lower()
+    if effective_brand == "default":
+        # Check if database records indicate the tenant brand
+        try:
+            if db.query(User).filter(User.email.ilike("%kulloma%")).first():
+                effective_brand = "kullomadata"
+            elif db.query(User).filter(User.email.ilike("%mzdata%")).first():
+                effective_brand = "mzdata"
+            elif db.query(User).filter(User.email.ilike("%meledata%")).first():
+                effective_brand = "meledata"
+        except Exception:
+            pass
+
     defaults = BRAND_COMMISSION_DEFAULTS.get(effective_brand) or BRAND_COMMISSION_DEFAULTS["default"]
 
     # 1. Ambassador Deposit Commission %
@@ -216,15 +229,25 @@ def reconcile_missing_agent_commissions(
     (e.g. before this feature was deployed), and credits them retroactively.
     """
     cfg = get_brand_commission_config(db, request=request)
+    logger.info("Reconciling agent commissions with config: %s", cfg)
     if not cfg["enable_agent_data_commission"] or cfg["agent_data_commission_rate"] <= Decimal("0"):
+        logger.info("Agent data commission is not enabled for brand '%s', skipping reconcile.", cfg.get("brand"))
         return []
 
     recent_txs = (
         db.query(Transaction)
         .join(User, Transaction.user_id == User.id)
         .filter(
-            Transaction.tx_type == TransactionType.DATA,
-            Transaction.status == TransactionStatus.SUCCESS,
+            or_(
+                Transaction.tx_type == TransactionType.DATA,
+                Transaction.tx_type == "data",
+                Transaction.tx_type == "DATA",
+            ),
+            or_(
+                Transaction.status == TransactionStatus.SUCCESS,
+                Transaction.status == "success",
+                Transaction.status == "SUCCESS",
+            ),
             Transaction.amount > 0,
         )
         .order_by(Transaction.id.desc())
@@ -232,6 +255,7 @@ def reconcile_missing_agent_commissions(
         .all()
     )
 
+    logger.info("Found %d recent successful data transactions to evaluate for agent cashback.", len(recent_txs))
     credited = []
     for tx in recent_txs:
         role_str = (tx.user.role.value if hasattr(tx.user.role, "value") else str(tx.user.role or "")).strip().lower()
@@ -260,6 +284,9 @@ def reconcile_missing_agent_commissions(
                 "reference": comm_ref,
                 "tx_reference": tx.reference,
             })
+            logger.info("Reconciled ₦%s agent cashback to %s for tx %s", comm_earned, tx.user.email, tx.reference)
+
+    logger.info("Reconciliation complete. Credited %d agent commissions.", len(credited))
 
     if credited:
         logger.info("Reconciled %d missing agent data commissions.", len(credited))
