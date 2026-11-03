@@ -69,6 +69,18 @@ class LoginRequest(BaseModel):
     _password_len = validator("password", allow_reuse=True)(_validate_password_length)
 
 
+class PinLoginRequest(BaseModel):
+    identifier: str
+    pin: str
+
+    @validator("pin", pre=True, always=True)
+    def _validate_pin(cls, v):
+        pin_str = "".join(ch for ch in str(v or "") if ch.isdigit())
+        if len(pin_str) != 4:
+            raise ValueError("PIN must be exactly 4 digits")
+        return pin_str
+
+
 class LookupRequest(BaseModel):
     identifier: str
 
