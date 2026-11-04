@@ -230,65 +230,99 @@ def _compute_analytics(admin, db: Session):
             "tx_count": 0
         })
 
-    total_revenue = db.query(func.sum(Transaction.amount)).filter(
-        Transaction.status == TransactionStatus.SUCCESS,
-        Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
-    ).scalar() or 0
-    
-    # Calculate total cost estimate across ALL transactions
-    total_cost_estimate = (
-        db.query(func.sum(func.coalesce(DataPlan.base_price, Transaction.amount)))
-        .select_from(Transaction)
-        .outerjoin(DataPlan, Transaction.data_plan_code == DataPlan.plan_code)
-        .filter(
+    total_revenue = 0
+    total_cost_estimate = 0
+    data_revenue = 0
+    data_cost_estimate = 0
+    try:
+        total_revenue = db.query(func.sum(Transaction.amount)).filter(
             Transaction.status == TransactionStatus.SUCCESS,
             Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
+        ).scalar() or 0
+    except Exception as exc:
+        logger.warning(f"Error computing total_revenue: {exc}")
+        db.rollback()
+
+    try:
+        total_cost_estimate = (
+            db.query(func.sum(func.coalesce(DataPlan.base_price, Transaction.amount)))
+            .select_from(Transaction)
+            .outerjoin(DataPlan, Transaction.data_plan_code == DataPlan.plan_code)
+            .filter(
+                Transaction.status == TransactionStatus.SUCCESS,
+                Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
+            )
+            .scalar()
+            or 0
         )
-        .scalar()
-        or 0
-    )
-    
-    data_revenue = (
-        db.query(func.sum(Transaction.amount))
-        .filter(
-            Transaction.status == TransactionStatus.SUCCESS,
-            Transaction.tx_type == TransactionType.DATA,
+    except Exception as exc:
+        logger.warning(f"Error computing total_cost_estimate: {exc}")
+        db.rollback()
+
+    try:
+        data_revenue = (
+            db.query(func.sum(Transaction.amount))
+            .filter(
+                Transaction.status == TransactionStatus.SUCCESS,
+                Transaction.tx_type == TransactionType.DATA,
+            )
+            .scalar()
+            or 0
         )
-        .scalar()
-        or 0
-    )
-    # Estimate cost from the current plan catalog base_price (not historical).
-    data_cost_estimate = (
-        db.query(func.sum(func.coalesce(DataPlan.base_price, Transaction.amount)))
-        .select_from(Transaction)
-        .outerjoin(DataPlan, Transaction.data_plan_code == DataPlan.plan_code)
-        .filter(
-            Transaction.status == TransactionStatus.SUCCESS,
-            Transaction.tx_type == TransactionType.DATA,
+    except Exception as exc:
+        logger.warning(f"Error computing data_revenue: {exc}")
+        db.rollback()
+
+    try:
+        data_cost_estimate = (
+            db.query(func.sum(func.coalesce(DataPlan.base_price, Transaction.amount)))
+            .select_from(Transaction)
+            .outerjoin(DataPlan, Transaction.data_plan_code == DataPlan.plan_code)
+            .filter(
+                Transaction.status == TransactionStatus.SUCCESS,
+                Transaction.tx_type == TransactionType.DATA,
+            )
+            .scalar()
+            or 0
         )
-        .scalar()
-        or 0
-    )
+    except Exception as exc:
+        logger.warning(f"Error computing data_cost_estimate: {exc}")
+        db.rollback()
+
     gross_profit_estimate = float(total_revenue or 0) - float(total_cost_estimate or 0)
     gross_margin_pct = (float(gross_profit_estimate) / float(total_revenue) * 100.0) if float(total_revenue) else 0.0
-    total_users = db.query(func.count(User.id)).scalar() or 0
-    active_users = db.query(func.count(User.id)).filter(User.is_active == True).scalar() or 0
 
-    today_successful_tx = db.query(func.count(Transaction.id)).filter(
-        Transaction.status == TransactionStatus.SUCCESS,
-        Transaction.created_at >= day_start_utc,
-        Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
-    ).scalar() or 0
-    today_failed_tx = db.query(func.count(Transaction.id)).filter(
-        Transaction.status.in_([TransactionStatus.FAILED, TransactionStatus.REFUNDED]),
-        Transaction.created_at >= day_start_utc,
-        Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
-    ).scalar() or 0
-    today_pending_tx = db.query(func.count(Transaction.id)).filter(
-        Transaction.status == TransactionStatus.PENDING,
-        Transaction.created_at >= day_start_utc,
-        Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
-    ).scalar() or 0
+    total_users = 0
+    active_users = 0
+    try:
+        total_users = db.query(func.count(User.id)).scalar() or 0
+        active_users = db.query(func.count(User.id)).filter(User.is_active == True).scalar() or 0
+    except Exception as exc:
+        logger.warning(f"Error computing total_users: {exc}")
+        db.rollback()
+
+    today_successful_tx = 0
+    today_failed_tx = 0
+    today_pending_tx = 0
+    try:
+        today_successful_tx = db.query(func.count(Transaction.id)).filter(
+            Transaction.status == TransactionStatus.SUCCESS,
+            Transaction.created_at >= day_start_utc,
+            Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
+        ).scalar() or 0
+        today_failed_tx = db.query(func.count(Transaction.id)).filter(
+            Transaction.status.in_([TransactionStatus.FAILED, TransactionStatus.REFUNDED]),
+            Transaction.created_at >= day_start_utc,
+            Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
+        ).scalar() or 0
+        today_pending_tx = db.query(func.count(Transaction.id)).filter(
+            Transaction.status == TransactionStatus.PENDING,
+            Transaction.created_at >= day_start_utc,
+            Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
+        ).scalar() or 0
+    except Exception as exc:
+        logger.warning(f"Error computing today tx counts: {exc}")
+        db.rollback()
 
     if inspect(db.bind).has_table("service_transactions"):
         today_successful_st = db.query(func.count(ServiceTransaction.id)).filter(
@@ -563,7 +597,54 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
             "promo_mtn_1gb_active": False,
             "profit_period_estimates": {},
             "monthly_trends": [],
+            "error_detail": str(exc),
         }
+
+@router.get("/db-status")
+def db_status(admin=Depends(require_admin), db: Session = Depends(get_db)):
+    from sqlalchemy import text, inspect
+    status_info = {}
+    try:
+        status_info["dialect"] = db.bind.dialect.name
+        try:
+            status_info["user_count"] = db.query(func.count(User.id)).scalar()
+        except Exception as e:
+            db.rollback()
+            status_info["user_count_error"] = str(e)
+            
+        try:
+            status_info["transaction_count"] = db.query(func.count(Transaction.id)).scalar()
+        except Exception as e:
+            db.rollback()
+            status_info["transaction_count_error"] = str(e)
+            
+        try:
+            inspector = inspect(db.bind)
+            user_cols = [c["name"] for c in inspector.get_columns("users")]
+            status_info["users_has_brand"] = "brand" in user_cols
+            status_info["users_columns"] = user_cols
+        except Exception as e:
+            status_info["inspector_error"] = str(e)
+            
+        try:
+            u_sample = db.execute(text("SELECT id, email, role, brand FROM users ORDER BY id DESC LIMIT 3")).fetchall()
+            status_info["users_sample"] = [dict(row._mapping) for row in u_sample]
+        except Exception as e:
+            db.rollback()
+            status_info["sample_error"] = str(e)
+
+        try:
+            tx_sample = db.execute(text("SELECT id, user_id, amount, status, tx_type, created_at FROM transactions ORDER BY id DESC LIMIT 3")).fetchall()
+            status_info["tx_sample"] = [dict(row._mapping) for row in tx_sample]
+        except Exception as e:
+            db.rollback()
+            status_info["tx_sample_error"] = str(e)
+
+        status_info["ok"] = True
+    except Exception as fatal:
+        status_info["fatal_error"] = str(fatal)
+        status_info["ok"] = False
+    return status_info
 
 def _query_all_transactions(
     admin,
