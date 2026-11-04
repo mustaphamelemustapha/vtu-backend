@@ -126,6 +126,12 @@ def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)
     if not user.is_active:
         raise HTTPException(status_code=403, detail="User is inactive")
 
+    from app.core.tenant import get_tenant_brand
+    t_brand = get_tenant_brand(request)
+    if t_brand and t_brand != "default" and not user.brand:
+        user.brand = t_brand
+        db.commit()
+
     return TokenPair(
         access_token=create_access_token(str(user.id), user.role.value),
         refresh_token=create_refresh_token(str(user.id), user.role.value),
@@ -152,6 +158,11 @@ def pin_login(request: Request, payload: PinLoginRequest, db: Session = Depends(
     if not ok:
         db.commit()
         raise HTTPException(status_code=401, detail=err_msg or "Incorrect PIN, try again.")
+
+    from app.core.tenant import get_tenant_brand
+    t_brand = get_tenant_brand(request)
+    if t_brand and t_brand != "default" and not user.brand:
+        user.brand = t_brand
 
     db.commit()
     return TokenPair(

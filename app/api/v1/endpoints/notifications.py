@@ -104,11 +104,10 @@ def _get_tokens_for_brand(db: Session, target_brand: str) -> list[str]:
         query = db.query(User.fcm_token).filter(
             User.fcm_token.isnot(None),
             User.fcm_token != "",
-            and_(
-                or_(User.brand == "meledata", User.brand.is_(None), User.brand == ""),
-                ~User.email.ilike("%kulloma%"),
-                ~User.email.ilike("%mzdata%"),
-            ),
+            User.brand != "kullomadata",
+            User.brand != "mzdata",
+            ~User.email.ilike("%kulloma%"),
+            ~User.email.ilike("%mzdata%"),
         )
     elif "mz" in norm:
         query = db.query(User.fcm_token).filter(

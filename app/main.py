@@ -1061,6 +1061,7 @@ def _ensure_user_brand_column() -> None:
                 logging.getLogger(__name__).info("Added users.brand column.")
             # Auto-align brands based on email domains if brand is currently default/null
             conn.execute(text("UPDATE users SET brand = 'kullomadata' WHERE (brand IS NULL OR brand = 'meledata' OR brand = '') AND email ILIKE '%kulloma%'"))
+            conn.execute(text("UPDATE users SET brand = 'kullomadata' WHERE id IN (SELECT DISTINCT user_id FROM transactions WHERE reference LIKE 'COMM_DATA_%')"))
             conn.execute(text("UPDATE users SET brand = 'mzdata' WHERE (brand IS NULL OR brand = 'meledata' OR brand = '') AND email ILIKE '%mzdata%'"))
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure users.brand column: %s", exc)

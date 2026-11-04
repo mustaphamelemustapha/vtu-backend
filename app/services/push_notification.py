@@ -146,11 +146,30 @@ class PushNotificationService:
     def get_app(cls, brand: str = None):
         cls._initialize()
         norm = (brand or "").strip().lower()
-        if "kulloma" in norm and "kullomadata" in cls._apps:
-            return cls._apps["kullomadata"]
-        if "mele" in norm and "meledata" in cls._apps:
-            return cls._apps["meledata"]
-        return cls._apps.get("default") or cls._apps.get("kullomadata") or cls._apps.get("meledata")
+        if "kulloma" in norm:
+            if "kullomadata" in cls._apps:
+                return cls._apps["kullomadata"]
+            default_app = cls._apps.get("default")
+            if default_app and getattr(default_app, "project_id", "") == "kullomadata-c6c44":
+                return default_app
+            logger.warning("get_app: Kulloma Data requested but 'kullomadata' Firebase app is not loaded.")
+            return None
+
+        if "mele" in norm or "axis" in norm:
+            if "meledata" in cls._apps:
+                return cls._apps["meledata"]
+            default_app = cls._apps.get("default")
+            if default_app and getattr(default_app, "project_id", "") == "axisvtu":
+                return default_app
+            logger.warning("get_app: Mele Data requested but 'meledata' Firebase app is not loaded.")
+            return None
+
+        if "mz" in norm:
+            if "mzdata" in cls._apps:
+                return cls._apps["mzdata"]
+            return None
+
+        return cls._apps.get("default")
 
     @classmethod
     def send_push_notification(cls, token: str, title: str, body: str, data: dict = None, sound_type: str = "default", brand: str = None) -> bool:
@@ -219,21 +238,16 @@ class PushNotificationService:
                 apns=apns_config,
             )
             app = cls.get_app(brand)
+            if not app:
+                logger.warning(f"No Firebase app available for brand '{brand}'. Push skipped.")
+                return False
+
             try:
                 response = messaging.send(message, app=app)
-                logger.info(f"Successfully sent FCM message: {response}")
+                logger.info(f"Successfully sent FCM message to {brand or 'default'} app: {response}")
                 return True
             except Exception as send_err:
-                # If mismatch, attempt other initialized apps
-                for name, alt_app in cls._apps.items():
-                    if alt_app != app:
-                        try:
-                            response = messaging.send(message, app=alt_app)
-                            logger.info(f"Successfully sent FCM message via alt app '{name}': {response}")
-                            return True
-                        except Exception:
-                            pass
-                logger.error(f"Error sending FCM message: {send_err}")
+                logger.error(f"Error sending FCM message via '{brand or 'default'}' app: {send_err}")
                 return False
         except Exception as e:
             logger.error(f"Error preparing FCM message: {e}")
@@ -294,18 +308,24 @@ class PushNotificationService:
                 fcm_options=messaging.APNSFCMOptions(image=image_url) if image_url else None
             )
 
-            # 1. Send to brand-isolated broadcast topic
+            # 1. Strictly route to brand-isolated topic and dedicated Firebase app
             norm_brand = (target_brand or "all").strip().lower()
             if "kulloma" in norm_brand:
                 topics = ["kullomadata_users"]
+                app = cls.get_app("kullomadata")
             elif "mele" in norm_brand:
                 topics = ["meledata_users"]
+                app = cls.get_app("meledata")
             elif "mz" in norm_brand:
                 topics = ["mzdata_users"]
+                app = cls.get_app("mzdata")
             else:
-                topics = ["all_users", "kullomadata_users", "meledata_users"]
+                topics = ["all_users"]
+                app = cls.get_app("default")
 
-            app = cls.get_app(norm_brand)
+            if not app:
+                logger.warning(f"No Firebase app configured for brand '{norm_brand}'. Broadcast skipped.")
+                return False
 
             for t in topics:
                 try:
@@ -317,22 +337,11 @@ class PushNotificationService:
                         apns=apns_config,
                     )
                     resp = messaging.send(message, app=app)
-                    logger.info(f"FCM broadcast to topic '{t}' succeeded: {resp}")
+                    logger.info(f"FCM broadcast to topic '{t}' for '{norm_brand}' succeeded: {resp}")
                 except Exception as top_err:
-                    sent = False
-                    for name, alt_app in cls._apps.items():
-                        if alt_app != app:
-                            try:
-                                resp = messaging.send(message, app=alt_app)
-                                logger.info(f"FCM broadcast to topic '{t}' via alt app '{name}' succeeded: {resp}")
-                                sent = True
-                                break
-                            except Exception:
-                                pass
-                    if not sent:
-                        logger.warning(f"FCM broadcast to topic '{t}' skipped/failed: {top_err}")
+                    logger.warning(f"FCM broadcast to topic '{t}' failed: {top_err}")
 
-            # 2. Also send directly to filtered device tokens via multicast
+            # 2. Also send directly to filtered device tokens strictly on the same app
             if tokens:
                 unique_tokens = list({str(tok).strip() for tok in tokens if tok and str(tok).strip()})
                 for i in range(0, len(unique_tokens), 500):
@@ -347,28 +356,11 @@ class PushNotificationService:
                         )
                         batch_res = messaging.send_each_for_multicast(multicast_msg, app=app)
                         logger.info(
-                            f"FCM multicast batch sent for brand '{norm_brand}': "
+                            f"FCM multicast batch sent strictly for '{norm_brand}' ({getattr(app, 'project_id', '')}): "
                             f"{batch_res.success_count} success, {batch_res.failure_count} failures."
                         )
-                        # Retry failed tokens on alternative app if available
-                        if batch_res.failure_count > 0 and len(cls._apps) > 1:
-                            failed_tokens = [batch[idx] for idx, r in enumerate(batch_res.responses) if not r.success]
-                            for name, alt_app in cls._apps.items():
-                                if alt_app != app and failed_tokens:
-                                    try:
-                                        retry_msg = messaging.MulticastMessage(
-                                            notification=messaging.Notification(title=title, body=body, image=image_url),
-                                            data=data or {},
-                                            tokens=failed_tokens,
-                                            android=android_config,
-                                            apns=apns_config,
-                                        )
-                                        retry_res = messaging.send_each_for_multicast(retry_msg, app=alt_app)
-                                        logger.info(f"FCM multicast retry via alt app '{name}': {retry_res.success_count} recovered.")
-                                    except Exception:
-                                        pass
                     except Exception as multi_err:
-                        logger.warning(f"FCM multicast batch failed: {multi_err}")
+                        logger.warning(f"FCM multicast batch failed for brand '{norm_brand}': {multi_err}")
 
             return True
         except Exception as e:
