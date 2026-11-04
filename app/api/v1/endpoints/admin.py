@@ -236,10 +236,21 @@ def _compute_analytics(admin, db: Session):
     total_cost_estimate = 0
     data_revenue = 0
     data_cost_estimate = 0
+
+    is_success_tx = or_(
+        Transaction.status == TransactionStatus.SUCCESS,
+        cast(Transaction.status, String).in_(["SUCCESS", "success", "delivered", "successful"])
+    )
+    is_not_wallet_tx = func.lower(cast(Transaction.tx_type, String)).notin_(["wallet_fund", "wallet_transfer"])
+    is_data_tx = or_(
+        Transaction.tx_type == TransactionType.DATA,
+        cast(Transaction.tx_type, String).in_(["DATA", "data"])
+    )
+
     try:
         total_revenue = db.query(func.sum(Transaction.amount)).filter(
-            Transaction.status == TransactionStatus.SUCCESS,
-            Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
+            is_success_tx,
+            is_not_wallet_tx
         ).scalar() or 0
     except Exception as exc:
         logger.warning(f"Error computing total_revenue: {exc}")
@@ -247,12 +258,18 @@ def _compute_analytics(admin, db: Session):
 
     try:
         total_cost_estimate = (
-            db.query(func.sum(func.coalesce(DataPlan.base_price, Transaction.amount)))
+            db.query(func.sum(func.coalesce(func.nullif(DataPlan.base_price, 0), Transaction.amount * 0.90)))
             .select_from(Transaction)
-            .outerjoin(DataPlan, Transaction.data_plan_code == DataPlan.plan_code)
+            .outerjoin(
+                DataPlan,
+                or_(
+                    Transaction.data_plan_code == DataPlan.plan_code,
+                    func.lower(Transaction.data_plan_code) == func.lower(DataPlan.plan_code),
+                )
+            )
             .filter(
-                Transaction.status == TransactionStatus.SUCCESS,
-                Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
+                is_success_tx,
+                is_not_wallet_tx
             )
             .scalar()
             or 0
@@ -265,8 +282,8 @@ def _compute_analytics(admin, db: Session):
         data_revenue = (
             db.query(func.sum(Transaction.amount))
             .filter(
-                Transaction.status == TransactionStatus.SUCCESS,
-                Transaction.tx_type == TransactionType.DATA,
+                is_success_tx,
+                is_data_tx
             )
             .scalar()
             or 0
@@ -277,12 +294,18 @@ def _compute_analytics(admin, db: Session):
 
     try:
         data_cost_estimate = (
-            db.query(func.sum(func.coalesce(DataPlan.base_price, Transaction.amount)))
+            db.query(func.sum(func.coalesce(func.nullif(DataPlan.base_price, 0), Transaction.amount * 0.90)))
             .select_from(Transaction)
-            .outerjoin(DataPlan, Transaction.data_plan_code == DataPlan.plan_code)
+            .outerjoin(
+                DataPlan,
+                or_(
+                    Transaction.data_plan_code == DataPlan.plan_code,
+                    func.lower(Transaction.data_plan_code) == func.lower(DataPlan.plan_code),
+                )
+            )
             .filter(
-                Transaction.status == TransactionStatus.SUCCESS,
-                Transaction.tx_type == TransactionType.DATA,
+                is_success_tx,
+                is_data_tx
             )
             .scalar()
             or 0
@@ -308,19 +331,25 @@ def _compute_analytics(admin, db: Session):
     today_pending_tx = 0
     try:
         today_successful_tx = db.query(func.count(Transaction.id)).filter(
-            Transaction.status == TransactionStatus.SUCCESS,
+            is_success_tx,
             Transaction.created_at >= day_start_utc,
-            Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
+            is_not_wallet_tx
         ).scalar() or 0
         today_failed_tx = db.query(func.count(Transaction.id)).filter(
-            Transaction.status.in_([TransactionStatus.FAILED, TransactionStatus.REFUNDED]),
+            or_(
+                Transaction.status.in_([TransactionStatus.FAILED, TransactionStatus.REFUNDED]),
+                cast(Transaction.status, String).in_(["FAILED", "failed", "REFUNDED", "refunded"])
+            ),
             Transaction.created_at >= day_start_utc,
-            Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
+            is_not_wallet_tx
         ).scalar() or 0
         today_pending_tx = db.query(func.count(Transaction.id)).filter(
-            Transaction.status == TransactionStatus.PENDING,
+            or_(
+                Transaction.status == TransactionStatus.PENDING,
+                cast(Transaction.status, String).in_(["PENDING", "pending", "processing"])
+            ),
             Transaction.created_at >= day_start_utc,
-            Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
+            is_not_wallet_tx
         ).scalar() or 0
     except Exception as exc:
         logger.warning(f"Error computing today tx counts: {exc}")
@@ -406,11 +435,17 @@ def _compute_analytics(admin, db: Session):
     try:
         data_period_rows = (
             db.query(Transaction.created_at, Transaction.amount, DataPlan.base_price)
-            .outerjoin(DataPlan, Transaction.data_plan_code == DataPlan.plan_code)
+            .outerjoin(
+                DataPlan,
+                or_(
+                    Transaction.data_plan_code == DataPlan.plan_code,
+                    func.lower(Transaction.data_plan_code) == func.lower(DataPlan.plan_code),
+                )
+            )
             .filter(
-                Transaction.status == TransactionStatus.SUCCESS,
+                is_success_tx,
                 Transaction.created_at >= months_starts[0],
-                Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
+                is_not_wallet_tx
             )
             .all()
         )
@@ -418,9 +453,12 @@ def _compute_analytics(admin, db: Session):
         for created_at, amount, base_price in data_period_rows:
             revenue_num = float(amount or 0)
             try:
-                cost_num = float(base_price) if base_price is not None else revenue_num
+                if base_price is not None and float(base_price) > 0 and float(base_price) <= revenue_num:
+                    cost_num = float(base_price)
+                else:
+                    cost_num = round(revenue_num * 0.90, 2)
             except Exception:
-                cost_num = revenue_num
+                cost_num = round(revenue_num * 0.90, 2)
             _apply_period_totals(created_at, revenue_num, cost_num)
             _apply_trends(created_at, revenue_num, cost_num)
 
@@ -505,8 +543,8 @@ def _compute_analytics(admin, db: Session):
         
     try:
         total_tx_count = db.query(func.count(Transaction.id)).filter(
-            Transaction.status == TransactionStatus.SUCCESS,
-            Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
+            is_success_tx,
+            is_not_wallet_tx
         ).scalar() or 0
         if inspect(db.bind).has_table("service_transactions"):
             total_st_count = db.query(func.count(ServiceTransaction.id)).filter(ServiceTransaction.status == TransactionStatus.SUCCESS.value).scalar() or 0
@@ -646,6 +684,16 @@ def db_status(admin=Depends(require_admin), db: Session = Depends(get_db)):
         except Exception as e:
             db.rollback()
             status_info["tx_sample_error"] = str(e)
+
+        try:
+            tx_group = db.execute(text("SELECT status::text, tx_type::text, count(*), coalesce(sum(amount), 0) FROM transactions GROUP BY 1, 2")).fetchall()
+            status_info["tx_breakdown"] = [
+                {"status": str(row[0]), "tx_type": str(row[1]), "count": int(row[2]), "sum": float(row[3])}
+                for row in tx_group
+            ]
+        except Exception as e:
+            db.rollback()
+            status_info["tx_breakdown_error"] = str(e)
 
         status_info["ok"] = True
     except Exception as fatal:

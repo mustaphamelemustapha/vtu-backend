@@ -86,22 +86,21 @@ def get_finance_overview(
         has_services = False
 
     # 1. REVENUE (All successful service purchases, excluding wallet funding and peer transfers)
-    service_tx_types = [
-        TransactionType.DATA.value,
-        TransactionType.AIRTIME.value,
-        TransactionType.CABLE.value,
-        TransactionType.ELECTRICITY.value,
-        TransactionType.EXAM.value
-    ]
+    is_success_tx = or_(
+        Transaction.status == TransactionStatus.SUCCESS,
+        cast(Transaction.status, String).in_(["SUCCESS", "success", "delivered", "successful"])
+    )
+    is_not_wallet_tx = func.lower(cast(Transaction.tx_type, String)).notin_(["wallet_fund", "wallet_transfer"])
+    is_data_tx = or_(
+        Transaction.tx_type == TransactionType.DATA,
+        cast(Transaction.tx_type, String).in_(["DATA", "data"])
+    )
     
     revenue_amount = (
         db.query(func.sum(Transaction.amount))
         .filter(
-            Transaction.status == TransactionStatus.SUCCESS,
-            or_(
-                Transaction.tx_type.in_(service_tx_types),
-                Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
-            )
+            is_success_tx,
+            is_not_wallet_tx
         )
         .scalar()
         or 0
@@ -112,7 +111,10 @@ def get_finance_overview(
         st_revenue_amount = (
             db.query(func.sum(ServiceTransaction.amount))
             .filter(
-                ServiceTransaction.status == TransactionStatus.SUCCESS.value
+                or_(
+                    ServiceTransaction.status == TransactionStatus.SUCCESS.value,
+                    cast(ServiceTransaction.status, String).in_(["SUCCESS", "success", "delivered", "successful"])
+                )
             )
             .scalar()
             or 0
@@ -122,15 +124,18 @@ def get_finance_overview(
     # 2. COGS (Cost of Goods Sold)
     # Estimate Data COGS using current DataPlan base_price with case-insensitive plan_code match
     data_cogs_amount = (
-        db.query(func.sum(func.coalesce(func.nullif(DataPlan.base_price, 0), Transaction.amount)))
+        db.query(func.sum(func.coalesce(func.nullif(DataPlan.base_price, 0), Transaction.amount * Decimal("0.90"))))
         .select_from(Transaction)
         .outerjoin(
             DataPlan,
-            func.lower(Transaction.data_plan_code) == func.lower(DataPlan.plan_code)
+            or_(
+                Transaction.data_plan_code == DataPlan.plan_code,
+                func.lower(Transaction.data_plan_code) == func.lower(DataPlan.plan_code),
+            )
         )
         .filter(
-            Transaction.status == TransactionStatus.SUCCESS,
-            Transaction.tx_type == TransactionType.DATA
+            is_success_tx,
+            is_data_tx
         )
         .scalar()
         or 0
