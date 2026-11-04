@@ -324,23 +324,27 @@ def _compute_analytics(admin, db: Session):
         logger.warning(f"Error computing today tx counts: {exc}")
         db.rollback()
 
-    if inspect(db.bind).has_table("service_transactions"):
-        today_successful_st = db.query(func.count(ServiceTransaction.id)).filter(
-            ServiceTransaction.status == TransactionStatus.SUCCESS.value,
-            ServiceTransaction.created_at >= day_start_utc
-        ).scalar() or 0
-        today_failed_st = db.query(func.count(ServiceTransaction.id)).filter(
-            ServiceTransaction.status.in_([TransactionStatus.FAILED.value, TransactionStatus.REFUNDED.value]),
-            ServiceTransaction.created_at >= day_start_utc
-        ).scalar() or 0
-        today_pending_st = db.query(func.count(ServiceTransaction.id)).filter(
-            ServiceTransaction.status == TransactionStatus.PENDING.value,
-            ServiceTransaction.created_at >= day_start_utc
-        ).scalar() or 0
-        
-        today_successful_tx += today_successful_st
-        today_failed_tx += today_failed_st
-        today_pending_tx += today_pending_st
+    try:
+        if inspect(db.bind).has_table("service_transactions"):
+            today_successful_st = db.query(func.count(ServiceTransaction.id)).filter(
+                ServiceTransaction.status == TransactionStatus.SUCCESS.value,
+                ServiceTransaction.created_at >= day_start_utc
+            ).scalar() or 0
+            today_failed_st = db.query(func.count(ServiceTransaction.id)).filter(
+                ServiceTransaction.status.in_([TransactionStatus.FAILED.value, TransactionStatus.REFUNDED.value]),
+                ServiceTransaction.created_at >= day_start_utc
+            ).scalar() or 0
+            today_pending_st = db.query(func.count(ServiceTransaction.id)).filter(
+                ServiceTransaction.status == TransactionStatus.PENDING.value,
+                ServiceTransaction.created_at >= day_start_utc
+            ).scalar() or 0
+            
+            today_successful_tx += today_successful_st
+            today_failed_tx += today_failed_st
+            today_pending_tx += today_pending_st
+    except Exception as st_exc:
+        logger.warning(f"Error computing service_transactions today counts: {st_exc}")
+        db.rollback()
 
     daily_tx = today_successful_tx + today_failed_tx + today_pending_tx
 
@@ -528,28 +532,29 @@ def _compute_analytics(admin, db: Session):
         })
 
     result = {
-        "total_revenue": total_revenue,
-        "data_revenue": data_revenue,
-        "data_cost_estimate": data_cost_estimate,
-        "gross_profit_estimate": gross_profit_estimate,
-        "gross_margin_pct": round(gross_margin_pct, 2),
-        "service_revenue": round(float(service_revenue), 2),
-        "service_cost_estimate": round(float(service_cost_estimate), 2),
-        "service_profit_estimate": round(float(service_profit_estimate), 2),
-        "total_users": total_users,
-        "active_users": active_users,
-        "daily_transactions": daily_tx,
-        "today_successful_tx": today_successful_tx,
-        "today_failed_tx": today_failed_tx,
-        "today_pending_tx": today_pending_tx,
-        "api_success": api_success,
-        "api_failed": api_failed,
-        "reports_open": int(reports_open),
-        "reports_resolved": int(reports_resolved),
+        "total_revenue": float(total_revenue or 0.0),
+        "data_revenue": float(data_revenue or 0.0),
+        "data_cost_estimate": float(data_cost_estimate or 0.0),
+        "total_cost_estimate": float(total_cost_estimate or 0.0),
+        "gross_profit_estimate": float(gross_profit_estimate or 0.0),
+        "gross_margin_pct": round(float(gross_margin_pct or 0.0), 2),
+        "service_revenue": round(float(service_revenue or 0.0), 2),
+        "service_cost_estimate": round(float(service_cost_estimate or 0.0), 2),
+        "service_profit_estimate": round(float(service_profit_estimate or 0.0), 2),
+        "total_users": int(total_users or 0),
+        "active_users": int(active_users or 0),
+        "daily_transactions": int(daily_tx or 0),
+        "today_successful_tx": int(today_successful_tx or 0),
+        "today_failed_tx": int(today_failed_tx or 0),
+        "today_pending_tx": int(today_pending_tx or 0),
+        "api_success": int(api_success or 0),
+        "api_failed": int(api_failed or 0),
+        "reports_open": int(reports_open or 0),
+        "reports_resolved": int(reports_resolved or 0),
         "promo_mtn_1gb_enabled": bool(settings.promo_mtn_1gb_enabled),
-        "promo_mtn_1gb_limit": int(promo_limit),
-        "promo_mtn_1gb_users_used": int(promo_users_used),
-        "promo_mtn_1gb_remaining": int(promo_remaining),
+        "promo_mtn_1gb_limit": int(promo_limit or 0),
+        "promo_mtn_1gb_users_used": int(promo_users_used or 0),
+        "promo_mtn_1gb_remaining": int(promo_remaining or 0),
         "promo_mtn_1gb_active": bool(promo_active),
         "profit_period_estimates": period_profit_payload,
         "monthly_trends": monthly_trends_payload,
@@ -1777,53 +1782,55 @@ def list_reports(
     try:
         if not inspect(db.bind).has_table("transaction_disputes"):
             return {"items": [], "total": 0, "page": page, "page_size": page_size}
-    except Exception:
-        return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
-    query = (
-        db.query(TransactionDispute, User.email.label("user_email"))
-        .join(User, TransactionDispute.user_id == User.id)
-    )
-    if q:
-        needle = f"%{q.strip()}%"
-        query = query.filter(
-            or_(
-                TransactionDispute.transaction_reference.ilike(needle),
-                TransactionDispute.reason.ilike(needle),
-                User.email.ilike(needle),
+        query = (
+            db.query(TransactionDispute, User.email.label("user_email"))
+            .join(User, TransactionDispute.user_id == User.id)
+        )
+        if q:
+            needle = f"%{q.strip()}%"
+            query = query.filter(
+                or_(
+                    TransactionDispute.transaction_reference.ilike(needle),
+                    TransactionDispute.reason.ilike(needle),
+                    User.email.ilike(needle),
+                )
             )
-        )
-    if status:
-        status_raw = status.strip().lower()
-        if status_raw in {DisputeStatus.OPEN.value, DisputeStatus.RESOLVED.value, DisputeStatus.REJECTED.value}:
-            query = query.filter(TransactionDispute.status == DisputeStatus(status_raw))
+        if status:
+            status_raw = status.strip().lower()
+            if status_raw in {DisputeStatus.OPEN.value, DisputeStatus.RESOLVED.value, DisputeStatus.REJECTED.value}:
+                query = query.filter(TransactionDispute.status == DisputeStatus(status_raw))
 
-    total = query.count()
-    rows = (
-        query.order_by(TransactionDispute.created_at.desc(), TransactionDispute.id.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-    items = []
-    for report, user_email in rows:
-        items.append(
-            {
-                "id": report.id,
-                "created_at": report.created_at,
-                "user_id": report.user_id,
-                "user_email": user_email,
-                "transaction_reference": report.transaction_reference,
-                "tx_type": report.tx_type,
-                "category": report.category,
-                "reason": report.reason,
-                "status": report.status.value if hasattr(report.status, "value") else str(report.status),
-                "admin_note": report.admin_note,
-                "resolved_at": report.resolved_at,
-            }
+        total = query.count()
+        rows = (
+            query.order_by(TransactionDispute.created_at.desc(), TransactionDispute.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
         )
+        items = []
+        for report, user_email in rows:
+            items.append(
+                {
+                    "id": report.id,
+                    "created_at": report.created_at,
+                    "user_id": report.user_id,
+                    "user_email": user_email,
+                    "transaction_reference": report.transaction_reference,
+                    "tx_type": report.tx_type,
+                    "category": report.category,
+                    "reason": report.reason,
+                    "status": report.status.value if hasattr(report.status, "value") else str(report.status),
+                    "admin_note": report.admin_note,
+                    "resolved_at": report.resolved_at,
+                }
+            )
 
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
+    except Exception as exc:
+        logger.error(f"Error in list_reports: {exc}", exc_info=True)
+        db.rollback()
+        return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
 
 @router.patch("/reports/{report_id}", response_model=AdminReportOut)
