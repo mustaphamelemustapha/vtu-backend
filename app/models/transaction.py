@@ -11,6 +11,15 @@ class TransactionStatus(str, enum.Enum):
     FAILED = "failed"
     REFUNDED = "refunded"
 
+    @classmethod
+    def _missing_(cls, value):
+        if isinstance(value, str):
+            val_lower = value.strip().lower()
+            for member in cls:
+                if member.value.lower() == val_lower or member.name.lower() == val_lower:
+                    return member
+        return cls.PENDING
+
 
 class TransactionType(str, enum.Enum):
     DATA = "data"
@@ -20,6 +29,15 @@ class TransactionType(str, enum.Enum):
     CABLE = "cable"
     ELECTRICITY = "electricity"
     EXAM = "exam"
+
+    @classmethod
+    def _missing_(cls, value):
+        if isinstance(value, str):
+            val_lower = value.strip().lower()
+            for member in cls:
+                if member.value.lower() == val_lower or member.name.lower() == val_lower:
+                    return member
+        return cls.DATA
 
 
 class Transaction(Base, TimestampMixin):

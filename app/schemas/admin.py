@@ -65,16 +65,18 @@ class AdminTransactionsResponse(BaseModel):
 
 class AdminUserOut(BaseModel):
     id: int
-    created_at: datetime
-    email: str
+    created_at: Optional[datetime] = None
+    email: Optional[str] = ""
     phone_number: Optional[str] = None
-    full_name: str
-    role: str = "customer"
-    is_active: bool = True
-    is_verified: bool = False
-    referral_count: int = 0
-    developer_status: str = "none"
-    total_spending: float = 0.0
+    full_name: Optional[str] = ""
+    role: Optional[str] = "customer"
+    is_active: Optional[bool] = True
+    is_verified: Optional[bool] = False
+    referral_count: Optional[int] = 0
+    developer_status: Optional[str] = "none"
+    total_spending: Optional[float] = 0.0
+    wallet_balance: Optional[float] = 0.0
+
     class Config:
         orm_mode = True
 

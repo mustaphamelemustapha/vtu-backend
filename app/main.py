@@ -59,7 +59,7 @@ async def developer_api_exception_handler(request: Request, exc: DeveloperAPIExc
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     from fastapi.responses import JSONResponse
-    if request.url.path.startswith("/api/v1/developer"):
+    if request.url.path.startswith("/api/v1/developer") or request.url.path.startswith("/developer"):
         return JSONResponse(
             status_code=400,
             content={"status": False, "message": "Invalid request payload or missing required fields."}
@@ -170,6 +170,10 @@ if FORWARD_TARGET_URL:
             return await call_next(request)
 
 app.include_router(api_router, prefix=settings.api_v1_prefix)
+
+from app.api.v1.endpoints import developer as dev_ep, webhooks as wh_ep
+app.include_router(dev_ep.router, prefix="/developer", tags=["developer_compat"])
+app.include_router(wh_ep.router, prefix="/webhooks", tags=["webhooks_compat"])
 
 
 def _bootstrap_admins() -> None:

@@ -13,6 +13,15 @@ class UserRole(str, enum.Enum):
     USER = "user"
     RESELLER = "reseller"
 
+    @classmethod
+    def _missing_(cls, value):
+        if isinstance(value, str):
+            val_lower = value.strip().lower()
+            for member in cls:
+                if member.value.lower() == val_lower or member.name.lower() == val_lower:
+                    return member
+        return cls.CUSTOMER
+
 
 class User(Base, TimestampMixin):
     __tablename__ = "users"

@@ -54,6 +54,10 @@ def get_current_user(db: Session = Depends(get_db), token: str = Depends(oauth2_
                     referral_code=row[7],
                     brand=str(row[8] or "meledata")
                 )
+                try:
+                    user = db.merge(user, load=False)
+                except Exception:
+                    pass
             else:
                 user = None
         except Exception:

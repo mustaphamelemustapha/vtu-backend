@@ -203,7 +203,9 @@ def _compute_analytics(admin, db: Session):
     # Check cache first
     cached = _ANALYTICS_CACHE.get("admin_analytics")
     if cached and (time.time() - cached['time']) < ANALYTICS_CACHE_TTL:
-        return cached['data']
+        # Don't serve cached zero-data if it was an empty fallback
+        if cached['data'].get("total_users", 0) > 0 or cached['data'].get("total_revenue", 0) > 0:
+            return cached['data']
 
     now_utc = _utcnow()
     day_start_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1049,6 +1051,13 @@ def list_users(
         .as_scalar()
     )
 
+    wallet_subquery = (
+        db.query(func.coalesce(Wallet.balance, 0))
+        .filter(Wallet.user_id == User.id)
+        .correlate(User)
+        .as_scalar()
+    )
+
     query = db.query(
         User.id,
         User.created_at,
@@ -1061,6 +1070,7 @@ def list_users(
         User.developer_status,
         ref_subquery.label("referral_count"),
         spending_subquery.label("total_spending"),
+        wallet_subquery.label("wallet_balance"),
     )
 
     if q:
@@ -1115,15 +1125,16 @@ def list_users(
                 {
                     "id": u.id,
                     "created_at": u.created_at,
-                    "email": u.email,
-                    "phone_number": u.phone_number,
-                    "full_name": u.full_name,
+                    "email": str(u.email or ""),
+                    "phone_number": str(u.phone_number or "") if u.phone_number else None,
+                    "full_name": str(u.full_name or ""),
                     "role": role_val,
                     "is_active": bool(u.is_active),
                     "is_verified": bool(u.is_verified),
                     "referral_count": int(u.referral_count or 0),
                     "developer_status": str(u.developer_status or "none"),
                     "total_spending": float(u.total_spending or 0.0),
+                    "wallet_balance": float(u.wallet_balance or 0.0),
                 }
             )
         return {"items": items, "total": total, "page": page, "page_size": page_size}
@@ -1146,18 +1157,25 @@ def list_users(
             items = []
             for u in fallback_users:
                 role_val = str(u.role.value if hasattr(u.role, 'value') else u.role or "customer").lower()
+                wb = 0.0
+                try:
+                    w = db.query(Wallet.balance).filter(Wallet.user_id == u.id).first()
+                    wb = float(w[0]) if w else 0.0
+                except Exception:
+                    pass
                 items.append({
                     "id": u.id,
                     "created_at": u.created_at,
-                    "email": u.email,
-                    "phone_number": u.phone_number,
-                    "full_name": u.full_name,
+                    "email": str(u.email or ""),
+                    "phone_number": str(u.phone_number or "") if u.phone_number else None,
+                    "full_name": str(u.full_name or ""),
                     "role": role_val,
                     "is_active": bool(u.is_active),
                     "is_verified": bool(u.is_verified),
                     "referral_count": 0,
                     "developer_status": str(getattr(u, "developer_status", "none") or "none"),
                     "total_spending": 0.0,
+                    "wallet_balance": wb,
                 })
             return {"items": items, "total": fallback_total, "page": page, "page_size": page_size}
         except Exception as fallback_exc:
@@ -2117,7 +2135,7 @@ def adjust_user_wallet(
     )
     db.add(audit_log)
     db.commit()
-    return {"status": "ok", "new_balance": wallet.balance}
+    return {"status": "ok", "new_balance": float(wallet.balance or 0.0)}
 
 
 @router.get("/services/toggles", response_model=list[ServiceToggleOut])
