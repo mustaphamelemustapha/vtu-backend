@@ -2176,17 +2176,17 @@ class MockBillsProvider:
     def fetch_exam_packages(self, exam: str) -> list[dict]:
         key = _normalize_exam_key(exam)
         defaults = {
-            "waec": [{"code": "waecdirect", "name": "WAEC Result Checker PIN", "amount": 2000.0, "exam": "waec"}],
-            "jamb": [
-                {"code": "de", "name": "Direct Entry (DE)", "amount": 2000.0, "exam": "jamb"},
-                {"code": "utme-mock", "name": "UTME PIN (with mock)", "amount": 2000.0, "exam": "jamb"},
-                {"code": "utme-no-mock", "name": "UTME PIN (without mock)", "amount": 2000.0, "exam": "jamb"},
-            ],
+            "waec": [{"code": "1", "name": "WAEC Result Checker", "amount": 3500.0, "exam": "waec"}],
+            "neco": [{"code": "2", "name": "NECO Result Checker", "amount": 2250.0, "exam": "neco"}],
+            "nabteb": [{"code": "3", "name": "NABTEB Result Checker", "amount": 1000.0, "exam": "nabteb"}],
+            "jamb": [{"code": "4", "name": "JAMB Result Checker / Registration", "amount": 1050.0, "exam": "jamb"}],
         }
         return defaults.get(key, [])
 
     def fetch_cable_packages(self, provider: str) -> list[dict]:
-        return []
+        from app.providers.telecom_abode_provider import _DEFAULT_CABLE_PACKAGES
+        key = str(provider or "").strip().lower()
+        return _DEFAULT_CABLE_PACKAGES.get(key, [])
 
     def verify_cable_customer(self, provider: str, smartcard_number: str) -> dict:
         if str(smartcard_number).strip().startswith("0000"):

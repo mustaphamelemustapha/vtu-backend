@@ -19,6 +19,37 @@ _TELECOM_ABODE_CLIENT = httpx.Client(
 _TOKEN_RE = re.compile(r"\btoken\b\s*[:=]\s*([0-9\s-]+)", re.IGNORECASE)
 _GENERIC_TOKEN_RE = re.compile(r"\b(?:\d[- ]*){20}\b")
 
+_DEFAULT_CABLE_PACKAGES: dict[str, list[dict]] = {
+    "gotv": [
+        {"code": "1", "name": "GOtv Max", "amount": 8500.0, "provider": "gotv"},
+        {"code": "2", "name": "GOtv Jolli", "amount": 5800.0, "provider": "gotv"},
+        {"code": "3", "name": "GOtv Jinja", "amount": 3900.0, "provider": "gotv"},
+        {"code": "4", "name": "GOtv Smallie", "amount": 1900.0, "provider": "gotv"},
+        {"code": "5", "name": "GOtv Supa", "amount": 11400.0, "provider": "gotv"},
+        {"code": "6", "name": "GOtv Supa Plus", "amount": 15700.0, "provider": "gotv"},
+    ],
+    "dstv": [
+        {"code": "dstv-padi", "name": "DStv Padi", "amount": 4400.0, "provider": "dstv"},
+        {"code": "dstv-yanga", "name": "DStv Yanga", "amount": 6000.0, "provider": "dstv"},
+        {"code": "dstv-confam", "name": "DStv Confam", "amount": 11000.0, "provider": "dstv"},
+        {"code": "dstv-compact", "name": "DStv Compact", "amount": 19000.0, "provider": "dstv"},
+        {"code": "dstv-compact-plus", "name": "DStv Compact Plus", "amount": 30000.0, "provider": "dstv"},
+        {"code": "dstv-premium", "name": "DStv Premium", "amount": 44000.0, "provider": "dstv"},
+    ],
+    "startimes": [
+        {"code": "nova", "name": "Nova Bouquet", "amount": 1700.0, "provider": "startimes"},
+        {"code": "basic", "name": "Basic Bouquet", "amount": 3300.0, "provider": "startimes"},
+        {"code": "smart", "name": "Smart Bouquet", "amount": 4500.0, "provider": "startimes"},
+        {"code": "classic", "name": "Classic Bouquet", "amount": 5000.0, "provider": "startimes"},
+        {"code": "super", "name": "Super Bouquet", "amount": 9000.0, "provider": "startimes"},
+    ],
+    "showmax": [
+        {"code": "showmax-mobile", "name": "Showmax Mobile", "amount": 1600.0, "provider": "showmax"},
+        {"code": "showmax-standard", "name": "Showmax Standard", "amount": 3200.0, "provider": "showmax"},
+        {"code": "showmax-pro", "name": "Showmax Pro", "amount": 4500.0, "provider": "showmax"},
+    ],
+}
+
 
 class TelecomAbodeProvider:
     """
@@ -515,10 +546,14 @@ class TelecomAbodeProvider:
                         "amount": price,
                         "provider": str(provider).strip().lower(),
                     })
-            return normalized
+            if normalized:
+                return normalized
+            prov_key = str(provider).strip().lower()
+            return _DEFAULT_CABLE_PACKAGES.get(prov_key, [])
         except Exception as exc:
             logger.warning("TelecomAbode fetch_cable_packages failed for %s: %s", provider, exc)
-            return []
+            prov_key = str(provider).strip().lower()
+            return _DEFAULT_CABLE_PACKAGES.get(prov_key, [])
 
     def verify_cable_smartcard(self, provider: str, smartcard: str) -> Dict[str, Any]:
         """
