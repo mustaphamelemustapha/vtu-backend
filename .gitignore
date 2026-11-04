@@ -12,5 +12,3 @@ venv/
 
 firebase-adminsdk*.json
 *.base64.txt
-*adminsdk*.json
-axisvtu-*.json

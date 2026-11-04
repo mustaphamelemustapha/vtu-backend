@@ -43,7 +43,17 @@ def get_current_user(db: Session = Depends(get_db), token: str = Depends(oauth2_
                 {"uid": user_id}
             ).fetchone()
             if row:
-                user = db.query(User).filter(User.id == user_id).first()
+                user = User(
+                    id=row[0],
+                    email=row[1],
+                    full_name=row[2],
+                    hashed_password=row[3],
+                    role=UserRole(str(row[4]).lower()) if str(row[4]).lower() in ["customer", "agent", "ambassador", "admin", "user", "reseller"] else UserRole.CUSTOMER,
+                    is_active=bool(row[5]),
+                    is_verified=bool(row[6]),
+                    referral_code=row[7],
+                    brand=str(row[8] or "meledata")
+                )
             else:
                 user = None
         except Exception:

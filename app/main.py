@@ -242,6 +242,8 @@ def ensure_tables():
         _ensure_financial_ledger_table()
         _ensure_user_brand_column()
         _ensure_broadcast_announcement_brand_column()
+        _ensure_userrole_enum()
+        _run_alembic_upgrade()
         try:
             from app.services.push_notification import PushNotificationService
             PushNotificationService._initialize()
@@ -293,6 +295,8 @@ def ensure_tables():
     _ensure_financial_ledger_table()
     _ensure_user_brand_column()
     _ensure_broadcast_announcement_brand_column()
+    _ensure_userrole_enum()
+    _run_alembic_upgrade()
     try:
         from app.services.push_notification import PushNotificationService
         PushNotificationService._initialize()
@@ -1043,11 +1047,11 @@ def _ensure_financial_ledger_table() -> None:
             cols = {c["name"] for c in inspector.get_columns("financial_ledger")}
             with engine.begin() as conn:
                 if "created_by_id" not in cols:
-                    conn.execute(text("ALTER TABLE financial_ledger ADD COLUMN created_by_id INTEGER REFERENCES users(id)"))
+                    conn.execute(text("ALTER TABLE financial_ledger ADD COLUMN IF NOT EXISTS created_by_id INTEGER REFERENCES users(id)"))
                 if "source_id" not in cols:
-                    conn.execute(text("ALTER TABLE financial_ledger ADD COLUMN source_id VARCHAR(64)"))
+                    conn.execute(text("ALTER TABLE financial_ledger ADD COLUMN IF NOT EXISTS source_id VARCHAR(64)"))
                 if "brand" not in cols:
-                    conn.execute(text("ALTER TABLE financial_ledger ADD COLUMN brand VARCHAR(32) DEFAULT 'meledata'"))
+                    conn.execute(text("ALTER TABLE financial_ledger ADD COLUMN IF NOT EXISTS brand VARCHAR(32) DEFAULT 'meledata'"))
                 logging.getLogger(__name__).info("Ensured financial_ledger columns.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure financial_ledger table: %s", exc)
@@ -1062,7 +1066,7 @@ def _ensure_user_brand_column() -> None:
         if "brand" not in cols:
             try:
                 with engine.begin() as conn:
-                    conn.execute(text("ALTER TABLE users ADD COLUMN brand VARCHAR(32) DEFAULT 'meledata'"))
+                    conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS brand VARCHAR(32) DEFAULT 'meledata'"))
                     logging.getLogger(__name__).info("Added users.brand column.")
             except Exception as e:
                 logging.getLogger(__name__).warning("Error adding users.brand column: %s", e)
@@ -1093,7 +1097,7 @@ def _ensure_broadcast_announcement_brand_column() -> None:
         if "brand" not in cols:
             try:
                 with engine.begin() as conn:
-                    conn.execute(text("ALTER TABLE broadcast_announcements ADD COLUMN brand VARCHAR(32) DEFAULT 'all'"))
+                    conn.execute(text("ALTER TABLE broadcast_announcements ADD COLUMN IF NOT EXISTS brand VARCHAR(32) DEFAULT 'all'"))
                     logging.getLogger(__name__).info("Added broadcast_announcements.brand column.")
             except Exception as e:
                 logging.getLogger(__name__).warning("Error adding broadcast_announcements.brand: %s", e)
@@ -1105,6 +1109,35 @@ def _ensure_broadcast_announcement_brand_column() -> None:
             pass
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure broadcast_announcements.brand column: %s", exc)
+
+
+def _ensure_userrole_enum() -> None:
+    if engine.dialect.name == "postgresql":
+        try:
+            with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                for val in ['customer', 'agent', 'ambassador', 'admin', 'user', 'reseller']:
+                    try:
+                        conn.execute(text(f"ALTER TYPE userrole ADD VALUE IF NOT EXISTS '{val}'"))
+                    except Exception:
+                        pass
+            logging.getLogger(__name__).info("Ensured PostgreSQL userrole enum values.")
+        except Exception as e:
+            logging.getLogger(__name__).warning("Could not ensure PostgreSQL userrole enum: %s", e)
+
+
+def _run_alembic_upgrade() -> None:
+    try:
+        from alembic.config import Config
+        from alembic import command
+        alembic_ini = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "alembic.ini")
+        if not os.path.exists(alembic_ini):
+            alembic_ini = "alembic.ini"
+        if os.path.exists(alembic_ini):
+            cfg = Config(alembic_ini)
+            command.upgrade(cfg, "head")
+            logging.getLogger(__name__).info("Programmatic alembic upgrade head finished successfully.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Programmatic alembic upgrade failed: %s", exc)
 
 
 @app.get("/healthz")
