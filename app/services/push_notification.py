@@ -327,6 +327,7 @@ class PushNotificationService:
                 logger.warning(f"No Firebase app configured for brand '{norm_brand}'. Broadcast skipped.")
                 return False
 
+            topic_sent = False
             for t in topics:
                 try:
                     message = messaging.Message(
@@ -338,11 +339,12 @@ class PushNotificationService:
                     )
                     resp = messaging.send(message, app=app)
                     logger.info(f"FCM broadcast to topic '{t}' for '{norm_brand}' succeeded: {resp}")
+                    topic_sent = True
                 except Exception as top_err:
                     logger.warning(f"FCM broadcast to topic '{t}' failed: {top_err}")
 
-            # 2. Also send directly to filtered device tokens strictly on the same app
-            if tokens:
+            # 2. Only fallback to direct device token multicast if topic broadcast did not send (prevents duplicate delivery)
+            if not topic_sent and tokens:
                 unique_tokens = list({str(tok).strip() for tok in tokens if tok and str(tok).strip()})
                 for i in range(0, len(unique_tokens), 500):
                     batch = unique_tokens[i:i+500]
@@ -356,7 +358,7 @@ class PushNotificationService:
                         )
                         batch_res = messaging.send_each_for_multicast(multicast_msg, app=app)
                         logger.info(
-                            f"FCM multicast batch sent strictly for '{norm_brand}' ({getattr(app, 'project_id', '')}): "
+                            f"FCM fallback multicast batch sent strictly for '{norm_brand}' ({getattr(app, 'project_id', '')}): "
                             f"{batch_res.success_count} success, {batch_res.failure_count} failures."
                         )
                     except Exception as multi_err:
