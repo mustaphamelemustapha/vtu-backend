@@ -6,6 +6,45 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from app.core.config import get_settings
 
 
+try:
+    from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM
+except ImportError:
+    PG_ENUM = SQLEnum
+
+
+class SafePGEnum(PG_ENUM):
+    def _object_value_for_elem(self, elem):
+        if elem is None:
+            return None
+        if elem in self._object_lookup:
+            return self._object_lookup[elem]
+        elem_str = str(elem).strip()
+        elem_lower = elem_str.lower()
+        for k, v in self._object_lookup.items():
+            if k is not None and str(k).lower() == elem_lower:
+                return v
+        if self.enum_class:
+            for member in self.enum_class:
+                if (hasattr(member, 'value') and str(member.value).lower() == elem_lower) or member.name.lower() == elem_lower:
+                    return member
+            return list(self.enum_class)[0]
+        return elem
+
+    def _db_value_for_elem(self, elem):
+        if elem is None:
+            return None
+        if elem in self._valid_lookup:
+            return self._valid_lookup[elem]
+        if hasattr(elem, 'value'):
+            return str(elem.value)
+        elem_str = str(elem).strip()
+        elem_lower = elem_str.lower()
+        for k, v in self._valid_lookup.items():
+            if k is not None and str(k).lower() == elem_lower:
+                return v
+        return elem_str
+
+
 class SafeSQLEnum(SQLEnum):
     """
     Resilient SQLAlchemy Enum type that avoids LookupError / KeyError crashes
@@ -27,6 +66,32 @@ class SafeSQLEnum(SQLEnum):
                     return member
             return list(self.enum_class)[0]
         return elem
+
+    def _db_value_for_elem(self, elem):
+        if elem is None:
+            return None
+        if elem in self._valid_lookup:
+            return self._valid_lookup[elem]
+        if hasattr(elem, 'value'):
+            return str(elem.value)
+        elem_str = str(elem).strip()
+        elem_lower = elem_str.lower()
+        for k, v in self._valid_lookup.items():
+            if k is not None and str(k).lower() == elem_lower:
+                return v
+        return elem_str
+
+    def _gen_dialect_impl(self, dialect):
+        if getattr(dialect, "name", "") == "postgresql":
+            return SafePGEnum(
+                self.enum_class,
+                name=self.name,
+                schema=self.schema,
+                inherit_schema=self.inherit_schema,
+                values_callable=self.values_callable,
+                validate_strings=False,
+            )
+        return super()._gen_dialect_impl(dialect)
 
 
 class Base(DeclarativeBase):

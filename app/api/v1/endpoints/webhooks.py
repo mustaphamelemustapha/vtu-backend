@@ -457,7 +457,7 @@ def monnify_webhook(request: Request, raw_body: bytes = Depends(get_raw_body), d
                         if acc_num:
                             va = db.query(VirtualAccount).filter(
                                 VirtualAccount.account_number == acc_num,
-                                VirtualAccount.provider == VirtualAccountProvider.MONNIFY
+                                VirtualAccount.provider.in_([VirtualAccountProvider.MONNIFY, "monnify", "MONNIFY"])
                             ).first()
                             if va:
                                 user = va.user
@@ -554,7 +554,7 @@ def billstack_webhook(request: Request, raw_body: bytes = Depends(get_raw_body),
             if acc_num_check:
                 known_va = db.query(VirtualAccount).filter(
                     VirtualAccount.account_number == acc_num_check,
-                    VirtualAccount.provider == VirtualAccountProvider.BILLSTACK,
+                    VirtualAccount.provider.in_([VirtualAccountProvider.BILLSTACK, "billstack", "BILLSTACK"]),
                 ).first()
             if not known_va and (m_ref_check or r_ref_check):
                 ref_to_match = m_ref_check or r_ref_check
@@ -677,7 +677,7 @@ def billstack_webhook(request: Request, raw_body: bytes = Depends(get_raw_body),
         if acc_num:
             va = db.query(VirtualAccount).filter(
                 VirtualAccount.account_number == str(acc_num).strip(),
-                VirtualAccount.provider == VirtualAccountProvider.BILLSTACK
+                VirtualAccount.provider.in_([VirtualAccountProvider.BILLSTACK, "billstack", "BILLSTACK"])
             ).first()
             if va:
                 user = va.user
@@ -1203,7 +1203,7 @@ async def aspfiy_webhook(request: Request, raw_body: bytes = Depends(get_raw_bod
     for ref in ref_candidates:
         account = db.query(VirtualAccount).filter(
             VirtualAccount.customer_reference == ref,
-            VirtualAccount.provider == VirtualAccountProvider.ASPFIY
+            VirtualAccount.provider.in_([VirtualAccountProvider.ASPFIY, "aspfiy", "ASPFIY", "aspify", "ASPIFY"])
         ).first()
         if not account:
             account = db.query(VirtualAccount).filter(
@@ -1219,7 +1219,7 @@ async def aspfiy_webhook(request: Request, raw_body: bytes = Depends(get_raw_bod
         for acc_num in clean_accs:
             account = db.query(VirtualAccount).filter(
                 VirtualAccount.account_number == acc_num,
-                VirtualAccount.provider == VirtualAccountProvider.ASPFIY
+                VirtualAccount.provider.in_([VirtualAccountProvider.ASPFIY, "aspfiy", "ASPFIY", "aspify", "ASPIFY"])
             ).first()
             if not account:
                 account = db.query(VirtualAccount).filter(

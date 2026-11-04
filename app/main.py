@@ -806,12 +806,12 @@ def _ensure_virtual_account_provider_enum() -> None:
                         except Exception:
                             pass
                 try:
-                    conn.execute(text("UPDATE virtual_accounts SET status = 'ACTIVE' WHERE status::text = 'active'"))
-                    conn.execute(text("UPDATE virtual_accounts SET status = 'INACTIVE' WHERE status::text = 'inactive'"))
-                    conn.execute(text("UPDATE virtual_accounts SET provider = 'BILLSTACK' WHERE provider::text = 'billstack'"))
-                    conn.execute(text("UPDATE virtual_accounts SET provider = 'MONNIFY' WHERE provider::text = 'monnify'"))
-                    conn.execute(text("UPDATE virtual_accounts SET provider = 'PAYSTACK' WHERE provider::text = 'paystack'"))
-                    conn.execute(text("UPDATE virtual_accounts SET provider = 'ASPFIY' WHERE provider::text IN ('aspfiy', 'aspify', 'ASPIFY')"))
+                    conn.execute(text("UPDATE virtual_accounts SET status = 'active' WHERE status::text ILIKE 'active'"))
+                    conn.execute(text("UPDATE virtual_accounts SET status = 'inactive' WHERE status::text ILIKE 'inactive'"))
+                    conn.execute(text("UPDATE virtual_accounts SET provider = 'billstack' WHERE provider::text ILIKE 'billstack'"))
+                    conn.execute(text("UPDATE virtual_accounts SET provider = 'monnify' WHERE provider::text ILIKE 'monnify'"))
+                    conn.execute(text("UPDATE virtual_accounts SET provider = 'paystack' WHERE provider::text ILIKE 'paystack'"))
+                    conn.execute(text("UPDATE virtual_accounts SET provider = 'aspfiy' WHERE provider::text ILIKE 'aspfiy' OR provider::text ILIKE 'aspify'"))
                 except Exception as norm_err:
                     logging.getLogger(__name__).debug("VirtualAccount enum normalization skipped: %s", norm_err)
             logging.getLogger(__name__).info("Ensured all values in virtualaccountprovider and virtualaccountstatus ENUMs.")

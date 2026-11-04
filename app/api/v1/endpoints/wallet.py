@@ -343,16 +343,16 @@ def get_bank_transfer_accounts(request: Request = None, user: User = Depends(get
         try:
             db_paystack = db.query(VirtualAccount).filter(
                 VirtualAccount.user_id == user.id,
-                VirtualAccount.provider == VirtualAccountProvider.PAYSTACK
+                VirtualAccount.provider.in_([VirtualAccountProvider.PAYSTACK, "paystack", "PAYSTACK"])
             ).all()
-            if db_paystack:
-                for db_acc in db_paystack:
-                    if db_acc.status == VirtualAccountStatus.ACTIVE and db_acc.account_number:
-                        all_accounts.append({
-                            "bank_name": db_acc.bank_name,
-                            "account_number": db_acc.account_number,
-                            "account_name": db_acc.account_name,
-                        })
+            active_paystack = [acc for acc in db_paystack if acc.status in (VirtualAccountStatus.ACTIVE, "active", "ACTIVE") and acc.account_number]
+            if active_paystack:
+                for db_acc in active_paystack:
+                    all_accounts.append({
+                        "bank_name": db_acc.bank_name,
+                        "account_number": db_acc.account_number,
+                        "account_name": db_acc.account_name,
+                    })
             else:
                 phone = _to_paystack_phone(user.phone_number)
                 try:
@@ -368,18 +368,36 @@ def get_bank_transfer_accounts(request: Request = None, user: User = Depends(get
                     if paystack_accs:
                         for acc in paystack_accs:
                             bank_slug = acc["bank_name"].lower().replace(" ", "_")
-                            db_acc = VirtualAccount(
-                                user_id=user.id,
-                                provider=VirtualAccountProvider.PAYSTACK,
-                                account_number=acc["account_number"],
-                                account_name=acc["account_name"],
-                                bank_name=acc["bank_name"],
-                                bank_code="000",
-                                customer_reference=f"{account_reference}_paystack_{bank_slug}",
-                                reservation_reference=f"paystack_{user.id}_{bank_slug}_{secrets.token_hex(4)}",
-                                status=VirtualAccountStatus.ACTIVE,
-                            )
-                            db.add(db_acc)
+                            cust_ref = f"{account_reference}_paystack_{bank_slug}"
+                            existing_va = db.query(VirtualAccount).filter(
+                                (VirtualAccount.customer_reference == cust_ref) |
+                                (VirtualAccount.account_number == acc["account_number"]) |
+                                (
+                                    (VirtualAccount.user_id == user.id)
+                                    & (VirtualAccount.provider.in_([VirtualAccountProvider.PAYSTACK, "paystack", "PAYSTACK"]))
+                                )
+                            ).first()
+                            if existing_va:
+                                existing_va.user_id = user.id
+                                existing_va.provider = VirtualAccountProvider.PAYSTACK
+                                existing_va.account_number = acc["account_number"]
+                                existing_va.account_name = acc["account_name"]
+                                existing_va.bank_name = acc["bank_name"]
+                                existing_va.bank_code = "000"
+                                existing_va.status = VirtualAccountStatus.ACTIVE
+                            else:
+                                db_acc = VirtualAccount(
+                                    user_id=user.id,
+                                    provider=VirtualAccountProvider.PAYSTACK,
+                                    account_number=acc["account_number"],
+                                    account_name=acc["account_name"],
+                                    bank_name=acc["bank_name"],
+                                    bank_code="000",
+                                    customer_reference=cust_ref,
+                                    reservation_reference=f"paystack_{user.id}_{bank_slug}_{secrets.token_hex(4)}",
+                                    status=VirtualAccountStatus.ACTIVE,
+                                )
+                                db.add(db_acc)
                         db.commit()
                         all_accounts.extend(paystack_accs)
                 except PaystackError as exc:
@@ -420,7 +438,7 @@ def get_bank_transfer_accounts(request: Request = None, user: User = Depends(get
     if is_gateway_active(db, "monnify", bool(settings.monnify_secret_key)):
         db_monnify = db.query(VirtualAccount).filter(
             VirtualAccount.user_id == user.id,
-            VirtualAccount.provider == VirtualAccountProvider.MONNIFY
+            VirtualAccount.provider.in_([VirtualAccountProvider.MONNIFY, "monnify", "MONNIFY"])
         ).all()
 
         if not db_monnify:
@@ -442,8 +460,8 @@ def get_bank_transfer_accounts(request: Request = None, user: User = Depends(get
     if is_gateway_active(db, "billstack", bool(getattr(settings, "billstack_enabled", False) or getattr(settings, "billstack_api_key", ""))):
         db_billstack = db.query(VirtualAccount).filter(
             VirtualAccount.user_id == user.id,
-            VirtualAccount.provider == VirtualAccountProvider.BILLSTACK,
-            VirtualAccount.status == VirtualAccountStatus.ACTIVE
+            VirtualAccount.provider.in_([VirtualAccountProvider.BILLSTACK, "billstack", "BILLSTACK"]),
+            VirtualAccount.status.in_([VirtualAccountStatus.ACTIVE, "active", "ACTIVE"])
         ).all()
 
         existing_bank_codes = set()
@@ -490,7 +508,7 @@ def get_bank_transfer_accounts(request: Request = None, user: User = Depends(get
                             (VirtualAccount.account_number == acc_num) |
                             (
                                 (VirtualAccount.user_id == user.id)
-                                & (VirtualAccount.provider == VirtualAccountProvider.BILLSTACK)
+                                & (VirtualAccount.provider.in_([VirtualAccountProvider.BILLSTACK, "billstack", "BILLSTACK"]))
                                 & (VirtualAccount.bank_code == acc_bank_code)
                             )
                         ).first()
@@ -527,8 +545,8 @@ def get_bank_transfer_accounts(request: Request = None, user: User = Depends(get
 
         fresh_billstack = db.query(VirtualAccount).filter(
             VirtualAccount.user_id == user.id,
-            VirtualAccount.provider == VirtualAccountProvider.BILLSTACK,
-            VirtualAccount.status == VirtualAccountStatus.ACTIVE
+            VirtualAccount.provider.in_([VirtualAccountProvider.BILLSTACK, "billstack", "BILLSTACK"]),
+            VirtualAccount.status.in_([VirtualAccountStatus.ACTIVE, "active", "ACTIVE"])
         ).all()
 
         for db_acc in fresh_billstack:
@@ -873,8 +891,8 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
     if is_gateway_active(db, "billstack", bool(getattr(settings, "billstack_enabled", False) or getattr(settings, "billstack_api_key", ""))):
         db_billstack = db.query(VirtualAccount).filter(
             VirtualAccount.user_id == user.id,
-            VirtualAccount.provider == VirtualAccountProvider.BILLSTACK,
-            VirtualAccount.status == VirtualAccountStatus.ACTIVE
+            VirtualAccount.provider.in_([VirtualAccountProvider.BILLSTACK, "billstack", "BILLSTACK"]),
+            VirtualAccount.status.in_([VirtualAccountStatus.ACTIVE, "active", "ACTIVE"])
         ).all()
 
         existing_bank_codes = set()
@@ -935,7 +953,7 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
                             (VirtualAccount.account_number == acc_num) |
                             (
                                 (VirtualAccount.user_id == user.id)
-                                & (VirtualAccount.provider == VirtualAccountProvider.BILLSTACK)
+                                & (VirtualAccount.provider.in_([VirtualAccountProvider.BILLSTACK, "billstack", "BILLSTACK"]))
                                 & (VirtualAccount.bank_code == acc_bank_code)
                             )
                         ).first()
@@ -990,8 +1008,8 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
 
         fresh_billstack = db.query(VirtualAccount).filter(
             VirtualAccount.user_id == user.id,
-            VirtualAccount.provider == VirtualAccountProvider.BILLSTACK,
-            VirtualAccount.status == VirtualAccountStatus.ACTIVE
+            VirtualAccount.provider.in_([VirtualAccountProvider.BILLSTACK, "billstack", "BILLSTACK"]),
+            VirtualAccount.status.in_([VirtualAccountStatus.ACTIVE, "active", "ACTIVE"])
         ).all()
 
         for db_acc in fresh_billstack:
@@ -1018,7 +1036,7 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
     if not is_mele and is_gateway_active(db, "asfiy", getattr(settings, "aspfiy_enabled", False)):
         db_aspfiy = db.query(VirtualAccount).filter(
             VirtualAccount.user_id == user.id,
-            VirtualAccount.provider == VirtualAccountProvider.ASPFIY,
+            VirtualAccount.provider.in_([VirtualAccountProvider.ASPFIY, "aspfiy", "ASPFIY", "aspify", "ASPIFY"]),
         ).all()
 
         active_aspfiy = [
@@ -1177,8 +1195,8 @@ def create_bank_transfer_accounts(request: Request, payload: CreateBankTransferA
 def delete_bank_transfer_accounts(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     db.query(VirtualAccount).filter(
         VirtualAccount.user_id == user.id,
-        VirtualAccount.provider.in_([VirtualAccountProvider.MONNIFY, VirtualAccountProvider.BILLSTACK])
-    ).delete()
+        VirtualAccount.provider.in_([VirtualAccountProvider.MONNIFY, VirtualAccountProvider.BILLSTACK, "monnify", "MONNIFY", "billstack", "BILLSTACK"])
+    ).delete(synchronize_session=False)
     db.commit()
     return {"status": "success", "message": "Virtual accounts cache successfully deleted."}
 
@@ -1190,8 +1208,8 @@ def temp_reset_virtual_accounts(email: str, db: Session = Depends(get_db), admin
         return {"status": "error", "message": "User not found"}
     deleted = db.query(VirtualAccount).filter(
         VirtualAccount.user_id == user.id,
-        VirtualAccount.provider.in_([VirtualAccountProvider.MONNIFY, VirtualAccountProvider.BILLSTACK])
-    ).delete()
+        VirtualAccount.provider.in_([VirtualAccountProvider.MONNIFY, VirtualAccountProvider.BILLSTACK, "monnify", "MONNIFY", "billstack", "BILLSTACK"])
+    ).delete(synchronize_session=False)
     db.commit()
     return {"status": "success", "message": f"Successfully deleted {deleted} cached accounts for {email}."}
 
