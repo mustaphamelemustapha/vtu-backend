@@ -172,12 +172,12 @@ class PushNotificationService:
         return cls._apps.get("default")
 
     @classmethod
-    def send_push_notification(cls, token: str, title: str, body: str, data: dict = None, sound_type: str = "default", brand: str = None) -> bool:
+    def send_push_notification(cls, token: str, title: str, body: str, data: dict = None, sound_type: str = "default", brand: str = None, image_url: str = None) -> bool:
         """Compatibility alias for webhooks and services calling send_push_notification."""
-        return cls.send_to_token(token=token, title=title, body=body, data=data, sound_type=sound_type, brand=brand)
+        return cls.send_to_token(token=token, title=title, body=body, data=data, sound_type=sound_type, brand=brand, image_url=image_url)
 
     @classmethod
-    def send_to_token(cls, token: str, title: str, body: str, data: dict = None, sound_type: str = "default", brand: str = None) -> bool:
+    def send_to_token(cls, token: str, title: str, body: str, data: dict = None, sound_type: str = "default", brand: str = None, image_url: str = None) -> bool:
         cls._initialize()
         if not cls._initialized or not token:
             return False
@@ -186,6 +186,9 @@ class PushNotificationService:
             if data is None:
                 data = {}
             data["sound_type"] = sound_type
+            if image_url:
+                data["image"] = image_url
+                data["image_url"] = image_url
 
             if sound_type == "balance_success":
                 android_config = messaging.AndroidConfig(
@@ -196,6 +199,7 @@ class PushNotificationService:
                         click_action="FLUTTER_NOTIFICATION_CLICK",
                         default_sound=False,
                         default_vibrate_timings=True,
+                        image=image_url if image_url else None,
                     )
                 )
                 apns_config = messaging.APNSConfig(
@@ -204,8 +208,10 @@ class PushNotificationService:
                             sound="balance_success.wav",
                             badge=1,
                             content_available=True,
+                            mutable_content=True if image_url else False,
                         )
-                    )
+                    ),
+                    fcm_options=messaging.APNSFCMOptions(image=image_url) if image_url else None
                 )
             else:
                 android_config = messaging.AndroidConfig(
@@ -216,8 +222,9 @@ class PushNotificationService:
                         click_action="FLUTTER_NOTIFICATION_CLICK",
                         default_sound=True,
                         default_vibrate_timings=True,
-                        visibility=messaging.AndroidNotificationVisibility.PUBLIC,
-                        notification_priority=messaging.AndroidNotificationPriority.PRIORITY_HIGH,
+                        visibility="public",
+                        priority="high",
+                        image=image_url if image_url else None,
                     )
                 )
                 apns_config = messaging.APNSConfig(
@@ -226,12 +233,14 @@ class PushNotificationService:
                             sound="default",
                             badge=1,
                             content_available=True,
+                            mutable_content=True if image_url else False,
                         )
-                    )
+                    ),
+                    fcm_options=messaging.APNSFCMOptions(image=image_url) if image_url else None
                 )
 
             message = messaging.Message(
-                notification=messaging.Notification(title=title, body=body),
+                notification=messaging.Notification(title=title, body=body, image=image_url if image_url else None),
                 data=data,
                 token=token,
                 android=android_config,
@@ -281,6 +290,11 @@ class PushNotificationService:
             return False
 
         try:
+            data_payload = dict(data or {})
+            if image_url:
+                data_payload["image"] = image_url
+                data_payload["image_url"] = image_url
+
             android_config = messaging.AndroidConfig(
                 priority="high",
                 notification=messaging.AndroidNotification(
@@ -289,8 +303,9 @@ class PushNotificationService:
                     click_action="FLUTTER_NOTIFICATION_CLICK",
                     default_sound=True,
                     default_vibrate_timings=True,
-                    visibility=messaging.AndroidNotificationVisibility.PUBLIC,
-                    notification_priority=messaging.AndroidNotificationPriority.PRIORITY_HIGH,
+                    visibility="public",
+                    priority="high",
+                    image=image_url if image_url else None,
                 )
             )
             
@@ -332,7 +347,7 @@ class PushNotificationService:
                 try:
                     message = messaging.Message(
                         notification=messaging.Notification(title=title, body=body, image=image_url),
-                        data=data or {},
+                        data=data_payload,
                         topic=t,
                         android=android_config,
                         apns=apns_config,
@@ -351,7 +366,7 @@ class PushNotificationService:
                     try:
                         multicast_msg = messaging.MulticastMessage(
                             notification=messaging.Notification(title=title, body=body, image=image_url),
-                            data=data or {},
+                            data=data_payload,
                             tokens=batch,
                             android=android_config,
                             apns=apns_config,

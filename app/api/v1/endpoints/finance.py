@@ -42,8 +42,8 @@ class FinanceOverviewResponse(BaseModel):
     reconciliation_gap: float
 
 class FinancialLedgerCreate(BaseModel):
-    category: FinancialCategory
-    entry_type: EntryType
+    category: str
+    entry_type: str
     amount: float
     party: str
     description: Optional[str] = None
@@ -303,7 +303,7 @@ def get_finance_overview(
         sme_p = db_providers.get("smeplug")
         sme_active = bool(
             (sme_p and sme_p.is_active and sme_p.api_key) or
-            (app_settings.smeplug_api_key and (sme_p is None or sme_p.is_active))
+            (app_settings.smeplug_api_key and (sme_p is None or (sme_p and sme_p.is_active)))
         )
         if sme_active:
             try:
@@ -313,16 +313,14 @@ def get_finance_overview(
                 if isinstance(sme_bal, (int, float)):
                     assets_list.append({"name": "SMEPlug", "balance": float(sme_bal), "type": "PROVIDER_WALLET"})
                     total_assets += Decimal(str(sme_bal))
-                else:
-                    assets_list.append({"name": "SMEPlug", "balance": 0.0, "type": "ERROR", "error": str(sme_bal)})
             except Exception as e:
-                assets_list.append({"name": "SMEPlug", "balance": 0.0, "type": "ERROR", "error": str(e)})
+                logger.warning(f"Could not load SMEPlug balance: {e}")
 
-        # 2. Amigo (Only query if explicitly active in DB with API key, or enabled in settings)
+        # 2. Amigo (Only query if explicitly active in DB with valid API key)
         amigo_p = db_providers.get("amigo")
         amigo_active = bool(
-            (amigo_p and amigo_p.is_active and amigo_p.api_key) or
-            (app_settings.amigo_api_key and (amigo_p is None or amigo_p.is_active))
+            (amigo_p and amigo_p.is_active and amigo_p.api_key and amigo_p.api_key.strip()) or
+            (app_settings.amigo_api_key and app_settings.amigo_api_key.strip() and (amigo_p is None or amigo_p.is_active))
         )
         if amigo_active:
             try:
@@ -332,16 +330,14 @@ def get_finance_overview(
                 if isinstance(amigo_bal, (int, float)):
                     assets_list.append({"name": "Amigo", "balance": float(amigo_bal), "type": "PROVIDER_WALLET"})
                     total_assets += Decimal(str(amigo_bal))
-                else:
-                    assets_list.append({"name": "Amigo", "balance": 0.0, "type": "ERROR", "error": str(amigo_bal)})
             except Exception as e:
-                assets_list.append({"name": "Amigo", "balance": 0.0, "type": "ERROR", "error": str(e)})
+                logger.warning(f"Could not load Amigo balance: {e}")
 
-        # 3. ClubKonnect (Only query if explicitly active in DB with API key, or enabled in settings)
+        # 3. ClubKonnect (Only query if explicitly active in DB with valid credentials)
         ck_p = db_providers.get("clubkonnect")
         ck_active = bool(
-            (ck_p and ck_p.is_active and ck_p.api_key) or
-            ((app_settings.clubkonnect_api_key or app_settings.clubkonnect_enabled) and (ck_p is None or ck_p.is_active))
+            (ck_p and ck_p.is_active and ck_p.api_key and ck_p.api_key.strip()) or
+            (app_settings.clubkonnect_enabled and app_settings.clubkonnect_api_key and (ck_p is None or ck_p.is_active))
         )
         if ck_active:
             try:
@@ -351,23 +347,20 @@ def get_finance_overview(
                 if isinstance(club_bal, (int, float)):
                     assets_list.append({"name": "ClubKonnect", "balance": float(club_bal), "type": "PROVIDER_WALLET"})
                     total_assets += Decimal(str(club_bal))
-                else:
-                    assets_list.append({"name": "ClubKonnect", "balance": 0.0, "type": "ERROR", "error": str(club_bal)})
             except Exception as e:
-                assets_list.append({"name": "ClubKonnect", "balance": 0.0, "type": "ERROR", "error": str(e)})
+                logger.warning(f"Could not load ClubKonnect balance: {e}")
 
         # 4. Any other active providers in database (e.g. AutoSync, BoltNet, Telecom Abode)
         for ident, p in db_providers.items():
             if ident in ["smeplug", "amigo", "clubkonnect"]:
                 continue
-            if p.is_active and p.api_key:
+            if p.is_active and p.api_key and p.api_key.strip():
                 bal = float(p.balance or 0.0)
                 assets_list.append({"name": p.name or ident.upper(), "balance": bal, "type": "PROVIDER_WALLET"})
                 total_assets += Decimal(str(bal))
 
     except Exception as e:
         logger.warning(f"Could not fetch live provider balances: {e}")
-        assets_list.append({"name": "Live Balances", "balance": 0.0, "type": "ERROR", "error": str(e)})
 
     # 10. OWNER CAPITAL & DEBTS
     has_ledger_table = False
