@@ -238,6 +238,7 @@ def ensure_tables():
         _ensure_data_plan_dispatch_columns()
         _ensure_system_settings_columns()
         _ensure_default_integrations()
+        _ensure_financial_ledger_table()
         try:
             from app.services.push_notification import PushNotificationService
             PushNotificationService._initialize()
@@ -286,6 +287,7 @@ def ensure_tables():
     _ensure_data_plan_dispatch_columns()
     _ensure_system_settings_columns()
     _ensure_default_integrations()
+    _ensure_financial_ledger_table()
     try:
         from app.services.push_notification import PushNotificationService
         PushNotificationService._initialize()
@@ -1023,6 +1025,25 @@ def _ensure_default_integrations() -> None:
         logging.getLogger(__name__).warning("Could not ensure default integrations: %s", exc)
     finally:
         db.close()
+
+
+def _ensure_financial_ledger_table() -> None:
+    try:
+        from app.models.financial_ledger import FinancialLedger
+        inspector = inspect(engine)
+        if not inspector.has_table("financial_ledger"):
+            FinancialLedger.__table__.create(engine, checkfirst=True)
+            logging.getLogger(__name__).info("Ensured financial_ledger table exists.")
+        else:
+            cols = {c["name"] for c in inspector.get_columns("financial_ledger")}
+            with engine.begin() as conn:
+                if "created_by_id" not in cols:
+                    conn.execute(text("ALTER TABLE financial_ledger ADD COLUMN created_by_id INTEGER REFERENCES users(id)"))
+                if "source_id" not in cols:
+                    conn.execute(text("ALTER TABLE financial_ledger ADD COLUMN source_id VARCHAR(64)"))
+                logging.getLogger(__name__).info("Ensured financial_ledger columns.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure financial_ledger table: %s", exc)
 
 
 @app.get("/healthz")

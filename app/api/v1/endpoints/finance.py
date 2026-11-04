@@ -4,7 +4,7 @@ from typing import Any, List, Optional
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_, text
+from sqlalchemy import func, or_, text, cast, String, inspect
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -280,77 +280,133 @@ def get_finance_overview(
     wallet_liability = Decimal(str(wallet_liability_amount))
 
     # 9. COMPANY ASSETS (Provider Balances)
-    # Fetch live balances from supported providers
+    # Strictly fetch live balances from providers that are active / ON
     assets_list = []
     total_assets = Decimal("0.0")
     try:
-        from app.providers.smeplug_provider import SMEPlugProvider
-        from app.services.amigo import AmigoClient
-        from app.services.bills import ClubKonnectBillsProvider
-        
-        # 1. SMEPlug
-        try:
-            sme = SMEPlugProvider()
-            sme_bal = sme.get_balance()
-            if isinstance(sme_bal, (int, float)):
-                assets_list.append({"name": "SMEPlug", "balance": float(sme_bal), "type": "PROVIDER_WALLET"})
-                total_assets += Decimal(str(sme_bal))
-            else:
-                assets_list.append({"name": "SMEPlug", "balance": 0.0, "type": "ERROR", "error": str(sme_bal)})
-        except Exception as e:
-            assets_list.append({"name": "SMEPlug", "balance": 0.0, "type": "ERROR", "error": str(e)})
+        from app.core.config import get_settings
+        from app.models.integration import IntegrationProvider
+        app_settings = get_settings()
 
-        # 2. Amigo
+        # Query all integration providers from database
+        db_providers = {}
         try:
-            amigo = AmigoClient()
-            amigo_bal = amigo.get_balance()
-            if isinstance(amigo_bal, (int, float)):
-                assets_list.append({"name": "Amigo", "balance": float(amigo_bal), "type": "PROVIDER_WALLET"})
-                total_assets += Decimal(str(amigo_bal))
-            else:
-                assets_list.append({"name": "Amigo", "balance": 0.0, "type": "ERROR", "error": str(amigo_bal)})
+            if inspect(db.bind).has_table("integration_providers"):
+                db_providers = {
+                    p.identifier.lower(): p
+                    for p in db.query(IntegrationProvider).all()
+                }
         except Exception as e:
-            assets_list.append({"name": "Amigo", "balance": 0.0, "type": "ERROR", "error": str(e)})
+            logger.warning(f"Could not load integration_providers table: {e}")
 
-        # 3. ClubKonnect
-        try:
-            club = ClubKonnectBillsProvider()
-            club_bal = club.get_balance()
-            if isinstance(club_bal, (int, float)):
-                assets_list.append({"name": "ClubKonnect", "balance": float(club_bal), "type": "PROVIDER_WALLET"})
-                total_assets += Decimal(str(club_bal))
-            else:
-                assets_list.append({"name": "ClubKonnect", "balance": 0.0, "type": "ERROR", "error": str(club_bal)})
-        except Exception as e:
-            assets_list.append({"name": "ClubKonnect", "balance": 0.0, "type": "ERROR", "error": str(e)})
+        # 1. SMEPlug (Check if active in DB or has API key in settings)
+        sme_p = db_providers.get("smeplug")
+        sme_active = bool(
+            (sme_p and sme_p.is_active and sme_p.api_key) or
+            (app_settings.smeplug_api_key and (sme_p is None or sme_p.is_active))
+        )
+        if sme_active:
+            try:
+                from app.providers.smeplug_provider import SMEPlugProvider
+                sme = SMEPlugProvider(db=db)
+                sme_bal = sme.get_balance()
+                if isinstance(sme_bal, (int, float)):
+                    assets_list.append({"name": "SMEPlug", "balance": float(sme_bal), "type": "PROVIDER_WALLET"})
+                    total_assets += Decimal(str(sme_bal))
+                else:
+                    assets_list.append({"name": "SMEPlug", "balance": 0.0, "type": "ERROR", "error": str(sme_bal)})
+            except Exception as e:
+                assets_list.append({"name": "SMEPlug", "balance": 0.0, "type": "ERROR", "error": str(e)})
+
+        # 2. Amigo (Only query if explicitly active in DB with API key, or enabled in settings)
+        amigo_p = db_providers.get("amigo")
+        amigo_active = bool(
+            (amigo_p and amigo_p.is_active and amigo_p.api_key) or
+            (app_settings.amigo_api_key and (amigo_p is None or amigo_p.is_active))
+        )
+        if amigo_active:
+            try:
+                from app.services.amigo import AmigoClient
+                amigo = AmigoClient(api_key=amigo_p.api_key if amigo_p else None, base_url=amigo_p.base_url if amigo_p else None)
+                amigo_bal = amigo.get_balance()
+                if isinstance(amigo_bal, (int, float)):
+                    assets_list.append({"name": "Amigo", "balance": float(amigo_bal), "type": "PROVIDER_WALLET"})
+                    total_assets += Decimal(str(amigo_bal))
+                else:
+                    assets_list.append({"name": "Amigo", "balance": 0.0, "type": "ERROR", "error": str(amigo_bal)})
+            except Exception as e:
+                assets_list.append({"name": "Amigo", "balance": 0.0, "type": "ERROR", "error": str(e)})
+
+        # 3. ClubKonnect (Only query if explicitly active in DB with API key, or enabled in settings)
+        ck_p = db_providers.get("clubkonnect")
+        ck_active = bool(
+            (ck_p and ck_p.is_active and ck_p.api_key) or
+            ((app_settings.clubkonnect_api_key or app_settings.clubkonnect_enabled) and (ck_p is None or ck_p.is_active))
+        )
+        if ck_active:
+            try:
+                from app.services.bills import ClubKonnectBillsProvider
+                club = ClubKonnectBillsProvider()
+                club_bal = club.get_balance()
+                if isinstance(club_bal, (int, float)):
+                    assets_list.append({"name": "ClubKonnect", "balance": float(club_bal), "type": "PROVIDER_WALLET"})
+                    total_assets += Decimal(str(club_bal))
+                else:
+                    assets_list.append({"name": "ClubKonnect", "balance": 0.0, "type": "ERROR", "error": str(club_bal)})
+            except Exception as e:
+                assets_list.append({"name": "ClubKonnect", "balance": 0.0, "type": "ERROR", "error": str(e)})
+
+        # 4. Any other active providers in database (e.g. AutoSync, BoltNet, Telecom Abode)
+        for ident, p in db_providers.items():
+            if ident in ["smeplug", "amigo", "clubkonnect"]:
+                continue
+            if p.is_active and p.api_key:
+                bal = float(p.balance or 0.0)
+                assets_list.append({"name": p.name or ident.upper(), "balance": bal, "type": "PROVIDER_WALLET"})
+                total_assets += Decimal(str(bal))
 
     except Exception as e:
         logger.warning(f"Could not fetch live provider balances: {e}")
         assets_list.append({"name": "Live Balances", "balance": 0.0, "type": "ERROR", "error": str(e)})
 
     # 10. OWNER CAPITAL & DEBTS
-    owner_capital_amount = db.query(func.sum(FinancialLedger.amount)).filter(
-        FinancialLedger.category == FinancialCategory.OWNER_CAPITAL,
-        FinancialLedger.entry_type == EntryType.CREDIT
-    ).scalar() or 0
-    
-    owner_withdrawal_amount = db.query(func.sum(FinancialLedger.amount)).filter(
-        FinancialLedger.category == FinancialCategory.OWNER_WITHDRAWAL,
-        FinancialLedger.entry_type == EntryType.DEBIT
-    ).scalar() or 0
-    
+    has_ledger_table = False
+    try:
+        has_ledger_table = inspect(db.bind).has_table("financial_ledger")
+    except Exception:
+        has_ledger_table = False
+
+    owner_capital_amount = 0
+    owner_withdrawal_amount = 0
+    business_debts_amount = 0
+    receivables_amount = 0
+
+    if has_ledger_table:
+        try:
+            owner_capital_amount = db.query(func.sum(FinancialLedger.amount)).filter(
+                func.lower(cast(FinancialLedger.category, String)) == "owner_capital",
+                func.lower(cast(FinancialLedger.entry_type, String)) == "credit"
+            ).scalar() or 0
+            
+            owner_withdrawal_amount = db.query(func.sum(FinancialLedger.amount)).filter(
+                func.lower(cast(FinancialLedger.category, String)) == "owner_withdrawal",
+                func.lower(cast(FinancialLedger.entry_type, String)) == "debit"
+            ).scalar() or 0
+            
+            business_debts_amount = db.query(func.sum(FinancialLedger.amount)).filter(
+                func.lower(cast(FinancialLedger.category, String)) == "business_debt",
+                func.lower(cast(FinancialLedger.entry_type, String)) == "credit"
+            ).scalar() or 0
+            
+            receivables_amount = db.query(func.sum(FinancialLedger.amount)).filter(
+                func.lower(cast(FinancialLedger.category, String)) == "receivable",
+                func.lower(cast(FinancialLedger.entry_type, String)) == "debit"
+            ).scalar() or 0
+        except Exception as exc:
+            logger.warning(f"Could not calculate financial ledger balances: {exc}")
+
     owner_capital = Decimal(str(owner_capital_amount)) - Decimal(str(owner_withdrawal_amount))
-    
-    business_debts_amount = db.query(func.sum(FinancialLedger.amount)).filter(
-        FinancialLedger.category == FinancialCategory.BUSINESS_DEBT,
-        FinancialLedger.entry_type == EntryType.CREDIT
-    ).scalar() or 0
     business_debts = Decimal(str(business_debts_amount))
-    
-    receivables_amount = db.query(func.sum(FinancialLedger.amount)).filter(
-        FinancialLedger.category == FinancialCategory.RECEIVABLE,
-        FinancialLedger.entry_type == EntryType.DEBIT
-    ).scalar() or 0
     receivables = Decimal(str(receivables_amount))
     
     # 11. RECONCILIATION
@@ -405,23 +461,40 @@ def create_ledger_entry(
     """
     Manually add a financial ledger entry (e.g. Owner Capital, Debt)
     """
-    import secrets
-    ref = entry.reference or f"FIN_{secrets.token_hex(6).upper()}"
-    
-    db_entry = FinancialLedger(
-        reference=ref,
-        source="manual",
-        category=entry.category,
-        entry_type=entry.entry_type,
-        amount=Decimal(str(entry.amount)),
-        party=entry.party,
-        description=entry.description,
-        created_by_id=user.id
-    )
-    db.add(db_entry)
-    db.commit()
-    db.refresh(db_entry)
-    return db_entry
+    try:
+        import secrets
+        ref = entry.reference or f"FIN_{secrets.token_hex(6).upper()}"
+
+        inspector = inspect(db.bind)
+        if not inspector.has_table("financial_ledger"):
+            FinancialLedger.__table__.create(db.bind, checkfirst=True)
+            inspector = inspect(db.bind)
+
+        cols = {c["name"] for c in inspector.get_columns("financial_ledger")}
+        created_by_val = user.id if "created_by_id" in cols else None
+
+        cat_val = entry.category.value if hasattr(entry.category, "value") else str(entry.category)
+        entry_val = entry.entry_type.value if hasattr(entry.entry_type, "value") else str(entry.entry_type)
+
+        db_entry = FinancialLedger(
+            reference=ref,
+            source="manual",
+            status="completed",
+            category=cat_val,
+            entry_type=entry_val,
+            amount=Decimal(str(entry.amount)),
+            party=entry.party,
+            description=entry.description,
+            created_by_id=created_by_val
+        )
+        db.add(db_entry)
+        db.commit()
+        db.refresh(db_entry)
+        return db_entry
+    except Exception as exc:
+        db.rollback()
+        logger.error(f"Error creating financial ledger entry: {exc}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to record ledger entry: {str(exc)}")
 
 @router.get("/ledger", response_model=List[FinancialLedgerResponse])
 def get_ledger(
@@ -431,11 +504,18 @@ def get_ledger(
     db: Session = Depends(get_db),
     user: User = Depends(require_admin)
 ) -> Any:
-    query = db.query(FinancialLedger)
-    if category:
-        query = query.filter(FinancialLedger.category == category)
-    
-    return query.order_by(FinancialLedger.created_at.desc()).offset(skip).limit(limit).all()
+    try:
+        if not inspect(db.bind).has_table("financial_ledger"):
+            return []
+        query = db.query(FinancialLedger)
+        if category:
+            cat_val = category.value if hasattr(category, "value") else str(category)
+            query = query.filter(FinancialLedger.category == cat_val)
+        
+        return query.order_by(FinancialLedger.created_at.desc()).offset(skip).limit(limit).all()
+    except Exception as exc:
+        logger.warning(f"Error fetching financial ledger: {exc}")
+        return []
     
 
 @router.get("/leak-audit")
