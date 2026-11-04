@@ -216,6 +216,7 @@ def ensure_tables():
     # Pending reconcile must run in both production (auto_create_tables=False)
     # and local bootstrap mode.
     start_pending_reconcile_worker()
+    _ensure_all_database_enums()
     _ensure_virtual_account_provider_enum()
     if not settings.auto_create_tables:
         _bootstrap_admins()
@@ -1115,18 +1116,48 @@ def _ensure_broadcast_announcement_brand_column() -> None:
         logging.getLogger(__name__).warning("Could not ensure broadcast_announcements.brand column: %s", exc)
 
 
-def _ensure_userrole_enum() -> None:
+def _ensure_all_database_enums() -> None:
     if engine.dialect.name == "postgresql":
         try:
             with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
-                for val in ['customer', 'agent', 'ambassador', 'admin', 'user', 'reseller']:
-                    try:
-                        conn.execute(text(f"ALTER TYPE userrole ADD VALUE IF NOT EXISTS '{val}'"))
-                    except Exception:
-                        pass
-            logging.getLogger(__name__).info("Ensured PostgreSQL userrole enum values.")
+                enum_map = {
+                    "ledgertype": ['credit', 'debit', 'CREDIT', 'DEBIT', 'Credit', 'Debit'],
+                    "transactiontype": [
+                        'data', 'wallet_fund', 'wallet_transfer', 'airtime', 'cable', 'electricity', 'exam',
+                        'DATA', 'WALLET_FUND', 'WALLET_TRANSFER', 'AIRTIME', 'CABLE', 'ELECTRICITY', 'EXAM'
+                    ],
+                    "transactionstatus": [
+                        'pending', 'success', 'failed', 'refunded',
+                        'PENDING', 'SUCCESS', 'FAILED', 'REFUNDED'
+                    ],
+                    "userrole": [
+                        'customer', 'agent', 'ambassador', 'admin', 'user', 'reseller',
+                        'CUSTOMER', 'AGENT', 'AMBASSADOR', 'ADMIN', 'USER', 'RESELLER'
+                    ],
+                    "disputestatus": [
+                        'open', 'resolved', 'rejected',
+                        'OPEN', 'RESOLVED', 'REJECTED'
+                    ],
+                    "virtualaccountprovider": [
+                        'monnify', 'paystack', 'billstack', 'squad', 'safehaven', 'palmpay', 'moniepoint',
+                        'MONNIFY', 'PAYSTACK', 'BILLSTACK', 'SQUAD', 'SAFEHAVEN', 'PALMPAY', 'MONIEPOINT'
+                    ],
+                    "virtualaccountstatus": [
+                        'active', 'inactive', 'failed', 'pending',
+                        'ACTIVE', 'INACTIVE', 'FAILED', 'PENDING'
+                    ]
+                }
+                for enum_name, values in enum_map.items():
+                    for val in values:
+                        try:
+                            conn.execute(text(f"ALTER TYPE {enum_name} ADD VALUE IF NOT EXISTS '{val}'"))
+                        except Exception:
+                            pass
+            logging.getLogger(__name__).info("Ensured all PostgreSQL database enum values (ledgertype, transactiontype, transactionstatus, userrole, disputestatus, virtualaccount).")
         except Exception as e:
-            logging.getLogger(__name__).warning("Could not ensure PostgreSQL userrole enum: %s", e)
+            logging.getLogger(__name__).warning("Could not ensure PostgreSQL database enums: %s", e)
+
+_ensure_userrole_enum = _ensure_all_database_enums
 
 
 def _run_alembic_upgrade() -> None:

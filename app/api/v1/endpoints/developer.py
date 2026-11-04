@@ -485,8 +485,17 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
         provider=plan.provider,
         provider_plan_id=plan.provider_plan_id
     )
-    db.add(tx)
-    db.commit()
+    try:
+        db.add(tx)
+        db.commit()
+    except Exception as tx_err:
+        db.rollback()
+        logger.error(f"Failed to save pending developer transaction {client_ref}: {tx_err}")
+        try:
+            credit_wallet(db, wallet, price, f"{client_ref}_err_refund", "Refund: failed to initialize developer order")
+        except Exception:
+            db.rollback()
+        raise DeveloperAPIException("Failed to initialize purchase transaction.", 500)
 
     # -----------------------------
     # Release DB connection
@@ -801,8 +810,17 @@ def developer_buy_airtime(request: Request, payload: DeveloperAirtimePurchaseReq
             "charge_amount": str(charge_amount),
         },
     )
-    db.add(tx)
-    db.commit()
+    try:
+        db.add(tx)
+        db.commit()
+    except Exception as tx_err:
+        db.rollback()
+        logger.error(f"Failed to save pending developer transaction {client_ref}: {tx_err}")
+        try:
+            credit_wallet(db, wallet, price, f"{client_ref}_err_refund", "Refund: failed to initialize developer order")
+        except Exception:
+            db.rollback()
+        raise DeveloperAPIException("Failed to initialize purchase transaction.", 500)
 
     # -----------------------------
     # Release DB connection

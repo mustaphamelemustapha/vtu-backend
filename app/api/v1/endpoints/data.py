@@ -543,8 +543,17 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
         provider=plan.provider,
         provider_plan_id=plan.provider_plan_id
     )
-    db.add(transaction)
-    db.commit()
+    try:
+        db.add(transaction)
+        db.commit()
+    except Exception as tx_err:
+        db.rollback()
+        logger.error(f"Failed to save pending transaction {reference}: {tx_err}")
+        try:
+            credit_wallet(db, wallet, price, f"{reference}_err_refund", "Refund: failed to initialize order")
+        except Exception:
+            db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to initialize purchase transaction.")
 
     # -----------------------------
     # Release DB connection to avoid pool starvation on slow HTTP requests

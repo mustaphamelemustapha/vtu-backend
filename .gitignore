@@ -12,4 +12,3 @@ venv/
 
 firebase-adminsdk*.json
 *.base64.txt
-*firebase-adminsdk*.json

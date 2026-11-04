@@ -80,11 +80,22 @@ def credit_wallet(
         reference=reference,
         description=description,
     )
-    db.add(entry)
+    try:
+        db.add(entry)
+        if commit:
+            db.commit()
+            db.refresh(entry)
+            db.refresh(wallet)
+        else:
+            db.flush()
+            db.refresh(wallet)
+    except Exception as exc:
+        db.rollback()
+        import logging
+        logging.getLogger(__name__).error("Failed to commit credit_wallet ledger entry: %s", exc)
+        raise
+
     if commit:
-        db.commit()
-        db.refresh(entry)
-        db.refresh(wallet)
         try:
             if wallet.user and wallet.user.fcm_token:
                 from app.services.push_notification import PushNotificationService
@@ -102,9 +113,6 @@ def credit_wallet(
         except Exception as push_exc:
             import logging
             logging.getLogger(__name__).warning("Failed to send credit wallet push notification: %s", push_exc)
-    else:
-        db.flush()
-        db.refresh(wallet)
     return entry
 
 
@@ -144,10 +152,16 @@ def debit_wallet(db: Session, wallet: Wallet, amount: Decimal, reference: str, d
         reference=reference,
         description=description,
     )
-    db.add(entry)
-    db.commit()
-    db.refresh(entry)
-    db.refresh(wallet)
+    try:
+        db.add(entry)
+        db.commit()
+        db.refresh(entry)
+        db.refresh(wallet)
+    except Exception as exc:
+        db.rollback()
+        import logging
+        logging.getLogger(__name__).error("Failed to commit debit_wallet ledger entry: %s", exc)
+        raise
     try:
         if wallet.user and wallet.user.fcm_token:
             from app.services.push_notification import PushNotificationService
