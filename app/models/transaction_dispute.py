@@ -1,9 +1,9 @@
 import enum
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import relationship
 
-from app.core.database import Base
+from app.core.database import Base, SafeSQLEnum
 from app.models.base import TimestampMixin
 
 
@@ -32,7 +32,7 @@ class TransactionDispute(Base, TimestampMixin):
     category = Column(String(32), nullable=False, default="delivery_issue")
     reason = Column(Text, nullable=False)
     status = Column(
-        Enum(
+        SafeSQLEnum(
             DisputeStatus,
             name="disputestatus",
             values_callable=lambda obj: [e.value for e in obj],

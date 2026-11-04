@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import inspect
+import logging
 import re
 from app.core.database import get_db
 from app.dependencies import get_current_user
@@ -8,6 +9,7 @@ from app.models import User, Transaction, ServiceTransaction, TransactionDispute
 from app.schemas.transaction import TransactionOut, TransactionReportOut, TransactionReportRequest
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 _PHONE_PATTERN = re.compile(r"(\+?\d[\d\s-]{8,18}\d)")
 
 
@@ -82,56 +84,72 @@ def _extract_plan_name(description: str | None) -> str | None:
 
 
 @router.get("/me", response_model=list[TransactionOut])
-
 def list_transactions(limit: int = 50, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    base = db.query(Transaction).filter(Transaction.user_id == user.id).order_by(Transaction.created_at.desc()).limit(limit).all()
+    base = []
+    try:
+        base = db.query(Transaction).filter(Transaction.user_id == user.id).order_by(Transaction.created_at.desc()).limit(limit).all()
+    except Exception as exc:
+        logger.warning("Error fetching transactions for user %s: %s", user.id, exc)
+        db.rollback()
+        base = []
+
     recipient_phone_by_ref: dict[str, str] = {}
     ledger_description_by_ref: dict[str, str] = {}
     if base:
         refs = [str(tx.reference) for tx in base if tx.reference]
         if refs:
-            rows = (
-                db.query(WalletLedger.reference, WalletLedger.description)
-                .join(Wallet, Wallet.id == WalletLedger.wallet_id)
-                .filter(Wallet.user_id == user.id, WalletLedger.reference.in_(refs))
-                .order_by(WalletLedger.id.desc())
-                .all()
-            )
-            for reference, description in rows:
-                ref = str(reference or "").strip()
-                if not ref or ref in recipient_phone_by_ref:
-                    ledger_description_by_ref.setdefault(ref, str(description or "").strip())
-                    continue
-                ledger_description_by_ref[ref] = str(description or "").strip()
-                recipient_phone = _extract_recipient_phone(description)
-                if recipient_phone:
-                    recipient_phone_by_ref[ref] = recipient_phone
+            try:
+                rows = (
+                    db.query(WalletLedger.reference, WalletLedger.description)
+                    .join(Wallet, Wallet.id == WalletLedger.wallet_id)
+                    .filter(Wallet.user_id == user.id, WalletLedger.reference.in_(refs))
+                    .order_by(WalletLedger.id.desc())
+                    .all()
+                )
+                for reference, description in rows:
+                    ref = str(reference or "").strip()
+                    if not ref or ref in recipient_phone_by_ref:
+                        ledger_description_by_ref.setdefault(ref, str(description or "").strip())
+                        continue
+                    ledger_description_by_ref[ref] = str(description or "").strip()
+                    recipient_phone = _extract_recipient_phone(description)
+                    if recipient_phone:
+                        recipient_phone_by_ref[ref] = recipient_phone
+            except Exception as w_exc:
+                logger.warning("Error fetching wallet ledger descriptions: %s", w_exc)
+                db.rollback()
+
     extra = []
     try:
         if inspect(db.bind).has_table("service_transactions"):
             extra = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == user.id).order_by(ServiceTransaction.created_at.desc()).limit(limit).all()
     except Exception:
         # On hosted environments, new tables might not exist until a redeploy. Avoid breaking history.
+        db.rollback()
         extra = []
 
     open_report_refs: set[str] = set()
-    if _has_dispute_table(db):
-        rows = (
-            db.query(TransactionDispute.transaction_reference)
-            .filter(
-                TransactionDispute.user_id == user.id,
-                TransactionDispute.status == DisputeStatus.OPEN,
+    try:
+        if _has_dispute_table(db):
+            rows = (
+                db.query(TransactionDispute.transaction_reference)
+                .filter(
+                    TransactionDispute.user_id == user.id,
+                    TransactionDispute.status == DisputeStatus.OPEN,
+                )
+                .all()
             )
-            .all()
-        )
-        open_report_refs = {str(row[0]) for row in rows if row and row[0]}
+            open_report_refs = {str(row[0]) for row in rows if row and row[0]}
+    except Exception as d_exc:
+        logger.warning("Error fetching open dispute references: %s", d_exc)
+        db.rollback()
 
     items: list[dict] = []
     for tx in base:
         meta = None
         tx_type_val = _normalize_tx_type(tx.tx_type)
         if tx_type_val == "data":
-            recipient_phone = recipient_phone_by_ref.get(str(tx.reference))
+            recipient_phone = getattr(tx, "recipient_phone", None) or recipient_phone_by_ref.get(str(tx.reference))
             ledger_description = ledger_description_by_ref.get(str(tx.reference))
             plan_name = _extract_plan_name(ledger_description)
             meta = {}
@@ -192,11 +210,18 @@ def list_transactions(limit: int = 50, user: User = Depends(get_current_user), d
         )
 
     # 3. Retrieve historical agent rewards and append them if they don't already exist in base
-    from app.models.agent import AgentReward, AgentRewardStatus
-    rewards = db.query(AgentReward).filter(
-        AgentReward.agent_id == user.id,
-        AgentReward.status == AgentRewardStatus.CREDITED
-    ).all()
+    rewards = []
+    try:
+        from app.models.agent import AgentReward, AgentRewardStatus
+        if inspect(db.bind).has_table("agent_rewards"):
+            rewards = db.query(AgentReward).filter(
+                AgentReward.agent_id == user.id,
+                AgentReward.status == AgentRewardStatus.CREDITED
+            ).all()
+    except Exception as r_exc:
+        logger.warning("Error fetching agent rewards: %s", r_exc)
+        db.rollback()
+        rewards = []
     
     existing_refs = {tx.reference for tx in base if tx.reference}
     
@@ -232,26 +257,31 @@ def list_transactions(limit: int = 50, user: User = Depends(get_current_user), d
 def list_my_reports(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not _has_dispute_table(db):
         return []
-    rows = (
-        db.query(TransactionDispute)
-        .filter(TransactionDispute.user_id == user.id)
-        .order_by(TransactionDispute.created_at.desc(), TransactionDispute.id.desc())
-        .all()
-    )
-    return [
-        {
-            "id": row.id,
-            "created_at": row.created_at,
-            "transaction_reference": row.transaction_reference,
-            "tx_type": row.tx_type,
-            "category": row.category,
-            "reason": row.reason,
-            "status": _normalize_tx_type(row.status),
-            "admin_note": row.admin_note,
-            "resolved_at": row.resolved_at,
-        }
-        for row in rows
-    ]
+    try:
+        rows = (
+            db.query(TransactionDispute)
+            .filter(TransactionDispute.user_id == user.id)
+            .order_by(TransactionDispute.created_at.desc(), TransactionDispute.id.desc())
+            .all()
+        )
+        return [
+            {
+                "id": row.id,
+                "created_at": row.created_at,
+                "transaction_reference": row.transaction_reference,
+                "tx_type": row.tx_type,
+                "category": row.category,
+                "reason": row.reason,
+                "status": _normalize_tx_type(row.status),
+                "admin_note": row.admin_note,
+                "resolved_at": row.resolved_at,
+            }
+            for row in rows
+        ]
+    except Exception as exc:
+        logger.warning("Error loading user disputes: %s", exc)
+        db.rollback()
+        return []
 
 
 @router.post("/{reference}/report", response_model=TransactionReportOut)

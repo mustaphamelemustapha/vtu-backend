@@ -1,7 +1,7 @@
 import enum
-from sqlalchemy import Column, Integer, String, ForeignKey, Numeric, Enum, Index
+from sqlalchemy import Column, Integer, String, ForeignKey, Numeric, Index
 from sqlalchemy.orm import relationship
-from app.core.database import Base
+from app.core.database import Base, SafeSQLEnum
 from app.models.base import TimestampMixin
 
 
@@ -51,7 +51,7 @@ class Transaction(Base, TimestampMixin):
     data_plan_code = Column(String(64), nullable=True)
     amount = Column(Numeric(12, 2), nullable=False)
     status = Column(
-        Enum(
+        SafeSQLEnum(
             TransactionStatus,
             name="transactionstatus",
             values_callable=lambda obj: [e.value for e in obj],
@@ -60,7 +60,7 @@ class Transaction(Base, TimestampMixin):
         default=TransactionStatus.PENDING,
     )
     tx_type = Column(
-        Enum(
+        SafeSQLEnum(
             TransactionType,
             name="transactiontype",
             values_callable=lambda obj: [e.value for e in obj],

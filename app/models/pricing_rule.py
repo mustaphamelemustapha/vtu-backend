@@ -1,6 +1,6 @@
 import enum
-from sqlalchemy import Column, Integer, String, Numeric, Enum, Index
-from app.core.database import Base
+from sqlalchemy import Column, Integer, String, Numeric, Index
+from app.core.database import Base, SafeSQLEnum
 from app.models.base import TimestampMixin
 
 
@@ -20,7 +20,7 @@ class PricingRule(Base, TimestampMixin):
     id = Column(Integer, primary_key=True, index=True)
     network = Column(String(32), nullable=False)
     role = Column(
-        Enum(
+        SafeSQLEnum(
             PricingRole,
             name="pricingrole",
             values_callable=lambda obj: [e.value for e in obj],

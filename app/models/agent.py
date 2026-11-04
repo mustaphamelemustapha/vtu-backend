@@ -1,7 +1,7 @@
 import enum
-from sqlalchemy import Column, Integer, String, Boolean, Enum, ForeignKey, Numeric, DateTime, Index, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, Numeric, DateTime, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
-from app.core.database import Base
+from app.core.database import Base, SafeSQLEnum
 from app.models.base import TimestampMixin
 
 
@@ -16,7 +16,7 @@ class RewardCampaign(Base, TimestampMixin):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(255), nullable=False)
     campaign_type = Column(
-        Enum(
+        SafeSQLEnum(
             CampaignType,
             name="campaigntype",
             values_callable=lambda obj: [e.value for e in obj],
@@ -51,7 +51,7 @@ class AgentReward(Base, TimestampMixin):
     campaign_id = Column(Integer, ForeignKey("reward_campaigns.id"), nullable=False)
     amount = Column(Numeric(12, 2), nullable=False)
     status = Column(
-        Enum(
+        SafeSQLEnum(
             AgentRewardStatus,
             name="agentrewardstatus",
             values_callable=lambda obj: [e.value for e in obj],

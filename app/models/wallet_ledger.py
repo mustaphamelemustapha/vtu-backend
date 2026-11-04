@@ -1,7 +1,7 @@
 import enum
-from sqlalchemy import Column, Integer, ForeignKey, Numeric, String, Enum, Index
+from sqlalchemy import Column, Integer, ForeignKey, Numeric, String, Index
 from sqlalchemy.orm import relationship
-from app.core.database import Base
+from app.core.database import Base, SafeSQLEnum
 from app.models.base import TimestampMixin
 
 
@@ -26,7 +26,7 @@ class WalletLedger(Base, TimestampMixin):
     wallet_id = Column(Integer, ForeignKey("wallets.id"), nullable=False)
     amount = Column(Numeric(12, 2), nullable=False)
     entry_type = Column(
-        Enum(
+        SafeSQLEnum(
             LedgerType,
             name="ledgertype",
             values_callable=lambda obj: [e.value for e in obj],

@@ -1,9 +1,32 @@
 import importlib.util
 import logging
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, Enum as SQLEnum
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from app.core.config import get_settings
+
+
+class SafeSQLEnum(SQLEnum):
+    """
+    Resilient SQLAlchemy Enum type that avoids LookupError / KeyError crashes
+    when PostgreSQL contains uppercase, lowercase, mixed-case, or unmapped enum values.
+    """
+    def _object_value_for_elem(self, elem):
+        if elem is None:
+            return None
+        if elem in self._object_lookup:
+            return self._object_lookup[elem]
+        elem_str = str(elem).strip()
+        elem_lower = elem_str.lower()
+        for k, v in self._object_lookup.items():
+            if k is not None and str(k).lower() == elem_lower:
+                return v
+        if self.enum_class:
+            for member in self.enum_class:
+                if (hasattr(member, 'value') and str(member.value).lower() == elem_lower) or member.name.lower() == elem_lower:
+                    return member
+            return list(self.enum_class)[0]
+        return elem
 
 
 class Base(DeclarativeBase):

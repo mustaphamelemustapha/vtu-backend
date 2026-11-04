@@ -1,7 +1,7 @@
 import enum
-from sqlalchemy import Column, Integer, ForeignKey, String, Enum, Numeric, DateTime, Index, Boolean
+from sqlalchemy import Column, Integer, ForeignKey, String, Numeric, DateTime, Index, Boolean
 from sqlalchemy.orm import relationship
-from app.core.database import Base
+from app.core.database import Base, SafeSQLEnum
 from app.models.base import TimestampMixin
 
 
@@ -28,7 +28,7 @@ class Referral(Base, TimestampMixin):
     is_50gb_milestone_reached = Column(Boolean, default=False, nullable=False, server_default='0')
     is_milestone_bonus_paid = Column(Boolean, default=False, nullable=False, server_default='0')
     status = Column(
-        Enum(
+        SafeSQLEnum(
             ReferralStatus,
             name="referral_status",
             values_callable=lambda enum_cls: [member.value for member in enum_cls],

@@ -1145,6 +1145,10 @@ def _ensure_all_database_enums() -> None:
                     "virtualaccountstatus": [
                         'active', 'inactive', 'failed', 'pending',
                         'ACTIVE', 'INACTIVE', 'FAILED', 'PENDING'
+                    ],
+                    "agentrewardstatus": [
+                        'pending', 'credited', 'failed',
+                        'PENDING', 'CREDITED', 'FAILED'
                     ]
                 }
                 for enum_name, values in enum_map.items():

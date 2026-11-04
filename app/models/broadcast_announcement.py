@@ -1,8 +1,8 @@
 import enum
 
-from sqlalchemy import Boolean, Column, DateTime, Enum, Index, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Index, Integer, String, Text
 
-from app.core.database import Base
+from app.core.database import Base, SafeSQLEnum
 from app.models.base import TimestampMixin
 
 
@@ -20,7 +20,7 @@ class BroadcastAnnouncement(Base, TimestampMixin):
     title = Column(String(120), nullable=False)
     message = Column(Text, nullable=False)
     level = Column(
-        Enum(
+        SafeSQLEnum(
             AnnouncementLevel,
             name="announcementlevel",
             values_callable=lambda obj: [e.value for e in obj],
