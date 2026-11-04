@@ -199,38 +199,36 @@ def _ensure_utc(value: Optional[datetime]) -> Optional[datetime]:
     return value.astimezone(timezone.utc)
 
 
-@router.get("/analytics")
-def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
-    try:
-        # Check cache first
-        cached = _ANALYTICS_CACHE.get("admin_analytics")
-        if cached and (time.time() - cached['time']) < ANALYTICS_CACHE_TTL:
-            return cached['data']
+def _compute_analytics(admin, db: Session):
+    # Check cache first
+    cached = _ANALYTICS_CACHE.get("admin_analytics")
+    if cached and (time.time() - cached['time']) < ANALYTICS_CACHE_TTL:
+        return cached['data']
 
-        now_utc = _utcnow()
-        day_start_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
-        week_start_utc = day_start_utc - timedelta(days=day_start_utc.weekday())
-        month_start_utc = day_start_utc.replace(day=1)
+    now_utc = _utcnow()
+    day_start_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start_utc = day_start_utc - timedelta(days=day_start_utc.weekday())
+    month_start_utc = day_start_utc.replace(day=1)
 
-        # Initialize calendar month buckets for the last 6 months
-        current_m = month_start_utc
-        months_starts = []
-        for _ in range(6):
-            months_starts.insert(0, current_m)
-            prev_m_end = current_m - timedelta(days=1)
-            current_m = prev_m_end.replace(day=1)
+    # Initialize calendar month buckets for the last 6 months
+    current_m = month_start_utc
+    months_starts = []
+    for _ in range(6):
+        months_starts.insert(0, current_m)
+        prev_m_end = current_m - timedelta(days=1)
+        current_m = prev_m_end.replace(day=1)
 
-        trend_buckets = []
-        for m_start in months_starts:
-            label = m_start.strftime("%b %y")
-            trend_buckets.append({
-                "start": m_start,
-                "label": label,
-                "revenue": 0.0,
-                "cost_estimate": 0.0,
-                "profit_estimate": 0.0,
-                "tx_count": 0
-            })
+    trend_buckets = []
+    for m_start in months_starts:
+        label = m_start.strftime("%b %y")
+        trend_buckets.append({
+            "start": m_start,
+            "label": label,
+            "revenue": 0.0,
+            "cost_estimate": 0.0,
+            "profit_estimate": 0.0,
+            "tx_count": 0
+        })
 
     total_revenue = db.query(func.sum(Transaction.amount)).filter(
         Transaction.status == TransactionStatus.SUCCESS,
@@ -512,13 +510,18 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
         "monthly_trends": monthly_trends_payload,
     }
     
-        # Store in cache
-        _ANALYTICS_CACHE["admin_analytics"] = {
-            'time': time.time(),
-            'data': result
-        }
-        
-        return result
+    # Store in cache
+    _ANALYTICS_CACHE["admin_analytics"] = {
+        'time': time.time(),
+        'data': result
+    }
+    
+    return result
+
+@router.get("/analytics")
+def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
+    try:
+        return _compute_analytics(admin, db)
     except Exception as exc:
         logger.error(f"Error computing admin analytics: {exc}", exc_info=True)
         # Safe fallback so admin overview dashboard never breaks with HTTP 500
@@ -551,27 +554,19 @@ def analytics(admin=Depends(require_admin), db: Session = Depends(get_db)):
             "monthly_trends": [],
         }
 
-@router.get("/transactions", response_model=AdminTransactionsResponse)
-@cache_endpoint(ttl_seconds=15)
-def list_all_transactions(
-    admin=Depends(require_admin),
-    db: Session = Depends(get_db),
+def _query_all_transactions(
+    admin,
+    db: Session,
     q: Optional[str] = None,
     status: Optional[str] = None,
     tx_type: Optional[str] = None,
     network: Optional[str] = None,
-    from_date: Optional[date] = Query(default=None),
-    to_date: Optional[date] = Query(default=None),
+    from_date: Optional[date] = None,
+    to_date: Optional[date] = None,
     page: int = 1,
     page_size: int = 50,
 ):
-    if page < 1:
-        raise HTTPException(status_code=400, detail="page must be >= 1")
-    if page_size < 1 or page_size > 200:
-        raise HTTPException(status_code=400, detail="page_size must be between 1 and 200")
-
-    try:
-        status_enum = _coerce_status(status)
+    status_enum = _coerce_status(status)
     type_enum = _coerce_type(tx_type)
 
     # Test stubs (and some lightweight DB wrappers) don't implement Session.execute.
@@ -778,6 +773,28 @@ def list_all_transactions(
         items.append(row)
 
     return {"items": items, "total": int(total), "page": page, "page_size": page_size}
+
+
+@router.get("/transactions", response_model=AdminTransactionsResponse)
+@cache_endpoint(ttl_seconds=15)
+def list_all_transactions(
+    admin=Depends(require_admin),
+    db: Session = Depends(get_db),
+    q: Optional[str] = None,
+    status: Optional[str] = None,
+    tx_type: Optional[str] = None,
+    network: Optional[str] = None,
+    from_date: Optional[date] = Query(default=None),
+    to_date: Optional[date] = Query(default=None),
+    page: int = 1,
+    page_size: int = 50,
+):
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be >= 1")
+    if page_size < 1 or page_size > 200:
+        raise HTTPException(status_code=400, detail="page_size must be between 1 and 200")
+    try:
+        return _query_all_transactions(admin, db, q, status, tx_type, network, from_date, to_date, page, page_size)
     except Exception as exc:
         logger.error(f"Error in list_all_transactions: {exc}", exc_info=True)
         try:
