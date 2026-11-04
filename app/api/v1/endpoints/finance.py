@@ -15,7 +15,7 @@ from app.models import (
     DataPlan, AgentReward, AgentRewardStatus,
     Referral, ReferralStatus, Wallet,
     FinancialLedger, FinancialCategory, EntryType,
-    User
+    User, ServiceTransaction
 )
 
 router = APIRouter()
@@ -25,10 +25,11 @@ logger = logging.getLogger(__name__)
 
 class FinanceOverviewResponse(BaseModel):
     revenue: dict # { "actual": float }
-    cogs: dict # { "total": float, "data_cogs_estimated": float, "airtime_cogs_estimated": float, "is_estimated": bool }
+    cogs: dict # { "total": float, "data_cogs_estimated": float, "airtime_cogs_estimated": float, "other_cogs_estimated": float, "is_estimated": bool }
     gross_margin: float
     promotional_expense: float
     referral_expense: float
+    agent_commission_expense: float
     payment_fees: dict # { "total": float, "is_estimated": bool }
     net_profit: float
     is_net_profit_estimated: bool
@@ -72,8 +73,18 @@ def get_finance_overview(
 ) -> Any:
     """
     Get strict financial metrics separating Revenue, Expenses, Liabilities, and Equity.
+    Accounts for service sales, provider COGS, agent data cashback, ambassador rewards,
+    and gateway fees.
     """
-    # 1. REVENUE (Exclude WALLET_FUND and WALLET_TRANSFER)
+    # Check if optional service_transactions table exists
+    has_services = False
+    try:
+        from sqlalchemy import inspect
+        has_services = inspect(db.bind).has_table("service_transactions")
+    except Exception:
+        has_services = False
+
+    # 1. REVENUE (All successful service purchases, excluding wallet funding and peer transfers)
     service_tx_types = [
         TransactionType.DATA.value,
         TransactionType.AIRTIME.value,
@@ -86,19 +97,36 @@ def get_finance_overview(
         db.query(func.sum(Transaction.amount))
         .filter(
             Transaction.status == TransactionStatus.SUCCESS,
-            Transaction.tx_type.in_(service_tx_types)
+            or_(
+                Transaction.tx_type.in_(service_tx_types),
+                Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
+            )
         )
         .scalar()
         or 0
     )
     revenue = Decimal(str(revenue_amount))
 
+    if has_services:
+        st_revenue_amount = (
+            db.query(func.sum(ServiceTransaction.amount))
+            .filter(
+                ServiceTransaction.status == TransactionStatus.SUCCESS.value
+            )
+            .scalar()
+            or 0
+        )
+        revenue += Decimal(str(st_revenue_amount))
+
     # 2. COGS (Cost of Goods Sold)
-    # Estimate Data COGS using current DataPlan base_price
+    # Estimate Data COGS using current DataPlan base_price with case-insensitive plan_code match
     data_cogs_amount = (
-        db.query(func.sum(func.coalesce(DataPlan.base_price, Transaction.amount)))
+        db.query(func.sum(func.coalesce(func.nullif(DataPlan.base_price, 0), Transaction.amount)))
         .select_from(Transaction)
-        .outerjoin(DataPlan, Transaction.data_plan_code == DataPlan.plan_code)
+        .outerjoin(
+            DataPlan,
+            func.lower(Transaction.data_plan_code) == func.lower(DataPlan.plan_code)
+        )
         .filter(
             Transaction.status == TransactionStatus.SUCCESS,
             Transaction.tx_type == TransactionType.DATA
@@ -108,8 +136,7 @@ def get_finance_overview(
     )
     data_cogs = Decimal(str(data_cogs_amount))
 
-    # Estimate Airtime COGS (Assuming average 3% discount across networks if exact cost isn't logged)
-    # Using 0.97 * amount for estimation.
+    # Airtime COGS (Estimate average 3% wholesale discount)
     airtime_revenue_amount = (
         db.query(func.sum(Transaction.amount))
         .filter(
@@ -119,25 +146,52 @@ def get_finance_overview(
         .scalar()
         or 0
     )
+    if has_services:
+        airtime_st_amount = (
+            db.query(func.sum(ServiceTransaction.amount))
+            .filter(
+                ServiceTransaction.status == TransactionStatus.SUCCESS.value,
+                ServiceTransaction.tx_type == "airtime"
+            )
+            .scalar()
+            or 0
+        )
+        airtime_revenue_amount += airtime_st_amount
+
     airtime_cogs = Decimal(str(airtime_revenue_amount)) * Decimal("0.97")
 
-    # Other services COGS (Assume cost = amount for now, or 1% discount)
+    # Other services COGS (Estimate 1% wholesale discount)
     other_revenue_amount = (
         db.query(func.sum(Transaction.amount))
         .filter(
             Transaction.status == TransactionStatus.SUCCESS,
-            Transaction.tx_type.in_([TransactionType.CABLE.value, TransactionType.ELECTRICITY.value, TransactionType.EXAM.value])
+            Transaction.tx_type.in_([
+                TransactionType.CABLE.value,
+                TransactionType.ELECTRICITY.value,
+                TransactionType.EXAM.value
+            ])
         )
         .scalar()
         or 0
     )
-    other_cogs = Decimal(str(other_revenue_amount)) * Decimal("0.99") # Estimate 1% discount
+    if has_services:
+        other_st_amount = (
+            db.query(func.sum(ServiceTransaction.amount))
+            .filter(
+                ServiceTransaction.status == TransactionStatus.SUCCESS.value,
+                ServiceTransaction.tx_type.in_(["cable", "electricity", "exam"])
+            )
+            .scalar()
+            or 0
+        )
+        other_revenue_amount += other_st_amount
+
+    other_cogs = Decimal(str(other_revenue_amount)) * Decimal("0.99")
 
     total_cogs = data_cogs + airtime_cogs + other_cogs
-
     gross_margin = revenue - total_cogs
 
-    # 3. PROMOTIONAL EXPENSE
+    # 3. PROMOTIONAL EXPENSE (Agent campaign milestone rewards)
     promo_expense_amount = (
         db.query(func.sum(AgentReward.amount))
         .filter(AgentReward.status == AgentRewardStatus.CREDITED)
@@ -146,43 +200,87 @@ def get_finance_overview(
     )
     promo_expense = Decimal(str(promo_expense_amount))
 
-    # 4. REFERRAL EXPENSE
-    referral_expense_amount = (
+    # 4. REFERRAL EXPENSE (Ambassador first deposit rewards)
+    referral_table_sum = (
         db.query(func.sum(Referral.reward_amount))
         .filter(Referral.status == ReferralStatus.REWARDED)
         .scalar()
         or 0
     )
-    referral_expense = Decimal(str(referral_expense_amount))
+    referral_tx_sum = (
+        db.query(func.sum(Transaction.amount))
+        .filter(
+            Transaction.status == TransactionStatus.SUCCESS,
+            Transaction.reference.like("REFERRAL_%")
+        )
+        .scalar()
+        or 0
+    )
+    referral_expense = Decimal(str(max(referral_table_sum, referral_tx_sum)))
 
-    # 5. PAYMENT FEES (Estimate based on WALLET_FUND transactions)
-    # 0.5% for Billstack, assuming all unlabelled are 1.5% like Paystack
-    wallet_funds = db.query(Transaction.amount, Transaction.provider).filter(
-        Transaction.status == TransactionStatus.SUCCESS,
-        Transaction.tx_type == TransactionType.WALLET_FUND
-    ).all()
+    # 5. AGENT COMMISSION EXPENSE (Agent 2% data purchase cashback)
+    agent_comm_sum = (
+        db.query(func.sum(Transaction.amount))
+        .filter(
+            Transaction.status == TransactionStatus.SUCCESS,
+            or_(
+                Transaction.reference.like("COMM_%"),
+                Transaction.provider == "agent_commission"
+            )
+        )
+        .scalar()
+        or 0
+    )
+    agent_commission_expense = Decimal(str(agent_comm_sum))
+
+    # 6. PAYMENT FEES (Estimate based ONLY on genuine external funding transactions)
+    # Exclude internal wallet credits: commissions, referral rewards, admin adjustments, peer transfers, refunds
+    wallet_funds = (
+        db.query(Transaction.amount, Transaction.provider, Transaction.reference)
+        .filter(
+            Transaction.status == TransactionStatus.SUCCESS,
+            Transaction.tx_type == TransactionType.WALLET_FUND,
+            ~Transaction.reference.like("COMM_%"),
+            ~Transaction.reference.like("REFERRAL_%"),
+            ~Transaction.reference.like("ADMIN_%"),
+            ~Transaction.reference.like("TRF_%"),
+            ~Transaction.reference.like("REFUND_%"),
+        )
+        .all()
+    )
     
     payment_fees = Decimal("0.0")
-    for amount, provider in wallet_funds:
+    for amount, provider, reference in wallet_funds:
+        prov = str(provider or "").lower()
+        if prov in ["transfer", "agent_commission", "admin", "system", "manual_adjustment"]:
+            continue
         amt = Decimal(str(amount))
-        if provider and "billstack" in str(provider).lower():
-            payment_fees += amt * Decimal("0.005")
-        elif provider and "monnify" in str(provider).lower():
-            # Monnify flat fee or 1% usually, let's assume 1% capped
+        if "billstack" in prov:
+            payment_fees += amt * Decimal("0.005") # 0.5%
+        elif "monnify" in prov:
+            # Monnify flat fee or 1% usually, capped at 2,000 NGN
             payment_fees += min(amt * Decimal("0.01"), Decimal("2000.0"))
+        elif "bank" in prov or "manual" in prov:
+            continue
         else:
-            # Paystack 1.5%
+            # Paystack standard 1.5%
             payment_fees += amt * Decimal("0.015")
 
-    # 6. NET PROFIT
-    net_profit = gross_margin - promo_expense - referral_expense - payment_fees
+    # 7. NET PROFIT (Gross Margin - Operating Costs - Commissions - Gateway Fees)
+    net_profit = (
+        gross_margin
+        - promo_expense
+        - referral_expense
+        - agent_commission_expense
+        - payment_fees
+    )
 
-    # 7. CUSTOMER WALLET LIABILITY
+    # 8. CUSTOMER WALLET LIABILITY
     wallet_liability_amount = db.query(func.sum(Wallet.balance)).scalar() or 0
     wallet_liability = Decimal(str(wallet_liability_amount))
 
-    # 8. COMPANY ASSETS (Provider Balances)
-    # This requires fetching live balances.
+    # 9. COMPANY ASSETS (Provider Balances)
+    # Fetch live balances from supported providers
     assets_list = []
     total_assets = Decimal("0.0")
     try:
@@ -230,7 +328,7 @@ def get_finance_overview(
         logger.warning(f"Could not fetch live provider balances: {e}")
         assets_list.append({"name": "Live Balances", "balance": 0.0, "type": "ERROR", "error": str(e)})
 
-    # 9. OWNER CAPITAL & DEBTS
+    # 10. OWNER CAPITAL & DEBTS
     owner_capital_amount = db.query(func.sum(FinancialLedger.amount)).filter(
         FinancialLedger.category == FinancialCategory.OWNER_CAPITAL,
         FinancialLedger.entry_type == EntryType.CREDIT
@@ -255,12 +353,13 @@ def get_finance_overview(
     ).scalar() or 0
     receivables = Decimal(str(receivables_amount))
     
-    # 10. RECONCILIATION
+    # 11. RECONCILIATION
     # Total Assets = Company Assets (Bank/Provider) + Receivables
     # Total Liabilities = Wallet Liability + Business Debts
     # Equity = Owner Capital + Net Profit
     # Expected Assets = Liabilities + Equity
-    expected_assets = wallet_liability + business_debts + owner_capital + net_profit
+    net_equity = owner_capital + net_profit
+    expected_assets = wallet_liability + business_debts + net_equity
     observed_assets = total_assets + receivables
     reconciliation_gap = observed_assets - expected_assets
 
@@ -272,11 +371,13 @@ def get_finance_overview(
             "total": float(total_cogs),
             "data_cogs_estimated": float(data_cogs),
             "airtime_cogs_estimated": float(airtime_cogs),
+            "other_cogs_estimated": float(other_cogs),
             "is_estimated": True
         },
         "gross_margin": float(gross_margin),
         "promotional_expense": float(promo_expense),
         "referral_expense": float(referral_expense),
+        "agent_commission_expense": float(agent_commission_expense),
         "payment_fees": {
             "total": float(payment_fees),
             "is_estimated": True
@@ -291,7 +392,7 @@ def get_finance_overview(
         "owner_capital": float(owner_capital),
         "business_debts": float(business_debts),
         "receivables": float(receivables),
-        "net_equity": float(owner_capital + net_profit),
+        "net_equity": float(net_equity),
         "reconciliation_gap": float(reconciliation_gap)
     }
 
@@ -343,8 +444,17 @@ def get_leak_audit(
     user: User = Depends(require_admin)
 ) -> Any:
     """
-    Scan all user accounts for negative equity (spent > funded) and phantom wallet balances.
+    Forensic leak auditor scanning all user accounts for negative equity (spent > funded)
+    and phantom wallet balances. Accurately handles service purchases, agent commissions,
+    referral bonuses, refunds, and wallet transfers.
     """
+    has_services = False
+    try:
+        from sqlalchemy import inspect
+        has_services = inspect(db.bind).has_table("service_transactions")
+    except Exception:
+        has_services = False
+
     total_deposits = db.query(func.coalesce(func.sum(Transaction.amount), 0)).filter(
         Transaction.tx_type == TransactionType.WALLET_FUND,
         Transaction.status == TransactionStatus.SUCCESS
@@ -362,10 +472,35 @@ def get_leak_audit(
         Transaction.status == TransactionStatus.SUCCESS
     ).scalar() or 0
 
+    if has_services:
+        st_spends = db.query(func.coalesce(func.sum(ServiceTransaction.amount), 0)).filter(
+            ServiceTransaction.status == TransactionStatus.SUCCESS.value
+        ).scalar() or 0
+        total_spends += st_spends
+
     total_wallet_liability = db.query(func.coalesce(func.sum(Wallet.balance), 0)).scalar() or 0
 
     # User reconciliation query
-    user_funding_sql = text("""
+    if has_services:
+        spends_subquery = """
+            SELECT user_id, amount
+            FROM transactions
+            WHERE UPPER(CAST(status AS TEXT)) = 'SUCCESS'
+              AND UPPER(CAST(tx_type AS TEXT)) IN ('DATA', 'AIRTIME', 'CABLE', 'ELECTRICITY', 'EXAM', 'WALLET_TRANSFER')
+            UNION ALL
+            SELECT user_id, amount
+            FROM service_transactions
+            WHERE LOWER(CAST(status AS TEXT)) = 'success'
+        """
+    else:
+        spends_subquery = """
+            SELECT user_id, amount
+            FROM transactions
+            WHERE UPPER(CAST(status AS TEXT)) = 'SUCCESS'
+              AND UPPER(CAST(tx_type AS TEXT)) IN ('DATA', 'AIRTIME', 'CABLE', 'ELECTRICITY', 'EXAM', 'WALLET_TRANSFER')
+        """
+
+    user_funding_sql = text(f"""
         SELECT 
             u.id as user_id,
             u.email,
@@ -374,7 +509,8 @@ def get_leak_audit(
             COALESCE(w.balance, 0) as current_balance,
             COALESCE(f.total_funded, 0) as total_funded,
             COALESCE(s.total_spent, 0) as total_spent,
-            COALESCE(r.total_refunded, 0) as total_refunded
+            COALESCE(r.total_refunded, 0) as total_refunded,
+            COALESCE(c.total_commission, 0) as total_commission
         FROM users u
         LEFT JOIN wallets w ON w.user_id = u.id
         LEFT JOIN (
@@ -385,9 +521,7 @@ def get_leak_audit(
         ) f ON f.user_id = u.id
         LEFT JOIN (
             SELECT user_id, SUM(amount) as total_spent
-            FROM transactions
-            WHERE UPPER(CAST(tx_type AS TEXT)) IN ('DATA', 'AIRTIME', 'CABLE', 'ELECTRICITY', 'EXAM') 
-              AND UPPER(CAST(status AS TEXT)) = 'SUCCESS'
+            FROM ({spends_subquery}) all_spends
             GROUP BY user_id
         ) s ON s.user_id = u.id
         LEFT JOIN (
@@ -396,6 +530,13 @@ def get_leak_audit(
             WHERE UPPER(CAST(status AS TEXT)) = 'REFUNDED'
             GROUP BY user_id
         ) r ON r.user_id = u.id
+        LEFT JOIN (
+            SELECT user_id, SUM(amount) as total_commission
+            FROM transactions
+            WHERE UPPER(CAST(status AS TEXT)) = 'SUCCESS'
+              AND (reference LIKE 'COMM_%' OR provider = 'agent_commission')
+            GROUP BY user_id
+        ) c ON c.user_id = u.id
     """)
 
     rows = db.execute(user_funding_sql).fetchall()
@@ -410,6 +551,7 @@ def get_leak_audit(
         funded = Decimal(str(row.total_funded or 0))
         spent = Decimal(str(row.total_spent or 0))
         refunded = Decimal(str(row.total_refunded or 0))
+        comm = Decimal(str(row.total_commission or 0))
 
         expected_balance = funded - spent
         discrepancy = curr_bal - expected_balance
@@ -426,7 +568,8 @@ def get_leak_audit(
                 "spent": float(spent),
                 "current_balance": float(curr_bal),
                 "overspent": float(net_loss),
-                "refunded": float(refunded)
+                "refunded": float(refunded),
+                "commission_earned": float(comm)
             })
 
         if discrepancy > Decimal("5.00"):
@@ -442,7 +585,8 @@ def get_leak_audit(
                     "expected_balance": float(expected_balance),
                     "phantom_balance": float(phantom_part),
                     "funded": float(funded),
-                    "spent": float(spent)
+                    "spent": float(spent),
+                    "commission_earned": float(comm)
                 })
 
     overspent_users.sort(key=lambda x: x["overspent"], reverse=True)
