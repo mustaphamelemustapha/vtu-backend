@@ -109,6 +109,11 @@ def pin_verify(
     user=Depends(get_current_user),
 ):
     pin = "".join(ch for ch in str(payload.get("pin") or "") if ch.isdigit())
+    if not _pin_exists(user):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Transaction PIN is not set",
+        )
     ok, message = verify_pin_for_user(user, pin)
     if not ok:
         db.commit()

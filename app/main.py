@@ -239,6 +239,8 @@ def ensure_tables():
         _ensure_system_settings_columns()
         _ensure_default_integrations()
         _ensure_financial_ledger_table()
+        _ensure_user_brand_column()
+        _ensure_broadcast_announcement_brand_column()
         try:
             from app.services.push_notification import PushNotificationService
             PushNotificationService._initialize()
@@ -1044,6 +1046,39 @@ def _ensure_financial_ledger_table() -> None:
                 logging.getLogger(__name__).info("Ensured financial_ledger columns.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure financial_ledger table: %s", exc)
+
+
+def _ensure_user_brand_column() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("users"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("users")}
+        with engine.begin() as conn:
+            if "brand" not in cols:
+                conn.execute(text("ALTER TABLE users ADD COLUMN brand VARCHAR(32) DEFAULT 'meledata'"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_users_brand ON users (brand)"))
+                logging.getLogger(__name__).info("Added users.brand column.")
+            # Auto-align brands based on email domains if brand is currently default/null
+            conn.execute(text("UPDATE users SET brand = 'kullomadata' WHERE (brand IS NULL OR brand = 'meledata' OR brand = '') AND email ILIKE '%kulloma%'"))
+            conn.execute(text("UPDATE users SET brand = 'mzdata' WHERE (brand IS NULL OR brand = 'meledata' OR brand = '') AND email ILIKE '%mzdata%'"))
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure users.brand column: %s", exc)
+
+
+def _ensure_broadcast_announcement_brand_column() -> None:
+    try:
+        inspector = inspect(engine)
+        if not inspector.has_table("broadcast_announcements"):
+            return
+        cols = {c["name"] for c in inspector.get_columns("broadcast_announcements")}
+        if "brand" not in cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE broadcast_announcements ADD COLUMN brand VARCHAR(32) DEFAULT 'all'"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_broadcast_announcements_brand ON broadcast_announcements (brand)"))
+            logging.getLogger(__name__).info("Added broadcast_announcements.brand column.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not ensure broadcast_announcements.brand column: %s", exc)
 
 
 @app.get("/healthz")

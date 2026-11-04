@@ -46,20 +46,13 @@ def test_developer_workflow(db: Session = next(get_db())):
     assert data["developer_status"] == "none"
     assert data["has_keys"] is False
 
-    # 3. Apply to be developer
+    # 3. Apply to be developer (auto-approved with keys)
     res = client.post("/api/v1/developer/apply", json={"additional_info": "We need API access"}, headers=headers)
     assert res.status_code == 200
     data = res.json()
-    assert data["developer_status"] == "applied"
-
-    # 4. Generate keys before approval (should fail with 403)
-    res = client.post("/api/v1/developer/keys/generate", headers=headers)
-    assert res.status_code == 403
-
-    # 5. Approve developer (simulate Admin action)
-    test_user.developer_status = "approved"
-    test_user.is_developer = True
-    db.commit()
+    assert data["developer_status"] == "approved"
+    assert data["is_developer"] is True
+    assert "api_public_key" in data
 
     # 6. Generate keys after approval (should succeed)
     res = client.post("/api/v1/developer/keys/generate", headers=headers)
@@ -67,8 +60,8 @@ def test_developer_workflow(db: Session = next(get_db())):
     keys = res.json()
     assert "api_public_key" in keys
     assert "api_secret_key" in keys
-    assert keys["api_public_key"].startswith("MELE_PUB_")
-    assert keys["api_secret_key"].startswith("MELE_SEC_")
+    assert keys["api_public_key"].lower().startswith("mele_pub_")
+    assert keys["api_secret_key"].lower().startswith("mele_live_")
 
     # Verify secret key hash is stored correctly in DB
     db.refresh(test_user)
@@ -80,7 +73,7 @@ def test_developer_workflow(db: Session = next(get_db())):
     res = client.get("/api/v1/developer/wallet/balance", headers=dev_headers)
     assert res.status_code == 200
     bal_data = res.json()
-    assert bal_data["balance"] == 5000.0
+    assert bal_data["data"]["balance"] == 5000.0
 
     # 8. Test invalid Bearer token
     invalid_headers = {"Authorization": "Bearer MELE_SEC_INVALID_TOKEN_HASH_1234"}
@@ -121,8 +114,20 @@ def test_developer_workflow(db: Session = next(get_db())):
     assert purchase_res["status"] in {"success", "pending", "failed", "refunded"}
     
     # Assert transaction was recorded in DB
-    tx_rec = db.query(Transaction).filter(Transaction.user_id == test_user.id, Transaction.reference == f"DEV_DATA_{purchase_payload['reference']}").first()
+    tx_rec = db.query(Transaction).filter(Transaction.user_id == test_user.id, Transaction.reference == f"DEV_{test_user.id}_{purchase_payload['reference']}").first()
     assert tx_rec is not None
+
+    # Test Sandbox Test Mode Purchase
+    test_sec_key = keys["api_secret_key"].replace("mele_live_", "mele_test_")
+    test_dev_headers = {"Authorization": f"Bearer {test_sec_key}"}
+    test_res = client.post("/api/v1/developer/data/purchase", json={
+        "phone_number": "08012345678",
+        "network": "MTN",
+        "plan_id": test_plan.id,
+        "reference": "SANDBOX_DATA_001"
+    }, headers=test_dev_headers)
+    assert test_res.status_code == 200
+    assert test_res.json()["status"] is True
 
     # 11. Test airtime purchase API
     airtime_payload = {
@@ -137,7 +142,7 @@ def test_developer_workflow(db: Session = next(get_db())):
     assert airtime_res["status"] in {"success", "pending", "failed", "refunded"}
 
     # Assert airtime transaction was recorded in DB
-    airtime_tx_rec = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == test_user.id, ServiceTransaction.reference == f"DEV_AIRTIME_{airtime_payload['reference']}").first()
+    airtime_tx_rec = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == test_user.id, ServiceTransaction.reference == f"DEV_{test_user.id}_{airtime_payload['reference']}").first()
     assert airtime_tx_rec is not None
 
     # 12. Clean up test records

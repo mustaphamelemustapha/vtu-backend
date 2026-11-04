@@ -368,8 +368,6 @@ def list_data_plans(user: User = Depends(get_developer_user), db: Session = Depe
 def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
     from app.core.exceptions import DeveloperAPIException
 
-    # Allow integer ID or string plan_code/provider_plan_id
-
     # 1. Idempotency Check
     client_ref = f"DEV_{user.id}_{payload.reference.strip()}"
     existing = db.query(Transaction).filter(Transaction.user_id == user.id, Transaction.reference == client_ref).first()
@@ -386,7 +384,7 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
             }
         }
 
-    # 2. Plan lookup (Support numerical ID or System Code)
+    # 2. Plan lookup (Support numerical ID, plan_code, provider_plan_id, or suffix code)
     network_key = payload.network.strip().lower()
     plan = None
     try:
@@ -422,67 +420,73 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
     if not plan:
         raise DeveloperAPIException("Active data plan not found. Please provide a valid plan ID or system code.", 404)
 
-    is_test = getattr(user, "is_test_mode", False)
     price = get_price_for_user(db, plan, user, is_developer=True)
+    is_test = getattr(user, "is_test_mode", False)
 
     if is_test:
-        current_sand = SANDBOX_BALANCES.get(user.id, 1000000.0)
-        if current_sand < float(price):
-            raise DeveloperAPIException("Insufficient sandbox wallet balance.", 400)
-        SANDBOX_BALANCES[user.id] = current_sand - float(price)
-    else:
-        wallet = get_or_create_wallet(db, user.id)
-        if wallet.balance < price:
-            raise DeveloperAPIException("Insufficient wallet balance.", 400)
+        current_sandbox_bal = SANDBOX_BALANCES.get(user.id, 1000000.0)
+        if current_sandbox_bal < float(price):
+            raise DeveloperAPIException("Insufficient sandbox balance.", 400)
+        SANDBOX_BALANCES[user.id] = current_sandbox_bal - float(price)
 
-        # 3. Debit Wallet
-        try:
-            debit_wallet(db, wallet, price, client_ref, f"API Data: {plan.plan_name} ({payload.phone_number})")
-        except Exception as e:
-            logger.error(f"Developer wallet debit failed: {e}")
-            raise DeveloperAPIException("Wallet debit failed.", 400)
+        phone_clean = payload.phone_number.strip()
+        simulated_failed = phone_clean.endswith("0000")
+
+        tx = Transaction(
+            user_id=user.id,
+            amount=price,
+            tx_type=TransactionType.DATA,
+            status=TransactionStatus.FAILED if simulated_failed else TransactionStatus.SUCCESS,
+            reference=client_ref,
+            network=plan.network,
+            recipient_phone=phone_clean,
+            data_plan_code=plan.plan_code,
+            provider="sandbox",
+            provider_plan_id="sandbox_test",
+            failure_reason="Carrier network timeout (Simulated)" if simulated_failed else None,
+        )
+        db.add(tx)
+        db.commit()
+
+        final_status = "failed" if simulated_failed else "delivered"
+        return {
+            "status": not simulated_failed,
+            "message": "Carrier network timeout (Simulated)" if simulated_failed else "Transaction successful",
+            "data": {
+                "status": final_status,
+                "reference": payload.reference.strip(),
+                "amount": float(price),
+                "network": payload.network.upper(),
+                "phone_number": phone_clean
+            }
+        }
+
+    wallet = get_or_create_wallet(db, user.id)
+    if wallet.balance < price:
+        raise DeveloperAPIException("Insufficient wallet balance.", 400)
+
+    # 3. Debit Wallet
+    try:
+        debit_wallet(db, wallet, price, client_ref, f"API Data: {plan.plan_name} ({payload.phone_number})")
+    except Exception as e:
+        logger.error(f"Developer wallet debit failed: {e}")
+        raise DeveloperAPIException("Wallet debit failed.", 400)
 
     # 4. Save transaction
-    sandbox_data_ref = f"SANDBOX_DATA_{secrets.token_hex(6).upper()}" if is_test else None
     tx = Transaction(
         user_id=user.id,
         amount=price,
         tx_type=TransactionType.DATA,
-        status=TransactionStatus.SUCCESS if is_test else TransactionStatus.PENDING,
+        status=TransactionStatus.PENDING,
         reference=client_ref,
         network=plan.network,
         recipient_phone=payload.phone_number.strip(),
         data_plan_code=plan.plan_code,
-        provider="sandbox" if is_test else plan.provider,
-        provider_plan_id="sandbox" if is_test else plan.provider_plan_id,
-        external_reference=sandbox_data_ref,
+        provider=plan.provider,
+        provider_plan_id=plan.provider_plan_id
     )
     db.add(tx)
     db.commit()
-
-    if is_test:
-        api_log = ApiLog(
-            user_id=user.id,
-            service="data_api",
-            endpoint="/developer/data/purchase",
-            status_code=200,
-            duration_ms=Decimal("12.00"),
-            reference=client_ref,
-            success=1
-        )
-        db.add(api_log)
-        db.commit()
-        return {
-            "status": True,
-            "message": "Transaction successful (Sandbox)",
-            "data": {
-                "status": "success",
-                "reference": payload.reference.strip(),
-                "amount": float(price),
-                "network": plan.network.upper(),
-                "phone_number": payload.phone_number.strip()
-            }
-        }
 
     # -----------------------------
     # Release DB connection
@@ -727,31 +731,67 @@ def developer_buy_airtime(request: Request, payload: DeveloperAirtimePurchaseReq
 
     is_test = getattr(user, "is_test_mode", False)
     if is_test:
-        current_sand = SANDBOX_BALANCES.get(user.id, 1000000.0)
-        if current_sand < float(charge_amount):
-            raise DeveloperAPIException("Insufficient sandbox wallet balance.", 400)
-        SANDBOX_BALANCES[user.id] = current_sand - float(charge_amount)
-    else:
-        wallet = get_or_create_wallet(db, user.id)
-        if wallet.balance < charge_amount:
-            raise DeveloperAPIException("Insufficient wallet balance.", 400)
+        current_sandbox_bal = SANDBOX_BALANCES.get(user.id, 1000000.0)
+        if current_sandbox_bal < float(charge_amount):
+            raise DeveloperAPIException("Insufficient sandbox balance.", 400)
+        SANDBOX_BALANCES[user.id] = current_sandbox_bal - float(charge_amount)
 
-        # 1. Debit Wallet
-        try:
-            debit_wallet(db, wallet, charge_amount, client_ref, f"API Airtime: ₦{base_amount} ({payload.phone_number})")
-        except Exception as e:
-            logger.error(f"Developer airtime debit failed: {e}")
-            raise DeveloperAPIException("Wallet debit failed.", 400)
+        phone_clean = payload.phone_number.strip()
+        simulated_failed = phone_clean.endswith("0000")
+
+        tx = ServiceTransaction(
+            user_id=user.id,
+            reference=client_ref,
+            tx_type=TransactionType.AIRTIME.value,
+            amount=charge_amount,
+            status=TransactionStatus.FAILED.value if simulated_failed else TransactionStatus.SUCCESS.value,
+            provider=payload.network.strip().lower(),
+            customer=phone_clean,
+            failure_reason="Carrier network timeout (Simulated)" if simulated_failed else None,
+            meta={
+                "network": payload.network.strip().lower(),
+                "phone_number": phone_clean,
+                "base_amount": str(base_amount),
+                "margin_applied": str(margin),
+                "charge_amount": str(charge_amount),
+                "simulated": True,
+            },
+        )
+        db.add(tx)
+        db.commit()
+
+        final_status = "failed" if simulated_failed else "delivered"
+        return {
+            "status": not simulated_failed,
+            "message": "Carrier network timeout (Simulated)" if simulated_failed else "Transaction successful",
+            "data": {
+                "status": final_status,
+                "reference": payload.reference.strip(),
+                "amount": float(charge_amount),
+                "network": payload.network.upper(),
+                "phone_number": phone_clean
+            }
+        }
+
+    wallet = get_or_create_wallet(db, user.id)
+    if wallet.balance < charge_amount:
+        raise DeveloperAPIException("Insufficient wallet balance.", 400)
+
+    # 1. Debit Wallet
+    try:
+        debit_wallet(db, wallet, charge_amount, client_ref, f"API Airtime: ₦{base_amount} ({payload.phone_number})")
+    except Exception as e:
+        logger.error(f"Developer airtime debit failed: {e}")
+        raise DeveloperAPIException("Wallet debit failed.", 400)
 
     # 2. Save Transaction
-    sandbox_airtime_ref = f"SANDBOX_AIRTIME_{secrets.token_hex(6).upper()}" if is_test else None
     tx = ServiceTransaction(
         user_id=user.id,
         reference=client_ref,
         tx_type=TransactionType.AIRTIME.value,
         amount=charge_amount,
-        status=TransactionStatus.SUCCESS.value if is_test else TransactionStatus.PENDING.value,
-        provider="sandbox" if is_test else payload.network.strip().lower(),
+        status=TransactionStatus.PENDING.value,
+        provider=payload.network.strip().lower(),
         customer=payload.phone_number.strip(),
         meta={
             "network": payload.network.strip().lower(),
@@ -759,37 +799,10 @@ def developer_buy_airtime(request: Request, payload: DeveloperAirtimePurchaseReq
             "base_amount": str(base_amount),
             "margin_applied": str(margin),
             "charge_amount": str(charge_amount),
-            "livemode": not is_test,
-            "mode": "test" if is_test else "live",
         },
-        external_reference=sandbox_airtime_ref,
     )
     db.add(tx)
     db.commit()
-
-    if is_test:
-        api_log = ApiLog(
-            user_id=user.id,
-            service="airtime_api",
-            endpoint="/developer/airtime/purchase",
-            status_code=200,
-            duration_ms=Decimal("10.00"),
-            reference=client_ref,
-            success=1
-        )
-        db.add(api_log)
-        db.commit()
-        return {
-            "status": True,
-            "message": "Transaction successful (Sandbox)",
-            "data": {
-                "status": "success",
-                "reference": payload.reference.strip(),
-                "amount": float(charge_amount),
-                "network": payload.network.upper(),
-                "phone_number": payload.phone_number.strip()
-            }
-        }
 
     # -----------------------------
     # Release DB connection

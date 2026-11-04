@@ -15,7 +15,15 @@ class RewardCampaign(Base, TimestampMixin):
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(255), nullable=False)
-    campaign_type = Column(Enum(CampaignType), nullable=False, default=CampaignType.REFERRAL)
+    campaign_type = Column(
+        Enum(
+            CampaignType,
+            name="campaigntype",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
+        nullable=False,
+        default=CampaignType.REFERRAL,
+    )
     target_metric = Column(String(64), nullable=False) # e.g., "data_mb", "airtime_naira"
     target_value = Column(Numeric(12, 2), nullable=False) # e.g., 51200 for 50GB
     reward_amount = Column(Numeric(12, 2), nullable=False)
@@ -42,7 +50,15 @@ class AgentReward(Base, TimestampMixin):
     agent_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     campaign_id = Column(Integer, ForeignKey("reward_campaigns.id"), nullable=False)
     amount = Column(Numeric(12, 2), nullable=False)
-    status = Column(Enum(AgentRewardStatus), nullable=False, default=AgentRewardStatus.PENDING)
+    status = Column(
+        Enum(
+            AgentRewardStatus,
+            name="agentrewardstatus",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
+        nullable=False,
+        default=AgentRewardStatus.PENDING,
+    )
     transaction_reference = Column(String(64), nullable=True, index=True)
 
     agent = relationship("User", foreign_keys=[agent_id])

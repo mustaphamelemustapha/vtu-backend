@@ -22,7 +22,15 @@ class TransactionDispute(Base, TimestampMixin):
     tx_type = Column(String(32), nullable=False)
     category = Column(String(32), nullable=False, default="delivery_issue")
     reason = Column(Text, nullable=False)
-    status = Column(Enum(DisputeStatus), nullable=False, default=DisputeStatus.OPEN)
+    status = Column(
+        Enum(
+            DisputeStatus,
+            name="disputestatus",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
+        nullable=False,
+        default=DisputeStatus.OPEN,
+    )
     admin_note = Column(Text, nullable=True)
     resolved_at = Column(DateTime(timezone=True), nullable=True)
     resolved_by = Column(String(128), nullable=True)

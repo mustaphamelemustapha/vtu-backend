@@ -77,6 +77,11 @@ def register(request: Request, payload: RegisterRequest, background_tasks: Backg
         if phone_owner:
             raise HTTPException(status_code=400, detail="Phone number already registered")
 
+    from app.core.tenant import get_tenant_brand
+    tenant_brand = get_tenant_brand(request)
+    if not tenant_brand or tenant_brand == "default":
+        tenant_brand = "kullomadata" if "kulloma" in payload.email.lower() else ("mzdata" if "mzdata" in payload.email.lower() else "meledata")
+
     user = User(
         email=payload.email,
         full_name=payload.full_name,
@@ -85,6 +90,7 @@ def register(request: Request, payload: RegisterRequest, background_tasks: Backg
         is_verified=False,
         phone_number=normalized_phone,
         state=payload.state,
+        brand=tenant_brand,
     )
     user.verification_token = secrets.token_urlsafe(32)
     user.verification_token_expires_at = _utcnow() + timedelta(days=2)
@@ -398,7 +404,11 @@ def app_config(request: Request, db: Session = Depends(get_db)):
 @router.post("/fcm-token", response_model=Message)
 @limiter.limit("5/minute")
 def register_fcm_token(request: Request, payload: FCMTokenRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.core.tenant import get_tenant_brand
     current_user.fcm_token = payload.fcm_token
+    tenant_brand = get_tenant_brand(request)
+    if tenant_brand and tenant_brand != "default":
+        current_user.brand = tenant_brand
     db.commit()
     return Message(message="FCM token registered")
 

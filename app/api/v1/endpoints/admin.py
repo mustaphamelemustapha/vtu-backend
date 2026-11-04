@@ -2618,7 +2618,7 @@ def suspend_developer_access(
 @router.get("/provider-balances")
 def get_provider_balances(admin: User = Depends(require_admin), db: Session = Depends(get_db)):
     """
-    Get current balances of all API providers.
+    Get current balances of all API providers configured to display on the dashboard.
     """
     results, providers = check_provider_balances_detailed(db)
     return {"status": "ok", "balances": results, "providers": providers}

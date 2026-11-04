@@ -20,6 +20,8 @@ from app.models.integration import IntegrationProvider
 from app.providers.autosync_provider import AutosyncProvider
 from app.providers.boltnet_provider import BoltnetProvider
 from app.providers.telecom_abode_provider import TelecomAbodeProvider
+from app.providers.meledata_provider import MeleDataProvider
+from app.services.amigo import resolve_network_id
 
 @dataclass
 class ProviderResult:
@@ -715,7 +717,7 @@ class ClubKonnectBillsProvider:
             return callback
         base = str(settings.frontend_base_url or "").strip().rstrip("/")
         if not base:
-            return "https://meledata.ng/app/transactions"
+            return "https://kullomadata.com/app/transactions"
         return f"{base}/app/transactions"
 
     @staticmethod
@@ -1881,11 +1883,69 @@ class TelecomAbodeBillsProvider:
     def fetch_electricity_discos(self) -> list[dict]:
         return []
 
+
+class MeleDataBillsProvider:
+    def __init__(self, api_key: str | None = None, base_url: str | None = None):
+        self.meledata = MeleDataProvider(api_key=api_key, base_url=base_url)
+
+    def purchase_airtime(self, network: str, phone_number: str, amount: float, reference: str | None = None) -> ProviderResult:
+        ref = reference or _vtpass_request_id()
+        res_data = self.meledata.purchase_airtime(network, phone_number, amount, ref)
+        is_success = res_data.get("status") is True
+        data_block = res_data.get("data") if isinstance(res_data.get("data"), dict) else {}
+        prov_ref = str(data_block.get("reference") or res_data.get("reference") or ref)
+        msg = str(res_data.get("message") or "")
+        inner_status = str(data_block.get("status") or "").lower()
+
+        if "sandbox" in msg.lower() or data_block.get("livemode") is False or str(data_block.get("mode") or "").lower() == "test":
+            return ProviderResult(False, external_reference=prov_ref, message="MeleData returned Sandbox/Test response instead of Live delivery")
+
+        if is_success or inner_status in ("success", "delivered"):
+            return ProviderResult(True, external_reference=prov_ref, message=msg or "Airtime purchase successful")
+        if inner_status in ("pending", "processing"):
+            return ProviderResult(True, external_reference=prov_ref, message=msg or "Airtime processing", pending=True)
+        return ProviderResult(False, external_reference=prov_ref, message=msg or "MeleData airtime purchase failed")
+
+    def purchase_data(self, network: str, phone_number: str, plan_id: str, reference: str | None = None) -> ProviderResult:
+        ref = reference or _vtpass_request_id()
+        network_map = {"mtn": 1, "airtel": 2, "glo": 3, "9mobile": 4}
+        net_id = network_map.get(network.lower(), 1)
+        res_data = self.meledata.purchase_data(net_id, plan_id, phone_number, ref)
+        is_success = res_data.get("status") is True
+        data_block = res_data.get("data") if isinstance(res_data.get("data"), dict) else {}
+        prov_ref = str(data_block.get("reference") or res_data.get("reference") or ref)
+        msg = str(res_data.get("message") or "")
+        inner_status = str(data_block.get("status") or "").lower()
+
+        if is_success or inner_status in ("success", "delivered"):
+            return ProviderResult(True, external_reference=prov_ref, message=msg or "Data purchase successful")
+        if inner_status in ("pending", "processing"):
+            return ProviderResult(True, external_reference=prov_ref, message=msg or "Data processing", pending=True)
+        return ProviderResult(False, external_reference=prov_ref, message=msg or "MeleData data purchase failed")
+
+    def purchase_electricity(self, disco: str, meter_number: str, amount: float, meter_type: str = "prepaid", phone_number: str | None = None) -> ProviderResult:
+        return ProviderResult(False, message="Electricity not supported directly by MeleData provider.")
+
+    def purchase_cable(self, provider: str, smartcard_number: str, package_code: str, amount: float, phone_number: str | None = None) -> ProviderResult:
+        return ProviderResult(False, message="Cable not supported directly by MeleData provider.")
+
+    def purchase_exam_pin(self, exam: str, quantity: int, phone_number: str | None = None, exam_type: str | None = None) -> ProviderResult:
+        return ProviderResult(False, message="Exam Pins not supported directly by MeleData provider.")
+
+    def fetch_cable_packages(self, provider: str) -> list[dict]:
+        return []
+
+    def fetch_electricity_discos(self) -> list[dict]:
+        return []
+
+
 def get_bills_provider(service_type: str | None = None):
     env_choice = str(settings.bills_provider or "auto").strip().lower()
     has_telecom_abode = bool(getattr(settings, "telecom_abode_enabled", False) and getattr(settings, "telecom_abode_api_key", None))
 
     # 1. If explicitly set in environment, honor it immediately
+    if env_choice == "meledata":
+        return MeleDataBillsProvider()
     if env_choice == "telecom_abode":
         return TelecomAbodeBillsProvider()
     if env_choice == "mock":
@@ -1902,14 +1962,22 @@ def get_bills_provider(service_type: str | None = None):
     db = SessionLocal()
     active_provider = None
     try:
-        # Check if Telecom Abode is specifically active in database for airtime
+        # Check if Mele Data or Telecom Abode is specifically active in database for airtime
         if service_type == "airtime":
-            abode_prov = db.query(IntegrationProvider).filter(
-                IntegrationProvider.identifier == "telecom_abode",
+            mele_prov = db.query(IntegrationProvider).filter(
+                IntegrationProvider.identifier == "meledata",
                 IntegrationProvider.is_active == True
             ).first()
-            if abode_prov:
-                active_provider = abode_prov
+            if mele_prov:
+                active_provider = mele_prov
+
+            if not active_provider:
+                abode_prov = db.query(IntegrationProvider).filter(
+                    IntegrationProvider.identifier == "telecom_abode",
+                    IntegrationProvider.is_active == True
+                ).first()
+                if abode_prov:
+                    active_provider = abode_prov
 
         # Check IntegrationProvider: if service_type is given, prefer an active provider supporting this service (excluding clubkonnect for airtime if kyc blocked)
         if not active_provider and service_type:
@@ -1926,7 +1994,7 @@ def get_bills_provider(service_type: str | None = None):
             # Check IntegrationProvider for an active VTU provider
             active_provider = db.query(IntegrationProvider).filter(
                 IntegrationProvider.is_active == True,
-                IntegrationProvider.identifier.in_(["telecom_abode", "autosync", "boltnet", "vtpass", "clubkonnect"])
+                IntegrationProvider.identifier.in_(["meledata", "telecom_abode", "autosync", "boltnet", "vtpass", "clubkonnect"])
             ).first()
 
         if active_provider:
@@ -1936,6 +2004,8 @@ def get_bills_provider(service_type: str | None = None):
             api_secret = active_provider.api_secret
             config = active_provider.additional_config or {}
 
+            if choice == "meledata":
+                return MeleDataBillsProvider(api_key=api_key, base_url=base_url)
             if choice == "telecom_abode":
                 return TelecomAbodeBillsProvider(api_key=api_key, base_url=base_url)
             if choice == "clubkonnect":

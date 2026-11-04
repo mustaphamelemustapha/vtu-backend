@@ -19,7 +19,14 @@ class PricingRule(Base, TimestampMixin):
 
     id = Column(Integer, primary_key=True, index=True)
     network = Column(String(32), nullable=False)
-    role = Column(Enum(PricingRole), nullable=False)
+    role = Column(
+        Enum(
+            PricingRole,
+            name="pricingrole",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
+        nullable=False,
+    )
     margin = Column(Numeric(12, 2), nullable=False, default=0)
     # 'fixed' adds a flat amount; 'percentage' adds margin% of base_price.
     margin_type = Column(String(16), nullable=False, server_default="fixed")

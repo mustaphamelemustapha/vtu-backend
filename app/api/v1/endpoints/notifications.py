@@ -85,18 +85,65 @@ def _to_out(item: BroadcastAnnouncement) -> dict:
         "button_link": item.button_link,
         "image_url": item.image_url,
         "is_popup": item.is_popup,
+        "brand": getattr(item, "brand", "all") or "all",
     }
+
+
+def _get_tokens_for_brand(db: Session, target_brand: str) -> list[str]:
+    norm = (target_brand or "all").strip().lower()
+    if "kulloma" in norm:
+        query = db.query(User.fcm_token).filter(
+            User.fcm_token.isnot(None),
+            User.fcm_token != "",
+            or_(
+                User.brand == "kullomadata",
+                User.email.ilike("%kulloma%"),
+            ),
+        )
+    elif "mele" in norm:
+        query = db.query(User.fcm_token).filter(
+            User.fcm_token.isnot(None),
+            User.fcm_token != "",
+            and_(
+                or_(User.brand == "meledata", User.brand.is_(None), User.brand == ""),
+                ~User.email.ilike("%kulloma%"),
+                ~User.email.ilike("%mzdata%"),
+            ),
+        )
+    elif "mz" in norm:
+        query = db.query(User.fcm_token).filter(
+            User.fcm_token.isnot(None),
+            User.fcm_token != "",
+            or_(
+                User.brand == "mzdata",
+                User.email.ilike("%mzdata%"),
+            ),
+        )
+    else:
+        query = db.query(User.fcm_token).filter(
+            User.fcm_token.isnot(None),
+            User.fcm_token != "",
+        )
+    return [u.fcm_token for u in query.all() if u.fcm_token]
 
 
 @router.get("/broadcast", response_model=list[BroadcastAnnouncementOut])
 def list_active_broadcasts(
+    request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     _ = user
     if not _has_table(db):
         return []
+    from app.core.tenant import get_tenant_brand
+    current_brand = get_tenant_brand(request)
     now = _utcnow()
+    brand_filter = or_(
+        BroadcastAnnouncement.brand.is_(None),
+        BroadcastAnnouncement.brand == "all",
+        BroadcastAnnouncement.brand == current_brand,
+    )
     rows = (
         db.query(BroadcastAnnouncement)
         .filter(
@@ -104,6 +151,7 @@ def list_active_broadcasts(
                 BroadcastAnnouncement.is_active.is_(True),
                 or_(BroadcastAnnouncement.starts_at.is_(None), BroadcastAnnouncement.starts_at <= now),
                 or_(BroadcastAnnouncement.ends_at.is_(None), BroadcastAnnouncement.ends_at >= now),
+                brand_filter,
             )
         )
         .order_by(BroadcastAnnouncement.created_at.desc(), BroadcastAnnouncement.id.desc())
@@ -115,15 +163,26 @@ def list_active_broadcasts(
 
 @router.get("/broadcast/admin", response_model=list[BroadcastAnnouncementOut])
 def admin_list_broadcasts(
+    request: Request,
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     _ = admin
     if not _has_table(db):
         return []
+    from app.core.tenant import get_tenant_brand
+    current_brand = get_tenant_brand(request)
+    query = db.query(BroadcastAnnouncement)
+    if current_brand and current_brand != "default":
+        query = query.filter(
+            or_(
+                BroadcastAnnouncement.brand == current_brand,
+                BroadcastAnnouncement.brand == "all",
+                BroadcastAnnouncement.brand.is_(None),
+            )
+        )
     rows = (
-        db.query(BroadcastAnnouncement)
-        .order_by(BroadcastAnnouncement.created_at.desc(), BroadcastAnnouncement.id.desc())
+        query.order_by(BroadcastAnnouncement.created_at.desc(), BroadcastAnnouncement.id.desc())
         .limit(300)
         .all()
     )
@@ -132,12 +191,18 @@ def admin_list_broadcasts(
 
 @router.post("/broadcast/admin", response_model=BroadcastAnnouncementOut)
 def admin_create_broadcast(
+    request: Request,
     payload: BroadcastAnnouncementCreate,
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     if not _ensure_table(db):
         raise HTTPException(status_code=503, detail="Announcements table is not ready yet")
+
+    from app.core.tenant import get_tenant_brand
+    target_brand = (payload.brand or get_tenant_brand(request)).strip().lower()
+    if target_brand == "default":
+        target_brand = "kullomadata" if "kulloma" in admin.email.lower() else "meledata"
 
     starts_at = _as_utc(payload.starts_at)
     ends_at = _as_utc(payload.ends_at)
@@ -155,6 +220,7 @@ def admin_create_broadcast(
         button_link=payload.button_link.strip() if payload.button_link else None,
         image_url=payload.image_url.strip() if payload.image_url else None,
         is_popup=bool(payload.is_popup),
+        brand=target_brand,
     )
     db.add(row)
     db.commit()
@@ -163,17 +229,14 @@ def admin_create_broadcast(
     if row.is_active:
         try:
             from app.services.push_notification import PushNotificationService
-            tokens = [
-                u.fcm_token for u in db.query(User.fcm_token)
-                .filter(User.fcm_token.isnot(None), User.fcm_token != "")
-                .all() if u.fcm_token
-            ]
+            tokens = _get_tokens_for_brand(db, target_brand)
             PushNotificationService.send_broadcast(
                 title=row.title,
                 body=row.message,
-                data={"type": "announcement", "id": str(row.id)},
+                data={"type": "announcement", "id": str(row.id), "brand": target_brand},
                 image_url=row.image_url,
                 tokens=tokens,
+                target_brand=target_brand,
             )
         except Exception as push_exc:
             import logging
@@ -274,62 +337,80 @@ def admin_update_broadcast(
 
 @router.get("/broadcast/admin/push-status")
 def admin_get_push_status(
+    request: Request,
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     _ = admin
     from app.services.push_notification import PushNotificationService
+    from app.core.tenant import get_tenant_brand
+    current_brand = get_tenant_brand(request)
     status = PushNotificationService.get_status()
-    user_count_with_token = db.query(User).filter(User.fcm_token.isnot(None), User.fcm_token != "").count()
+    total_tokens = db.query(User).filter(User.fcm_token.isnot(None), User.fcm_token != "").count()
+    kulloma_tokens = len(_get_tokens_for_brand(db, "kullomadata"))
+    mele_tokens = len(_get_tokens_for_brand(db, "meledata"))
+    mz_tokens = len(_get_tokens_for_brand(db, "mzdata"))
+
     return {
         "status": "success",
         "firebase": status,
-        "users_registered_for_push": user_count_with_token,
+        "current_brand": current_brand,
+        "users_registered_for_push": total_tokens,
+        "kullomadata_recipients": kulloma_tokens,
+        "meledata_recipients": mele_tokens,
+        "mzdata_recipients": mz_tokens,
     }
 
 @router.post("/broadcast/admin/test-my-device")
 def admin_test_my_device(
+    request: Request,
     admin: User = Depends(require_admin),
 ):
     from app.services.push_notification import PushNotificationService
+    from app.core.tenant import get_tenant_brand
+    current_brand = get_tenant_brand(request)
+    brand_label = "KULLOMA DATA" if current_brand == "kullomadata" else ("MZ DATA" if current_brand == "mzdata" else "MELE DATA")
     if not admin.fcm_token:
         return {
             "status": "failed",
-            "message": "Your admin account does not have an FCM token registered yet. Please log into the MELE DATA mobile app on your iPhone or Android phone with this account first."
+            "message": f"Your admin account ({admin.email}) does not have an FCM token registered yet. Please log into the {brand_label} mobile app with this account first."
         }
     ok = PushNotificationService.send_to_token(
         token=admin.fcm_token,
-        title="MELE DATA Test Push",
-        body="If you see this, push notifications are working 100% on your device!",
-        data={"type": "admin_test"},
+        title=f"{brand_label} Test Push",
+        body=f"If you see this, push notifications are working 100% on your {brand_label} device!",
+        data={"type": "admin_test", "brand": current_brand},
     )
     return {
         "status": "success" if ok else "failed",
-        "message": "Test push notification dispatched directly to your device!" if ok else "FCM failed to deliver to device token.",
+        "message": f"Test push notification dispatched directly to your {brand_label} device!" if ok else "FCM failed to deliver to device token.",
         "admin_email": admin.email,
+        "brand": current_brand,
     }
 
 @router.post("/broadcast/admin/push-only")
 def admin_send_push_only(
+    request: Request,
     payload: PushNotificationSend,
     admin: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     _ = admin
-    
+    from app.core.tenant import get_tenant_brand
+    target_brand = (payload.target_brand or get_tenant_brand(request)).strip().lower()
+    if target_brand == "default":
+        target_brand = "kullomadata" if "kulloma" in admin.email.lower() else "meledata"
+
     try:
         from app.services.push_notification import PushNotificationService
-        tokens = [
-            u.fcm_token for u in db.query(User.fcm_token)
-            .filter(User.fcm_token.isnot(None), User.fcm_token != "")
-            .all() if u.fcm_token
-        ]
+        tokens = _get_tokens_for_brand(db, target_brand)
         success = PushNotificationService.send_broadcast(
             title=payload.title.strip(),
             body=payload.message.strip(),
-            data={"type": "announcement_push_only"},
+            data={"type": "announcement_push_only", "brand": target_brand},
             image_url=payload.image_url.strip() if payload.image_url else None,
             tokens=tokens,
+            target_brand=target_brand,
         )
         if not success:
             raise HTTPException(status_code=500, detail="Failed to send push notification")
@@ -340,7 +421,8 @@ def admin_send_push_only(
         
     return {
         "status": "success", 
-        "message": "Push notification sent successfully",
+        "message": f"Push notification dispatched successfully to {target_brand} audience",
+        "target_brand": target_brand,
         "device_recipients_count": len(tokens) if 'tokens' in locals() else 0
     }
 

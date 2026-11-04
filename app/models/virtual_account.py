@@ -9,6 +9,7 @@ class VirtualAccountProvider(str, enum.Enum):
     PAYSTACK = "paystack"
     BILLSTACK = "billstack"
     ASPFIY = "aspfiy"
+    ASPIFY = "aspify"
 
 class VirtualAccountStatus(str, enum.Enum):
     ACTIVE = "active"

@@ -127,6 +127,7 @@ def reserve_monnify_account(
         "customerEmail": customer_email,
         "customerName": customer_name or customer_email,
         "getAllAvailableBanks": bool(get_all_available_banks),
+        "preferredBanks": ["50515"],
     }
     if bvn:
         payload["bvn"] = bvn

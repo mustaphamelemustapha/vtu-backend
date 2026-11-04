@@ -24,10 +24,20 @@ class AspfiyService:
             ).first()
             if db_settings and db_settings.is_active:
                 secret_key = db_settings.secret_key or settings.aspfiy_secret_key
-                webhook_url = db_settings.webhook_url or settings.aspfiy_webhook_url or "https://vtu-backend-8gsi.onrender.com/api/v1/webhooks/aspfiy"
+                webhook_url = db_settings.webhook_url or settings.aspfiy_webhook_url or "https://api.meledata.ng/api/v1/webhooks/aspfiy"
             else:
                 secret_key = settings.aspfiy_secret_key
-                webhook_url = settings.aspfiy_webhook_url or "https://vtu-backend-8gsi.onrender.com/api/v1/webhooks/aspfiy"
+                webhook_url = settings.aspfiy_webhook_url or "https://api.meledata.ng/api/v1/webhooks/aspfiy"
+
+            # Enforce clean webhook URL (prevent legacy Render / Vercel loops)
+            clean_url = str(webhook_url or "").strip()
+            if not clean_url or any(bad in clean_url for bad in ("onrender.com", "vercel.app", "axisvtu")):
+                webhook_url = "https://api.meledata.ng/api/v1/webhooks/aspfiy"
+                if db_settings and db_settings.webhook_url != webhook_url:
+                    db_settings.webhook_url = webhook_url
+                    db.commit()
+            else:
+                webhook_url = clean_url
         finally:
             db.close()
 

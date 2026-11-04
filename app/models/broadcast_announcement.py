@@ -19,7 +19,15 @@ class BroadcastAnnouncement(Base, TimestampMixin):
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(120), nullable=False)
     message = Column(Text, nullable=False)
-    level = Column(Enum(AnnouncementLevel), nullable=False, default=AnnouncementLevel.INFO)
+    level = Column(
+        Enum(
+            AnnouncementLevel,
+            name="announcementlevel",
+            values_callable=lambda obj: [e.value for e in obj],
+        ),
+        nullable=False,
+        default=AnnouncementLevel.INFO,
+    )
     is_active = Column(Boolean, nullable=False, default=True)
     starts_at = Column(DateTime(timezone=True), nullable=True)
     ends_at = Column(DateTime(timezone=True), nullable=True)
@@ -28,6 +36,7 @@ class BroadcastAnnouncement(Base, TimestampMixin):
     button_link = Column(String(255), nullable=True)
     image_url = Column(String(500), nullable=True)
     is_popup = Column(Boolean, nullable=False, default=False)
+    brand = Column(String(32), nullable=True, default="all", index=True)
 
 
 Index(

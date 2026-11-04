@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.api.v1.endpoints.notifications import list_active_broadcasts
@@ -16,6 +16,7 @@ settings = get_settings()
 
 @router.get("/summary", response_model=DashboardSummaryOut)
 def get_dashboard_summary(
+    request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -41,7 +42,7 @@ def get_dashboard_summary(
         partial_failures.append("announcements")
 
     try:
-        bank_transfer_accounts = get_bank_transfer_accounts(user=user, db=db)
+        bank_transfer_accounts = get_bank_transfer_accounts(request=request, user=user, db=db)
     except HTTPException as exc:
         partial_failures.append("bank_transfer_accounts")
         bank_transfer_accounts = {

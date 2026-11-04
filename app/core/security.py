@@ -48,4 +48,23 @@ def create_refresh_token(subject: str, role: str) -> str:
 
 
 def decode_token(token: str) -> dict:
+    keys = [settings.secret_key]
+    legacy = getattr(settings, "legacy_secret_keys", "") or ""
+    if legacy:
+        keys.extend([k.strip() for k in legacy.split(",") if k.strip()])
+    keys = list(dict.fromkeys([k for k in keys if k]))
+
+    last_sig_err = None
+    for key in keys:
+        try:
+            return jwt.decode(token, key, algorithms=["HS256"])
+        except jwt.InvalidSignatureError as exc:
+            last_sig_err = exc
+            continue
+        except Exception:
+            raise
+
+    if last_sig_err:
+        raise last_sig_err
     return jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+

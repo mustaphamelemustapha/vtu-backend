@@ -49,6 +49,7 @@ class User(Base, TimestampMixin):
     webhook_url = Column(String(255), nullable=True)
     webhook_secret = Column(String(128), nullable=True)
     state = Column(String(64), nullable=True)
+    brand = Column(String(32), nullable=True, default="meledata", index=True)
 
     referred_by = relationship(
         "User",
