@@ -69,9 +69,9 @@ class AdminUserOut(BaseModel):
     email: str
     phone_number: Optional[str] = None
     full_name: str
-    role: UserRole
-    is_active: bool
-    is_verified: bool
+    role: str = "customer"
+    is_active: bool = True
+    is_verified: bool = False
     referral_count: int = 0
     developer_status: str = "none"
     total_spending: float = 0.0

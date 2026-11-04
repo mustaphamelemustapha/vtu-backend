@@ -310,8 +310,14 @@ def _compute_analytics(admin, db: Session):
 
     daily_tx = today_successful_tx + today_failed_tx + today_pending_tx
 
-    api_success = db.query(func.count(ApiLog.id)).filter(ApiLog.success == 1).scalar() or 0
-    api_failed = db.query(func.count(ApiLog.id)).filter(ApiLog.success == 0).scalar() or 0
+    try:
+        api_success = db.query(func.count(ApiLog.id)).filter(ApiLog.success == 1).scalar() or 0
+        api_failed = db.query(func.count(ApiLog.id)).filter(ApiLog.success == 0).scalar() or 0
+    except Exception as api_exc:
+        logger.warning(f"Error querying ApiLog counts: {api_exc}")
+        db.rollback()
+        api_success = 0
+        api_failed = 0
     service_revenue = 0
     service_cost_estimate = 0
     service_profit_estimate = 0
@@ -444,9 +450,9 @@ def _compute_analytics(admin, db: Session):
             )
             promo_remaining = max(promo_limit - promo_users_used, 0)
             promo_active = promo_remaining > 0
-    except Exception:
-        # Keep analytics endpoint resilient when the service table is not yet available.
-        pass
+    except Exception as period_exc:
+        logger.warning(f"Error computing period data: {period_exc}")
+        db.rollback()
 
     period_profit_payload = {}
     for key, values in period_profit_estimates.items():
@@ -457,13 +463,18 @@ def _compute_analytics(admin, db: Session):
             "tx_count": int(values["tx_count"]),
         }
         
-    total_tx_count = db.query(func.count(Transaction.id)).filter(
-        Transaction.status == TransactionStatus.SUCCESS,
-        Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
-    ).scalar() or 0
-    if inspect(db.bind).has_table("service_transactions"):
-        total_st_count = db.query(func.count(ServiceTransaction.id)).filter(ServiceTransaction.status == TransactionStatus.SUCCESS.value).scalar() or 0
-        total_tx_count += total_st_count
+    try:
+        total_tx_count = db.query(func.count(Transaction.id)).filter(
+            Transaction.status == TransactionStatus.SUCCESS,
+            Transaction.tx_type.notin_([TransactionType.WALLET_FUND, TransactionType.WALLET_TRANSFER])
+        ).scalar() or 0
+        if inspect(db.bind).has_table("service_transactions"):
+            total_st_count = db.query(func.count(ServiceTransaction.id)).filter(ServiceTransaction.status == TransactionStatus.SUCCESS.value).scalar() or 0
+            total_tx_count += total_st_count
+    except Exception as tx_cnt_exc:
+        logger.warning(f"Error computing total_tx_count: {tx_cnt_exc}")
+        db.rollback()
+        total_tx_count = daily_tx
         
     period_profit_payload["all_time"] = {
         "revenue": round(float(total_revenue or 0) + float(service_revenue or 0), 2),
@@ -988,45 +999,85 @@ def list_users(
         elif status.lower() == "suspended":
             query = query.filter(User.is_active == False)
 
-    # For count, we can use a simpler query to avoid the subqueries slowing it down
-    # But for now we rely on SQLAlchemy optimizations. 
-    # To truly optimize count, we could strip explicit select and subqueries:
-    count_query = db.query(User.id)
-    if q: count_query = count_query.filter(or_(User.email.ilike(needle), User.full_name.ilike(needle), User.phone_number.ilike(needle)))
-    if role and role.lower() != "all":
-        try: count_query = count_query.filter(User.role == UserRole(role.lower()))
-        except ValueError: pass
-    if status and status.lower() != "all":
-        if status.lower() == "active": count_query = count_query.filter(User.is_active == True)
-        elif status.lower() == "suspended": count_query = count_query.filter(User.is_active == False)
-    total = count_query.count()
+    try:
+        count_query = db.query(User.id)
+        if q:
+            count_query = count_query.filter(or_(User.email.ilike(needle), User.full_name.ilike(needle), User.phone_number.ilike(needle)))
+        if role and role.lower() != "all":
+            try:
+                count_query = count_query.filter(User.role == UserRole(role.lower()))
+            except ValueError:
+                pass
+        if status and status.lower() != "all":
+            if status.lower() == "active":
+                count_query = count_query.filter(User.is_active == True)
+            elif status.lower() == "suspended":
+                count_query = count_query.filter(User.is_active == False)
+        total = count_query.count()
 
-    users = (
-        query.order_by(User.id.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-
-    items = []
-    for u in users:
-        items.append(
-            {
-                "id": u.id,
-                "created_at": u.created_at,
-                "email": u.email,
-                "phone_number": u.phone_number,
-                "full_name": u.full_name,
-                "role": u.role,
-                "is_active": u.is_active,
-                "is_verified": u.is_verified,
-                "referral_count": u.referral_count or 0,
-                "developer_status": u.developer_status or "none",
-                "total_spending": float(u.total_spending or 0.0),
-            }
+        users = (
+            query.order_by(User.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
         )
 
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+        items = []
+        for u in users:
+            role_val = str(u.role.value if hasattr(u.role, 'value') else u.role or "customer").lower()
+            items.append(
+                {
+                    "id": u.id,
+                    "created_at": u.created_at,
+                    "email": u.email,
+                    "phone_number": u.phone_number,
+                    "full_name": u.full_name,
+                    "role": role_val,
+                    "is_active": bool(u.is_active),
+                    "is_verified": bool(u.is_verified),
+                    "referral_count": int(u.referral_count or 0),
+                    "developer_status": str(u.developer_status or "none"),
+                    "total_spending": float(u.total_spending or 0.0),
+                }
+            )
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
+    except Exception as exc:
+        logger.error(f"Error in list_users with subqueries: {exc}", exc_info=True)
+        db.rollback()
+        # Fallback to direct User query without subqueries
+        try:
+            simple_q = db.query(User)
+            if q:
+                needle = f"%{q.strip()}%"
+                simple_q = simple_q.filter(or_(User.email.ilike(needle), User.full_name.ilike(needle), User.phone_number.ilike(needle)))
+            if status and status.lower() != "all":
+                if status.lower() == "active":
+                    simple_q = simple_q.filter(User.is_active == True)
+                elif status.lower() == "suspended":
+                    simple_q = simple_q.filter(User.is_active == False)
+            fallback_total = simple_q.count()
+            fallback_users = simple_q.order_by(User.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+            items = []
+            for u in fallback_users:
+                role_val = str(u.role.value if hasattr(u.role, 'value') else u.role or "customer").lower()
+                items.append({
+                    "id": u.id,
+                    "created_at": u.created_at,
+                    "email": u.email,
+                    "phone_number": u.phone_number,
+                    "full_name": u.full_name,
+                    "role": role_val,
+                    "is_active": bool(u.is_active),
+                    "is_verified": bool(u.is_verified),
+                    "referral_count": 0,
+                    "developer_status": str(getattr(u, "developer_status", "none") or "none"),
+                    "total_spending": 0.0,
+                })
+            return {"items": items, "total": fallback_total, "page": page, "page_size": page_size}
+        except Exception as fallback_exc:
+            logger.error(f"Fatal fallback error in list_users: {fallback_exc}", exc_info=True)
+            db.rollback()
+            return {"items": [], "total": 0, "page": page, "page_size": page_size}
 
 
 @router.get("/users/{user_id}/details")

@@ -10,8 +10,8 @@ class UserRole(str, enum.Enum):
     AGENT = "agent"
     AMBASSADOR = "ambassador"
     ADMIN = "admin"
-    USER = "customer"
-    RESELLER = "agent"
+    USER = "user"
+    RESELLER = "reseller"
 
 
 class User(Base, TimestampMixin):
