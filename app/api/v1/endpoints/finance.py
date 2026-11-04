@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Any, List, Optional
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, or_, text, cast, String, inspect
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -58,10 +58,11 @@ class FinancialLedgerResponse(BaseModel):
     description: Optional[str]
     reference: str
     status: str
-    created_at: datetime
+    created_at: Optional[datetime] = None
     
     class Config:
         orm_mode = True
+        from_attributes = True
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -310,7 +311,7 @@ def get_finance_overview(
                 from app.providers.smeplug_provider import SMEPlugProvider
                 sme = SMEPlugProvider(db=db)
                 sme_bal = sme.get_balance()
-                if isinstance(sme_bal, (int, float)):
+                if isinstance(sme_bal, (int, float)) and not isinstance(sme_bal, bool) and sme_bal >= 0:
                     assets_list.append({"name": "SMEPlug", "balance": float(sme_bal), "type": "PROVIDER_WALLET"})
                     total_assets += Decimal(str(sme_bal))
             except Exception as e:
@@ -318,16 +319,13 @@ def get_finance_overview(
 
         # 2. Amigo (Only query if explicitly active in DB with valid API key)
         amigo_p = db_providers.get("amigo")
-        amigo_active = bool(
-            (amigo_p and amigo_p.is_active and amigo_p.api_key and amigo_p.api_key.strip()) or
-            (app_settings.amigo_api_key and app_settings.amigo_api_key.strip() and (amigo_p is None or amigo_p.is_active))
-        )
+        amigo_active = bool(amigo_p and amigo_p.is_active and amigo_p.api_key and amigo_p.api_key.strip())
         if amigo_active:
             try:
                 from app.services.amigo import AmigoClient
                 amigo = AmigoClient(api_key=amigo_p.api_key if amigo_p else None, base_url=amigo_p.base_url if amigo_p else None)
                 amigo_bal = amigo.get_balance()
-                if isinstance(amigo_bal, (int, float)):
+                if isinstance(amigo_bal, (int, float)) and not isinstance(amigo_bal, bool) and amigo_bal >= 0:
                     assets_list.append({"name": "Amigo", "balance": float(amigo_bal), "type": "PROVIDER_WALLET"})
                     total_assets += Decimal(str(amigo_bal))
             except Exception as e:
@@ -335,16 +333,13 @@ def get_finance_overview(
 
         # 3. ClubKonnect (Only query if explicitly active in DB with valid credentials)
         ck_p = db_providers.get("clubkonnect")
-        ck_active = bool(
-            (ck_p and ck_p.is_active and ck_p.api_key and ck_p.api_key.strip()) or
-            (app_settings.clubkonnect_enabled and app_settings.clubkonnect_api_key and (ck_p is None or ck_p.is_active))
-        )
+        ck_active = bool(ck_p and ck_p.is_active and ck_p.api_key and ck_p.api_key.strip())
         if ck_active:
             try:
                 from app.services.bills import ClubKonnectBillsProvider
                 club = ClubKonnectBillsProvider()
                 club_bal = club.get_balance()
-                if isinstance(club_bal, (int, float)):
+                if isinstance(club_bal, (int, float)) and not isinstance(club_bal, bool) and club_bal >= 0:
                     assets_list.append({"name": "ClubKonnect", "balance": float(club_bal), "type": "PROVIDER_WALLET"})
                     total_assets += Decimal(str(club_bal))
             except Exception as e:
@@ -356,8 +351,9 @@ def get_finance_overview(
                 continue
             if p.is_active and p.api_key and p.api_key.strip():
                 bal = float(p.balance or 0.0)
-                assets_list.append({"name": p.name or ident.upper(), "balance": bal, "type": "PROVIDER_WALLET"})
-                total_assets += Decimal(str(bal))
+                if bal >= 0:
+                    assets_list.append({"name": p.name or ident.upper(), "balance": bal, "type": "PROVIDER_WALLET"})
+                    total_assets += Decimal(str(bal))
 
     except Exception as e:
         logger.warning(f"Could not fetch live provider balances: {e}")
@@ -448,6 +444,7 @@ def get_finance_overview(
 @router.post("/ledger", response_model=FinancialLedgerResponse)
 def create_ledger_entry(
     entry: FinancialLedgerCreate,
+    request: Request,
     db: Session = Depends(get_db),
     user: User = Depends(require_admin)
 ) -> Any:
@@ -460,30 +457,77 @@ def create_ledger_entry(
 
         inspector = inspect(db.bind)
         if not inspector.has_table("financial_ledger"):
-            FinancialLedger.__table__.create(db.bind, checkfirst=True)
+            try:
+                FinancialLedger.__table__.create(db.bind, checkfirst=True)
+            except Exception:
+                pass
             inspector = inspect(db.bind)
 
         cols = {c["name"] for c in inspector.get_columns("financial_ledger")}
+        
+        # Self-heal missing columns if necessary
+        missing = []
+        if "created_by_id" not in cols:
+            missing.append("ADD COLUMN IF NOT EXISTS created_by_id INTEGER REFERENCES users(id)")
+        if "source_id" not in cols:
+            missing.append("ADD COLUMN IF NOT EXISTS source_id VARCHAR(64)")
+        if "brand" not in cols:
+            missing.append("ADD COLUMN IF NOT EXISTS brand VARCHAR(32) DEFAULT 'meledata'")
+        
+        if missing:
+            try:
+                with db.bind.begin() as conn:
+                    for sql_clause in missing:
+                        try:
+                            conn.execute(text(f"ALTER TABLE financial_ledger {sql_clause}"))
+                        except Exception:
+                            pass
+                inspector = inspect(db.bind)
+                cols = {c["name"] for c in inspector.get_columns("financial_ledger")}
+            except Exception as e:
+                logger.warning(f"Could not auto-add columns to financial_ledger: {e}")
+
         created_by_val = user.id if "created_by_id" in cols else None
 
         cat_val = entry.category.value if hasattr(entry.category, "value") else str(entry.category)
         entry_val = entry.entry_type.value if hasattr(entry.entry_type, "value") else str(entry.entry_type)
 
-        db_entry = FinancialLedger(
-            reference=ref,
-            source="manual",
-            status="completed",
-            category=cat_val,
-            entry_type=entry_val,
-            amount=Decimal(str(entry.amount)),
-            party=entry.party,
-            description=entry.description,
-            created_by_id=created_by_val
-        )
+        target_brand = (
+            request.headers.get("x-app-brand")
+            or getattr(user, "brand", None)
+            or "meledata"
+        ).strip().lower()
+
+        insert_kwargs = {
+            "reference": ref,
+            "source": "manual",
+            "status": "completed",
+            "category": cat_val,
+            "entry_type": entry_val,
+            "amount": Decimal(str(entry.amount)),
+            "party": entry.party,
+            "description": entry.description,
+            "created_by_id": created_by_val,
+        }
+        if "brand" in cols:
+            insert_kwargs["brand"] = target_brand
+
+        db_entry = FinancialLedger(**insert_kwargs)
         db.add(db_entry)
         db.commit()
         db.refresh(db_entry)
-        return db_entry
+
+        return {
+            "id": db_entry.id,
+            "category": str(cat_val),
+            "entry_type": str(entry_val),
+            "amount": float(entry.amount),
+            "party": entry.party,
+            "description": entry.description,
+            "reference": ref,
+            "status": "completed",
+            "created_at": db_entry.created_at or datetime.now(timezone.utc),
+        }
     except Exception as exc:
         db.rollback()
         logger.error(f"Error creating financial ledger entry: {exc}", exc_info=True)
@@ -505,7 +549,21 @@ def get_ledger(
             cat_val = category.value if hasattr(category, "value") else str(category)
             query = query.filter(FinancialLedger.category == cat_val)
         
-        return query.order_by(FinancialLedger.created_at.desc()).offset(skip).limit(limit).all()
+        entries = query.order_by(FinancialLedger.created_at.desc()).offset(skip).limit(limit).all()
+        return [
+            {
+                "id": e.id,
+                "category": str(e.category),
+                "entry_type": str(e.entry_type),
+                "amount": float(e.amount),
+                "party": e.party,
+                "description": e.description,
+                "reference": e.reference,
+                "status": e.status,
+                "created_at": e.created_at,
+            }
+            for e in entries
+        ]
     except Exception as exc:
         logger.warning(f"Error fetching financial ledger: {exc}")
         return []

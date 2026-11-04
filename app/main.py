@@ -32,6 +32,7 @@ os.makedirs("uploads/profile_images", exist_ok=True)
 
 app = FastAPI(title=settings.app_name)
 app.mount("/static", StaticFiles(directory="uploads"), name="static")
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
@@ -1045,6 +1046,8 @@ def _ensure_financial_ledger_table() -> None:
                     conn.execute(text("ALTER TABLE financial_ledger ADD COLUMN created_by_id INTEGER REFERENCES users(id)"))
                 if "source_id" not in cols:
                     conn.execute(text("ALTER TABLE financial_ledger ADD COLUMN source_id VARCHAR(64)"))
+                if "brand" not in cols:
+                    conn.execute(text("ALTER TABLE financial_ledger ADD COLUMN brand VARCHAR(32) DEFAULT 'meledata'"))
                 logging.getLogger(__name__).info("Ensured financial_ledger columns.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure financial_ledger table: %s", exc)
