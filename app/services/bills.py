@@ -1847,16 +1847,20 @@ class TelecomAbodeBillsProvider:
 
     def _parse_result(self, res_data: dict, action: str) -> ProviderResult:
         status_value = str(res_data.get("status") or "").lower()
-        message = str(res_data.get("error") or "Successful")
+        message = str(res_data.get("message") or res_data.get("error") or "Successful")
         reference = str(res_data.get("provider_reference") or "")
         meta = res_data.get("meta") or {}
         meta["telecom_abode_action"] = action
-            
-        if status_value == "success":
+        if res_data.get("token") and not meta.get("token"):
+            meta["token"] = res_data.get("token")
+        if res_data.get("pins") and not meta.get("pins"):
+            meta["pins"] = res_data.get("pins")
+
+        if status_value == "success" or str(res_data.get("Status") or "").lower() == "successful":
             return ProviderResult(True, external_reference=reference, message=message, meta=meta)
-        if status_value == "pending":
-            return ProviderResult(False, external_reference=reference, message="Transaction pending", meta=meta, pending=True)
-            
+        if status_value == "pending" or str(res_data.get("Status") or "").lower() == "pending":
+            return ProviderResult(False, external_reference=reference, message=message or "Transaction pending", meta=meta, pending=True)
+
         return ProviderResult(False, external_reference=reference, message=message, meta=meta)
 
     def purchase_airtime(self, network: str, phone_number: str, amount: float, reference: str | None = None) -> ProviderResult:
@@ -1867,21 +1871,44 @@ class TelecomAbodeBillsProvider:
         res_data = self.abode.purchase_data(network, phone_number, plan_code, request_id or _vtpass_request_id())
         return self._parse_result(res_data, "data")
 
-    def purchase_cable(self, provider: str, smartcard_number: str, plan_code: str, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
-        res_data = self.abode.purchase_cable(provider, smartcard_number, plan_code, reference or _vtpass_request_id())
+    def purchase_cable(self, provider: str, smartcard_number: str, package_code: str, amount: float = 0.0, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
+        res_data = self.abode.purchase_cable(provider, smartcard_number, package_code, reference or _vtpass_request_id())
         return self._parse_result(res_data, "cable")
 
-    def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
-        return ProviderResult(False, message="Electricity not supported by Telecom Abode API.")
-
-    def purchase_exam_pin(self, exam: str, quantity: int, phone_number: str | None = None, exam_type: str | None = None) -> ProviderResult:
-        return ProviderResult(False, message="Exam Pins not supported by Telecom Abode API.")
-
     def fetch_cable_packages(self, provider: str) -> list[dict]:
-        return []
-        
+        return self.abode.fetch_cable_packages(provider)
+
+    def verify_cable_customer(self, provider: str, smartcard_number: str) -> dict:
+        return self.abode.verify_cable_smartcard(provider, smartcard_number)
+
+    def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
+        res_data = self.abode.purchase_electricity(disco, meter_number, meter_type, amount, reference or _vtpass_request_id())
+        return self._parse_result(res_data, "electricity")
+
     def fetch_electricity_discos(self) -> list[dict]:
-        return []
+        discos = self.abode.fetch_electricity_discos()
+        if not discos:
+            return []
+        normalized = []
+        for d in discos:
+            if not isinstance(d, dict):
+                continue
+            code = str(d.get("id") or "").strip()
+            name = str(d.get("name") or code).strip()
+            abb = str(d.get("abb") or "").strip().lower()
+            disco_id = abb or name.lower().replace(" ", "")
+            normalized.append({"code": code, "id": disco_id, "name": name})
+        return normalized
+
+    def verify_electricity_customer(self, disco: str, meter_number: str, meter_type: str) -> dict:
+        return self.abode.verify_electricity_meter(disco, meter_number, meter_type)
+
+    def purchase_exam_pin(self, exam: str, quantity: int = 1, phone_number: str | None = None, exam_type: str | None = None, reference: str | None = None) -> ProviderResult:
+        res_data = self.abode.purchase_exam_pin(exam_type or exam, quantity, reference or _vtpass_request_id())
+        return self._parse_result(res_data, "exam")
+
+    def fetch_exam_packages(self, exam: str | None = None) -> list[dict]:
+        return self.abode.fetch_exam_packages(exam)
 
 
 class MeleDataBillsProvider:
@@ -1941,7 +1968,7 @@ class MeleDataBillsProvider:
 
 def get_bills_provider(service_type: str | None = None):
     env_choice = str(settings.bills_provider or "auto").strip().lower()
-    has_telecom_abode = bool(getattr(settings, "telecom_abode_enabled", False) and getattr(settings, "telecom_abode_api_key", None))
+    has_telecom_abode = bool((getattr(settings, "telecom_abode_enabled", False) or getattr(settings, "telecom_abode_api_key", None)) and getattr(settings, "telecom_abode_api_key", None))
 
     # 1. If explicitly set in environment, honor it immediately
     if env_choice == "meledata":
@@ -1955,8 +1982,8 @@ def get_bills_provider(service_type: str | None = None):
     if env_choice == "autosync":
         return AutosyncBillsProvider()
 
-    # 2. If service is airtime and Telecom Abode is enabled in env, route to Telecom Abode
-    if service_type == "airtime" and has_telecom_abode:
+    # 2. If service is supported and Telecom Abode is enabled in env/key configured, route to Telecom Abode
+    if service_type in ("airtime", "cable", "electricity", "exam") and has_telecom_abode:
         return TelecomAbodeBillsProvider()
 
     db = SessionLocal()
@@ -2023,8 +2050,15 @@ def get_bills_provider(service_type: str | None = None):
         db_settings = db.query(SystemSettings).first()
         db_choice = db_settings.active_vtu_provider if db_settings else None
         vtu_api_key = db_settings.vtu_api_key if db_settings else None
+    except Exception as exc:
+        logger.warning("Could not resolve bills provider from database: %s", exc)
+        db_choice = None
+        vtu_api_key = None
     finally:
-        db.close()
+        try:
+            db.close()
+        except Exception:
+            pass
 
     choice = db_choice or env_choice
 
@@ -2035,7 +2069,7 @@ def get_bills_provider(service_type: str | None = None):
 
     if choice == "mock":
         return MockBillsProvider()
-    if choice == "telecom_abode" or (service_type == "airtime" and has_telecom_abode):
+    if choice == "telecom_abode" or (service_type in ("airtime", "cable", "electricity", "exam") and has_telecom_abode):
         if has_telecom_abode:
             return TelecomAbodeBillsProvider()
     if choice == "autosync":

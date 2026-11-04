@@ -941,7 +941,7 @@ def _ensure_default_integrations() -> None:
                 "base_url": getattr(settings, "telecom_abode_base_url", "https://telecomabode.com.ng/api"),
                 "api_key": getattr(settings, "telecom_abode_api_key", "") or "",
                 "is_active": bool(getattr(settings, "telecom_abode_api_key", "") or getattr(settings, "telecom_abode_enabled", False)),
-                "supported_services": ["airtime", "data", "cable"],
+                "supported_services": ["airtime", "data", "cable", "electricity", "exam"],
             },
             {
                 "name": "Mele Data",
@@ -963,6 +963,16 @@ def _ensure_default_integrations() -> None:
                     existing.api_key = spec["api_key"]
                     existing.is_active = True
                 if spec["base_url"] and not existing.base_url:
+                    existing.base_url = spec["base_url"]
+                # Ensure newly supported services are reflected on existing providers
+                current_supported = list(existing.supported_services or [])
+                updated = False
+                for s in spec.get("supported_services", []):
+                    if s not in current_supported:
+                        current_supported.append(s)
+                        updated = True
+                if updated:
+                    existing.supported_services = current_supported
                     existing.base_url = spec["base_url"]
                 existing.supported_services = spec["supported_services"]
 

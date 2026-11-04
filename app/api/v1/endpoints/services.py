@@ -171,16 +171,16 @@ def services_catalog(user: User = Depends(get_current_user)):
             "benin",
             "aba",
         ],
-        "exam_types": ["waec", "neco", "jamb"],
+        "exam_types": ["waec", "neco", "nabteb", "jamb"],
     }
 
 
 @router.get("/exam/packages")
 def exam_packages(exam: str, user: User = Depends(get_current_user)):
     exam_key = str(exam or "").strip().lower()
-    if exam_key not in {"waec", "jamb"}:
-        raise HTTPException(status_code=400, detail="Exam must be one of: waec, jamb")
-    provider = get_bills_provider()
+    if exam_key not in {"waec", "neco", "nabteb", "jamb"}:
+        raise HTTPException(status_code=400, detail="Exam must be one of: waec, neco, nabteb, jamb")
+    provider = get_bills_provider("exam")
     packages = _fetch_exam_packages(provider, exam_key)
     if not packages:
         raise HTTPException(status_code=503, detail=f"Unable to load {exam_key.upper()} packages right now.")
@@ -479,7 +479,7 @@ def purchase_cable(request: Request, payload: CablePurchaseRequest, user: User =
     fcm_token = user.fcm_token
     db.close()
 
-    provider = get_bills_provider()
+    provider = get_bills_provider("cable")
     try:
         result = provider.purchase_cable(
             tx.provider or "",
@@ -569,7 +569,7 @@ def cable_packages(provider: str, user: User = Depends(get_current_user)):
     provider_key = str(provider or "").strip().lower()
     if not provider_key:
         raise HTTPException(status_code=400, detail="Provider is required.")
-    service = get_bills_provider()
+    service = get_bills_provider("cable")
     fetcher = getattr(service, "fetch_cable_packages", None)
     if not callable(fetcher):
         return {"provider": provider_key, "packages": []}
@@ -613,7 +613,7 @@ def cable_verify(
     smartcard = str(payload.smartcard_number or "").strip()
     if not provider_key or not smartcard:
         raise HTTPException(status_code=400, detail="Provider and smartcard number are required.")
-    service = get_bills_provider()
+    service = get_bills_provider("cable")
     verifier = getattr(service, "verify_cable_customer", None)
     if not callable(verifier):
         return {"ok": False, "message": "Smartcard verification is unavailable right now."}
@@ -694,7 +694,7 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
     fcm_token = user.fcm_token
     db.close()
 
-    provider = get_bills_provider()
+    provider = get_bills_provider("electricity")
     try:
         result = provider.purchase_electricity(
             tx.provider or "",
@@ -785,7 +785,7 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
 
 @router.get("/electricity/discos")
 def electricity_discos(user: User = Depends(get_current_user)):
-    service = get_bills_provider()
+    service = get_bills_provider("electricity")
     fetcher = getattr(service, "fetch_electricity_discos", None)
     if not callable(fetcher):
         return {
@@ -851,7 +851,7 @@ def electricity_verify(request: Request, payload: ElectricityVerifyRequest, user
     if not disco or not meter_number or not meter_type:
         raise HTTPException(status_code=400, detail="Disco, meter type, and meter number are required.")
 
-    service = get_bills_provider()
+    service = get_bills_provider("electricity")
     verifier = getattr(service, "verify_electricity_customer", None)
     if not callable(verifier):
         return {"ok": False, "message": "Meter verification is unavailable right now."}
@@ -873,10 +873,10 @@ def electricity_verify(request: Request, payload: ElectricityVerifyRequest, user
 def purchase_exam_pin(request: Request, payload: ExamPurchaseRequest, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     _ensure_service_table(db)
     exam_key = str(payload.exam or "").strip().lower()
-    if exam_key not in {"waec", "jamb"}:
-        raise HTTPException(status_code=400, detail="Exam must be WAEC or JAMB")
+    if exam_key not in {"waec", "neco", "nabteb", "jamb"}:
+        raise HTTPException(status_code=400, detail="Exam must be one of: waec, neco, nabteb, jamb")
 
-    provider = get_bills_provider()
+    provider = get_bills_provider("exam")
     selected_exam_type = str(payload.exam_type or "").strip()
     packages = _fetch_exam_packages(provider, exam_key)
     if not selected_exam_type and packages:
