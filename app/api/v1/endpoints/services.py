@@ -573,24 +573,32 @@ def cable_packages(provider: str, user: User = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="Provider is required.")
     service = get_bills_provider("cable")
     fetcher = getattr(service, "fetch_cable_packages", None)
-    if not callable(fetcher):
-        return {"provider": provider_key, "packages": []}
-    try:
-        rows = fetcher(provider_key) or []
-    except Exception as exc:
-        logger.warning("Cable packages fetch failed provider=%s error=%s", provider_key, exc)
-        return {"provider": provider_key, "packages": []}
+    rows = []
+    if callable(fetcher):
+        try:
+            rows = fetcher(provider_key) or []
+        except Exception as exc:
+            logger.warning("Cable packages fetch failed provider=%s error=%s", provider_key, exc)
+            rows = []
+
+    if not rows:
+        try:
+            from app.providers.telecom_abode_provider import _DEFAULT_CABLE_PACKAGES
+            rows = _DEFAULT_CABLE_PACKAGES.get(provider_key, [])
+        except Exception:
+            rows = []
+
     normalized = []
     for row in rows:
         if not isinstance(row, dict):
             continue
-        code = str(row.get("code") or "").strip()
+        code = str(row.get("code") or row.get("id") or row.get("variation_code") or row.get("plan_id") or "").strip()
         if not code:
             continue
-        name = str(row.get("name") or code).strip()
-        amount_raw = row.get("amount")
+        name = str(row.get("name") or row.get("plan_name") or code).strip()
+        amount_raw = row.get("amount") or row.get("price") or row.get("variation_amount")
         try:
-            amount = float(amount_raw) if amount_raw not in (None, "") else None
+            amount = float(str(amount_raw).replace(",", "").strip()) if amount_raw not in (None, "") else None
             if amount and amount >= 50000:
                 amount = round(amount / 100.0, 2)
         except Exception:

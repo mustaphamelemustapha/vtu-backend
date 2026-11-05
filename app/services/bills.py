@@ -1983,7 +1983,10 @@ def get_bills_provider(service_type: str | None = None):
         return AutosyncBillsProvider()
 
     # 2. If service is supported and Telecom Abode is enabled in env/key configured, route to Telecom Abode
-    if service_type in ("airtime", "cable", "electricity", "exam") and has_telecom_abode:
+    # Cable, electricity, and exam pins are managed by Telecom Abode
+    if service_type in ("cable", "electricity", "exam"):
+        return TelecomAbodeBillsProvider()
+    if service_type == "airtime" and has_telecom_abode:
         return TelecomAbodeBillsProvider()
 
     db = SessionLocal()
