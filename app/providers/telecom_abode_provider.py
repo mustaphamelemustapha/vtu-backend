@@ -445,6 +445,30 @@ class TelecomAbodeProvider:
                 if match:
                     token = match.group(1 if match.lastindex else 0).strip()
 
+            # If pending and token not yet issued, check idempotency after 2.5s
+            if (status_value == "pending" or inner_status == "pending") and not token:
+                logger.info("TelecomAbode purchase_electricity is pending, checking idempotency after 2.5s for ref=%s", ref)
+                time.sleep(2.5)
+                try:
+                    retry_resp = _TELECOM_ABODE_CLIENT.post(url, json=payload, headers=self._get_headers())
+                    retry_data = self._json_or_none(retry_resp) or {}
+                    if retry_data:
+                        r_status = str(retry_data.get("status") or "").lower()
+                        r_inner = str(retry_data.get("Status") or "").lower()
+                        if r_status in ("success", "successful") or r_inner in ("success", "successful"):
+                            res_data = retry_data
+                            status_value = "success"
+                            inner_status = "successful"
+                            message = str(res_data.get("message") or "")
+                            token = str(res_data.get("token") or "").strip()
+                            if not token:
+                                search_text = f"{res_data.get('response', '')} {res_data.get('api_response', '')} {message}"
+                                match = _TOKEN_RE.search(search_text) or _GENERIC_TOKEN_RE.search(search_text)
+                                if match:
+                                    token = match.group(1 if match.lastindex else 0).strip()
+                except Exception as r_exc:
+                    logger.warning("TelecomAbode idempotency check exception: %s", r_exc)
+
             meta = {
                 "token": token,
                 "meter_number": clean_meter,
@@ -666,6 +690,23 @@ class TelecomAbodeProvider:
             inner_status = str(res_data.get("Status") or "").lower()
             message = str(res_data.get("message") or "")
             ref = str(res_data.get("request-id") or request_id)
+
+            if status_value == "pending" or inner_status == "pending":
+                logger.info("TelecomAbode purchase_cable is pending, checking idempotency after 2.5s for ref=%s", ref)
+                time.sleep(2.5)
+                try:
+                    retry_resp = _TELECOM_ABODE_CLIENT.post(url, json=payload, headers=self._get_headers())
+                    retry_data = self._json_or_none(retry_resp) or {}
+                    if retry_data:
+                        r_status = str(retry_data.get("status") or "").lower()
+                        r_inner = str(retry_data.get("Status") or "").lower()
+                        if r_status in ("success", "successful") or r_inner in ("success", "successful"):
+                            res_data = retry_data
+                            status_value = "success"
+                            inner_status = "successful"
+                            message = str(res_data.get("message") or "")
+                except Exception as r_exc:
+                    logger.warning("TelecomAbode purchase_cable idempotency check exception: %s", r_exc)
 
             meta = {
                 "provider": str(provider).strip().lower(),

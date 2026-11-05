@@ -70,12 +70,21 @@ def _client_request_reference(prefix: str, user_id: int, request_id: str | None)
 
 
 def _provider_status(result) -> str:
+    if getattr(result, "pending", False):
+        return "pending"
     meta = result.meta or {}
-    for provider_key in ("vtpass", "clubkonnect", "autosync"):
+    for provider_key in ("vtpass", "clubkonnect", "autosync", "telecom_abode"):
         status = str((meta.get(provider_key) or {}).get("status") or "").strip().lower()
         if status:
             return status
-    return str(meta.get("status") or "").strip().lower()
+    raw = meta.get("raw")
+    if isinstance(raw, dict):
+        raw_status = str(raw.get("status") or raw.get("Status") or "").strip().lower()
+        if raw_status:
+            return raw_status
+    if meta.get("status"):
+        return str(meta.get("status")).strip().lower()
+    return "success" if getattr(result, "success", False) else ""
 
 
 def _is_transport_error(exc: Exception) -> bool:
