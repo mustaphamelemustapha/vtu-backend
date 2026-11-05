@@ -741,7 +741,18 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
                 tx.meta = {**(tx.meta or {}), **result.meta}
             tx.failure_reason = result.message or _PENDING_CONFIRMATION_MESSAGE
             db2.commit()
-            return {"reference": reference, "status": tx.status, "token": (tx.meta or {}).get("token"), "message": tx.failure_reason}
+            return {
+                "reference": reference,
+                "status": tx.status,
+                "token": (tx.meta or {}).get("token") or "",
+                "units": (tx.meta or {}).get("units") or "",
+                "amount": float(charge_amount),
+                "customer_name": (tx.meta or {}).get("customer_name") or "",
+                "meter_number": payload.meter_number,
+                "disco": payload.disco,
+                "message": tx.failure_reason,
+                "meta": tx.meta or {},
+            }
         if result.success:
             tx.status = TransactionStatus.SUCCESS.value
             tx.external_reference = result.external_reference
@@ -763,7 +774,18 @@ def purchase_electricity(request: Request, payload: ElectricityPurchaseRequest, 
                     )
                 except Exception as e:
                     logger.warning("Failed to send push notification: %s", e)
-            return {"reference": reference, "status": tx.status, "token": (tx.meta or {}).get("token")}
+            return {
+                "reference": reference,
+                "status": tx.status,
+                "token": (tx.meta or {}).get("token") or "",
+                "units": (tx.meta or {}).get("units") or "",
+                "amount": float(charge_amount),
+                "customer_name": (tx.meta or {}).get("customer_name") or "",
+                "meter_number": payload.meter_number,
+                "disco": payload.disco,
+                "message": result.message or "Electricity purchase successful",
+                "meta": tx.meta or {},
+            }
 
         tx.failure_reason = result.message or "Provider failed"
         if result.meta:
