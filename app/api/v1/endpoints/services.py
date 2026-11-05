@@ -142,6 +142,8 @@ def _fetch_exam_packages(provider, exam_key: str) -> list[dict]:
         amount_raw = row.get("amount")
         try:
             amount = float(amount_raw) if amount_raw not in (None, "") else None
+            if amount and amount >= 50000:
+                amount = round(amount / 100.0, 2)
         except Exception:
             amount = None
         packages.append({"code": code, "name": name or code, "amount": amount, "exam": exam_key})
@@ -589,6 +591,8 @@ def cable_packages(provider: str, user: User = Depends(get_current_user)):
         amount_raw = row.get("amount")
         try:
             amount = float(amount_raw) if amount_raw not in (None, "") else None
+            if amount and amount >= 50000:
+                amount = round(amount / 100.0, 2)
         except Exception:
             amount = None
         normalized.append(
