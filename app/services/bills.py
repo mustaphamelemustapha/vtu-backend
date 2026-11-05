@@ -1872,7 +1872,13 @@ class TelecomAbodeBillsProvider:
         return self._parse_result(res_data, "data")
 
     def purchase_cable(self, provider: str, smartcard_number: str, package_code: str, amount: float = 0.0, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
-        res_data = self.abode.purchase_cable(provider, smartcard_number, package_code, reference or _vtpass_request_id())
+        res_data = self.abode.purchase_cable(
+            provider,
+            smartcard_number,
+            package_code,
+            reference or _vtpass_request_id(),
+            phone=phone_number,
+        )
         return self._parse_result(res_data, "cable")
 
     def fetch_cable_packages(self, provider: str) -> list[dict]:
@@ -1882,7 +1888,14 @@ class TelecomAbodeBillsProvider:
         return self.abode.verify_cable_smartcard(provider, smartcard_number)
 
     def purchase_electricity(self, disco: str, meter_number: str, meter_type: str, amount: float, phone_number: str | None = None, reference: str | None = None) -> ProviderResult:
-        res_data = self.abode.purchase_electricity(disco, meter_number, meter_type, amount, reference or _vtpass_request_id())
+        res_data = self.abode.purchase_electricity(
+            disco,
+            meter_number,
+            meter_type,
+            amount,
+            reference or _vtpass_request_id(),
+            phone=phone_number,
+        )
         return self._parse_result(res_data, "electricity")
 
     def fetch_electricity_discos(self) -> list[dict]:
@@ -1904,7 +1917,12 @@ class TelecomAbodeBillsProvider:
         return self.abode.verify_electricity_meter(disco, meter_number, meter_type)
 
     def purchase_exam_pin(self, exam: str, quantity: int = 1, phone_number: str | None = None, exam_type: str | None = None, reference: str | None = None) -> ProviderResult:
-        res_data = self.abode.purchase_exam_pin(exam_type or exam, quantity, reference or _vtpass_request_id())
+        res_data = self.abode.purchase_exam_pin(
+            exam_type or exam,
+            quantity,
+            reference or _vtpass_request_id(),
+            phone=phone_number,
+        )
         return self._parse_result(res_data, "exam")
 
     def fetch_exam_packages(self, exam: str | None = None) -> list[dict]:

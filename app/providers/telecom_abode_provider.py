@@ -385,10 +385,18 @@ class TelecomAbodeProvider:
             logger.error("TelecomAbode verify_meter exception: %s", exc)
             return {"ok": False, "message": f"Meter verification error: {str(exc)}"}
 
-    def purchase_electricity(self, disco: str | int, meter_number: str, meter_type: str, amount: float, request_id: str) -> Dict[str, Any]:
+    def purchase_electricity(
+        self,
+        disco: str | int,
+        meter_number: str,
+        meter_type: str,
+        amount: float,
+        request_id: str,
+        phone: str | None = None,
+    ) -> Dict[str, Any]:
         """
         POST /api/bill
-        Body: {"disco": <int>, "meter_number": <str>, "meter_type": "prepaid"|"postpaid", "amount": <str>, "request-id": <str>}
+        Body: {"disco": <int>, "meter_number": <str>, "meter_type": "prepaid"|"postpaid", "amount": <str>, "phone": <str>, "request-id": <str>}
         """
         if not self.api_key:
             return {"status": "failed", "error": "Telecom Abode API key is not configured", "message": "API key not configured"}
@@ -398,6 +406,12 @@ class TelecomAbodeProvider:
         clean_meter = str(meter_number).strip()
         clean_amount = str(int(amount))
 
+        clean_phone = re.sub(r"[^\d]", "", str(phone or "")).strip()
+        if not clean_phone or len(clean_phone) < 10:
+            clean_phone = "08012345678"
+        elif clean_phone.startswith("234") and len(clean_phone) == 13:
+            clean_phone = "0" + clean_phone[3:]
+
         url = f"{self.base_url}/bill"
         payload = {
             "disco": disco_id,
@@ -405,13 +419,15 @@ class TelecomAbodeProvider:
             "meter_number": clean_meter,
             "meter_type": clean_type,
             "amount": clean_amount,
+            "phone": clean_phone,
+            "phone_number": clean_phone,
             "request-id": str(request_id),
         }
 
         try:
             response = _TELECOM_ABODE_CLIENT.post(url, json=payload, headers=self._get_headers())
-            logger.info("TelecomAbode purchase_electricity POST %s disco=%d meter=%s amount=%s status=%d",
-                        url, disco_id, clean_meter, clean_amount, response.status_code)
+            logger.info("TelecomAbode purchase_electricity POST %s disco=%d meter=%s amount=%s phone=%s status=%d",
+                        url, disco_id, clean_meter, clean_amount, clean_phone, response.status_code)
             res_data = self._json_or_none(response) or {}
 
             status_value = str(res_data.get("status") or "").lower()
@@ -602,10 +618,17 @@ class TelecomAbodeProvider:
             logger.error("TelecomAbode verify_smartcard exception: %s", exc)
             return {"ok": False, "message": f"Smartcard verification error: {str(exc)}"}
 
-    def purchase_cable(self, provider: str, smartcard: str, plan_code: str, request_id: str) -> Dict[str, Any]:
+    def purchase_cable(
+        self,
+        provider: str,
+        smartcard: str,
+        plan_code: str,
+        request_id: str,
+        phone: str | None = None,
+    ) -> Dict[str, Any]:
         """
         POST /api/cable
-        Body: {"cable": <int>, "provider_id": <int>, "iuc": <str>, "customer_id": <str>, "cable_plan": <str>, "plan": <str>, "request-id": <str>}
+        Body: {"cable": <int>, "provider_id": <int>, "iuc": <str>, "customer_id": <str>, "cable_plan": <str>, "plan": <str>, "phone": <str>, "request-id": <str>}
         """
         if not self.api_key:
             return {"status": "failed", "error": "Telecom Abode API key is not configured", "message": "API key not configured"}
@@ -613,6 +636,12 @@ class TelecomAbodeProvider:
         cable_id, _ = self._resolve_cable_provider_info(provider)
         clean_iuc = str(smartcard).strip()
         clean_plan = str(plan_code).strip()
+
+        clean_phone = re.sub(r"[^\d]", "", str(phone or "")).strip()
+        if not clean_phone or len(clean_phone) < 10:
+            clean_phone = "08012345678"
+        elif clean_phone.startswith("234") and len(clean_phone) == 13:
+            clean_phone = "0" + clean_phone[3:]
 
         url = f"{self.base_url}/cable"
         payload = {
@@ -622,13 +651,15 @@ class TelecomAbodeProvider:
             "customer_id": clean_iuc,
             "cable_plan": clean_plan,
             "plan": clean_plan,
+            "phone": clean_phone,
+            "phone_number": clean_phone,
             "request-id": str(request_id),
         }
 
         try:
             response = _TELECOM_ABODE_CLIENT.post(url, json=payload, headers=self._get_headers())
-            logger.info("TelecomAbode purchase_cable POST %s cable=%d iuc=%s plan=%s status=%d",
-                        url, cable_id, clean_iuc, clean_plan, response.status_code)
+            logger.info("TelecomAbode purchase_cable POST %s cable=%d iuc=%s plan=%s phone=%s status=%d",
+                        url, cable_id, clean_iuc, clean_plan, clean_phone, response.status_code)
             res_data = self._json_or_none(response) or {}
 
             status_value = str(res_data.get("status") or "").lower()
@@ -767,10 +798,16 @@ class TelecomAbodeProvider:
                     pass
         return 1
 
-    def purchase_exam_pin(self, exam: str | int, quantity: int = 1, request_id: str | None = None) -> Dict[str, Any]:
+    def purchase_exam_pin(
+        self,
+        exam: str | int,
+        quantity: int = 1,
+        request_id: str | None = None,
+        phone: str | None = None,
+    ) -> Dict[str, Any]:
         """
         POST /api/exam
-        Body: {"exam": <int>, "quantity": <int>, "request-id": <str>}
+        Body: {"exam": <int>, "quantity": <int>, "phone": <str>, "request-id": <str>}
         """
         if not self.api_key:
             return {"status": "failed", "error": "Telecom Abode API key is not configured", "message": "API key not configured"}
@@ -779,17 +816,25 @@ class TelecomAbodeProvider:
         clean_qty = max(1, int(quantity or 1))
         ref = str(request_id or f"EXAM_{int(time.time())}")
 
+        clean_phone = re.sub(r"[^\d]", "", str(phone or "")).strip()
+        if not clean_phone or len(clean_phone) < 10:
+            clean_phone = "08012345678"
+        elif clean_phone.startswith("234") and len(clean_phone) == 13:
+            clean_phone = "0" + clean_phone[3:]
+
         url = f"{self.base_url}/exam"
         payload = {
             "exam": exam_id,
             "quantity": clean_qty,
+            "phone": clean_phone,
+            "phone_number": clean_phone,
             "request-id": ref,
         }
 
         try:
             response = _TELECOM_ABODE_CLIENT.post(url, json=payload, headers=self._get_headers())
-            logger.info("TelecomAbode purchase_exam_pin POST %s exam=%d qty=%d status=%d",
-                        url, exam_id, clean_qty, response.status_code)
+            logger.info("TelecomAbode purchase_exam_pin POST %s exam=%d qty=%d phone=%s status=%d",
+                        url, exam_id, clean_qty, clean_phone, response.status_code)
             res_data = self._json_or_none(response) or {}
 
             status_value = str(res_data.get("status") or "").lower()
