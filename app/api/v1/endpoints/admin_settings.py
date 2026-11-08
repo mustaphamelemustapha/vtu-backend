@@ -69,7 +69,7 @@ def get_commissions(
     admin=Depends(require_admin),
 ):
     from app.services.commissions import get_brand_commission_config
-    return get_brand_commission_config(db, request=request)
+    return get_brand_commission_config(db, request=request, admin=admin)
 
 
 @router.put("/commissions")
@@ -85,6 +85,8 @@ def update_commissions(
         ambassador_deposit_percent=payload.ambassador_deposit_percent,
         agent_data_commission_percent=payload.agent_data_commission_percent,
         enable_agent_data_commission=payload.enable_agent_data_commission,
+        request=request,
+        admin=admin,
     )
 
 
@@ -95,6 +97,6 @@ def reconcile_commissions(
     admin=Depends(require_admin),
 ):
     from app.services.commissions import reconcile_missing_agent_commissions
-    reconciled = reconcile_missing_agent_commissions(db, request=request)
+    reconciled = reconcile_missing_agent_commissions(db, request=request, admin=admin)
     return {"status": "ok", "count": len(reconciled), "items": reconciled}
 

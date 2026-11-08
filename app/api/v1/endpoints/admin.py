@@ -1116,6 +1116,7 @@ def list_users(
         User.is_active,
         User.is_verified,
         User.developer_status,
+        User.referral_code,
         ref_subquery.label("referral_count"),
         spending_subquery.label("total_spending"),
         wallet_subquery.label("wallet_balance"),
@@ -1128,6 +1129,7 @@ def list_users(
                 User.email.ilike(needle),
                 User.full_name.ilike(needle),
                 User.phone_number.ilike(needle),
+                User.referral_code.ilike(needle),
             )
         )
         
@@ -1146,7 +1148,14 @@ def list_users(
     try:
         count_query = db.query(User.id)
         if q:
-            count_query = count_query.filter(or_(User.email.ilike(needle), User.full_name.ilike(needle), User.phone_number.ilike(needle)))
+            count_query = count_query.filter(
+                or_(
+                    User.email.ilike(needle),
+                    User.full_name.ilike(needle),
+                    User.phone_number.ilike(needle),
+                    User.referral_code.ilike(needle),
+                )
+            )
         if role and role.lower() != "all":
             try:
                 count_query = count_query.filter(User.role == UserRole(role.lower()))
@@ -1179,6 +1188,7 @@ def list_users(
                     "role": role_val,
                     "is_active": bool(u.is_active),
                     "is_verified": bool(u.is_verified),
+                    "referral_code": str(u.referral_code or "") if getattr(u, 'referral_code', None) else None,
                     "referral_count": int(u.referral_count or 0),
                     "developer_status": str(u.developer_status or "none"),
                     "total_spending": float(u.total_spending or 0.0),
@@ -1194,7 +1204,14 @@ def list_users(
             simple_q = db.query(User)
             if q:
                 needle = f"%{q.strip()}%"
-                simple_q = simple_q.filter(or_(User.email.ilike(needle), User.full_name.ilike(needle), User.phone_number.ilike(needle)))
+                simple_q = simple_q.filter(
+                    or_(
+                        User.email.ilike(needle),
+                        User.full_name.ilike(needle),
+                        User.phone_number.ilike(needle),
+                        User.referral_code.ilike(needle),
+                    )
+                )
             if status and status.lower() != "all":
                 if status.lower() == "active":
                     simple_q = simple_q.filter(User.is_active == True)
@@ -1220,6 +1237,7 @@ def list_users(
                     "role": role_val,
                     "is_active": bool(u.is_active),
                     "is_verified": bool(u.is_verified),
+                    "referral_code": str(u.referral_code or "") if getattr(u, 'referral_code', None) else None,
                     "referral_count": 0,
                     "developer_status": str(getattr(u, "developer_status", "none") or "none"),
                     "total_spending": 0.0,
@@ -3015,16 +3033,20 @@ def update_user_referral_code(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
         
-    new_code = req.new_code.strip()
+    from app.services.referrals import normalize_referral_code
+    new_code = normalize_referral_code(req.new_code)
     if not new_code or len(new_code) < 3:
         raise HTTPException(status_code=400, detail="Referral code must be at least 3 characters")
         
     if len(new_code) > 16:
         raise HTTPException(status_code=400, detail="Referral code must be 16 characters or less")
+
+    if not new_code.isalnum():
+        raise HTTPException(status_code=400, detail="Referral code must be alphanumeric (letters and numbers only)")
         
     existing = db.query(User).filter(func.lower(User.referral_code) == func.lower(new_code), User.id != user.id).first()
     if existing:
-        raise HTTPException(status_code=400, detail="Referral code is already taken by another user")
+        raise HTTPException(status_code=400, detail=f"Referral code '{new_code}' is already taken by another user ({existing.email})")
         
     old_code = user.referral_code
     user.referral_code = new_code
@@ -3040,7 +3062,12 @@ def update_user_referral_code(
     db.add(audit_log)
     db.commit()
     
-    return {"message": "Referral code updated successfully", "referral_code": new_code}
+    return {
+        "message": "Referral code updated successfully",
+        "user_id": user.id,
+        "old_code": old_code,
+        "referral_code": new_code,
+    }
 
 
 @router.post("/ambassadors/pay-commission")

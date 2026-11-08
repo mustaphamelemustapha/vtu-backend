@@ -72,6 +72,7 @@ class AdminUserOut(BaseModel):
     role: Optional[str] = "customer"
     is_active: Optional[bool] = True
     is_verified: Optional[bool] = False
+    referral_code: Optional[str] = None
     referral_count: Optional[int] = 0
     developer_status: Optional[str] = "none"
     total_spending: Optional[float] = 0.0
