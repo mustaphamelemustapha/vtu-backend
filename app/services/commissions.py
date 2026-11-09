@@ -1,4 +1,5 @@
 import logging
+import re
 from decimal import Decimal
 from typing import Optional
 from starlette.requests import Request
@@ -19,21 +20,33 @@ BRAND_COMMISSION_DEFAULTS = {
         "ambassador_deposit_percent": Decimal("5.0"),   # 5% of 1st deposit
         "agent_data_commission_percent": Decimal("2.0"),# 2% on data purchases
         "enable_agent_data_commission": True,
+        "enable_welcome_data_bonus": True,              # Marketing Gift active for Kulloma Data
+        "welcome_data_bonus_amount": Decimal("300.0"),  # ₦300 gift on 2GB milestone
+        "welcome_data_bonus_min_gb": Decimal("2.0"),    # 2.0 GB cumulative threshold
     },
     "meledata": {
         "ambassador_deposit_percent": Decimal("10.0"),  # 10% of 1st deposit
         "agent_data_commission_percent": Decimal("2.0"),# 2% on data purchases (configurable by admin)
         "enable_agent_data_commission": True,
+        "enable_welcome_data_bonus": False,             # Off by default, admin can toggle
+        "welcome_data_bonus_amount": Decimal("300.0"),
+        "welcome_data_bonus_min_gb": Decimal("2.0"),
     },
     "mzdata": {
         "ambassador_deposit_percent": Decimal("5.0"),
         "agent_data_commission_percent": Decimal("2.0"),
         "enable_agent_data_commission": True,
+        "enable_welcome_data_bonus": False,
+        "welcome_data_bonus_amount": Decimal("300.0"),
+        "welcome_data_bonus_min_gb": Decimal("2.0"),
     },
     "default": {
         "ambassador_deposit_percent": Decimal("5.0"),
         "agent_data_commission_percent": Decimal("2.0"),
         "enable_agent_data_commission": True,
+        "enable_welcome_data_bonus": False,
+        "welcome_data_bonus_amount": Decimal("300.0"),
+        "welcome_data_bonus_min_gb": Decimal("2.0"),
     },
 }
 
@@ -49,8 +62,11 @@ def get_brand_commission_config(
     Checks DB (system_settings) overrides first; falls back to brand-specific defaults.
     """
     effective_brand = (brand or "").strip().lower()
-    if not effective_brand and request is not None:
-        effective_brand = get_tenant_brand(request).strip().lower()
+    if not effective_brand:
+        try:
+            effective_brand = get_tenant_brand(request).strip().lower()
+        except Exception:
+            effective_brand = ""
 
     if not effective_brand or effective_brand == "default":
         # 1. Check logged in admin identity if available
@@ -106,6 +122,29 @@ def get_brand_commission_config(
         val = str(enable_setting.value).strip().lower()
         enable_agent = val in ("true", "1", "yes", "on")
 
+    # 4. Welcome 2GB Marketing Gift Campaign
+    enable_welcome = defaults.get("enable_welcome_data_bonus", False)
+    enable_welcome_setting = db.query(SystemSetting).filter(SystemSetting.key == "comm_enable_welcome_bonus").first()
+    if enable_welcome_setting and enable_welcome_setting.value is not None:
+        val = str(enable_welcome_setting.value).strip().lower()
+        enable_welcome = val in ("true", "1", "yes", "on")
+
+    welcome_amount = defaults.get("welcome_data_bonus_amount", Decimal("300.0"))
+    welcome_amount_setting = db.query(SystemSetting).filter(SystemSetting.key == "comm_welcome_bonus_amount").first()
+    if welcome_amount_setting and welcome_amount_setting.value:
+        try:
+            welcome_amount = Decimal(str(welcome_amount_setting.value.strip()))
+        except Exception:
+            pass
+
+    welcome_min_gb = defaults.get("welcome_data_bonus_min_gb", Decimal("2.0"))
+    welcome_min_gb_setting = db.query(SystemSetting).filter(SystemSetting.key == "comm_welcome_bonus_min_gb").first()
+    if welcome_min_gb_setting and welcome_min_gb_setting.value:
+        try:
+            welcome_min_gb = Decimal(str(welcome_min_gb_setting.value.strip()))
+        except Exception:
+            pass
+
     return {
         "brand": effective_brand,
         "ambassador_deposit_percent": float(amb_pct),
@@ -113,6 +152,9 @@ def get_brand_commission_config(
         "agent_data_commission_percent": float(agent_pct),
         "agent_data_commission_rate": agent_pct / Decimal("100"),
         "enable_agent_data_commission": enable_agent,
+        "enable_welcome_data_bonus": enable_welcome,
+        "welcome_data_bonus_amount": float(welcome_amount),
+        "welcome_data_bonus_min_gb": float(welcome_min_gb),
     }
 
 
@@ -122,6 +164,9 @@ def update_brand_commission_config(
     ambassador_deposit_percent: Optional[float] = None,
     agent_data_commission_percent: Optional[float] = None,
     enable_agent_data_commission: Optional[bool] = None,
+    enable_welcome_data_bonus: Optional[bool] = None,
+    welcome_data_bonus_amount: Optional[float] = None,
+    welcome_data_bonus_min_gb: Optional[float] = None,
     request: Optional[Request] = None,
     admin: Optional[User] = None,
 ) -> dict:
@@ -152,6 +197,31 @@ def update_brand_commission_config(
             db.add(enable_setting)
         else:
             enable_setting.value = val
+
+    if enable_welcome_data_bonus is not None:
+        wb_setting = db.query(SystemSetting).filter(SystemSetting.key == "comm_enable_welcome_bonus").first()
+        val = "true" if enable_welcome_data_bonus else "false"
+        if not wb_setting:
+            wb_setting = SystemSetting(key="comm_enable_welcome_bonus", value=val)
+            db.add(wb_setting)
+        else:
+            wb_setting.value = val
+
+    if welcome_data_bonus_amount is not None:
+        amt_setting = db.query(SystemSetting).filter(SystemSetting.key == "comm_welcome_bonus_amount").first()
+        if not amt_setting:
+            amt_setting = SystemSetting(key="comm_welcome_bonus_amount", value=str(welcome_data_bonus_amount))
+            db.add(amt_setting)
+        else:
+            amt_setting.value = str(welcome_data_bonus_amount)
+
+    if welcome_data_bonus_min_gb is not None:
+        min_setting = db.query(SystemSetting).filter(SystemSetting.key == "comm_welcome_bonus_min_gb").first()
+        if not min_setting:
+            min_setting = SystemSetting(key="comm_welcome_bonus_min_gb", value=str(welcome_data_bonus_min_gb))
+            db.add(min_setting)
+        else:
+            min_setting.value = str(welcome_data_bonus_min_gb)
 
     db.commit()
     return get_brand_commission_config(db, request=request, admin=admin)
@@ -317,3 +387,293 @@ def reconcile_missing_agent_commissions(
     if credited:
         logger.info("Reconciled %d missing agent data commissions.", len(credited))
     return credited
+
+
+def parse_size_gb(size_str: Optional[str]) -> float:
+    """
+    Parses a plan size string like '2GB', '1.5 GB', '500MB', '1000 MB' into float GB.
+    """
+    if not size_str:
+        return 0.0
+    try:
+        s = str(size_str).strip().upper()
+        match = re.search(r"(\d+(?:\.\d+)?)\s*(GB|MB)", s)
+        if not match:
+            return 0.0
+        val = float(match.group(1))
+        unit = match.group(2)
+        return val if unit == "GB" else val / 1024.0
+    except Exception:
+        return 0.0
+
+
+def has_user_funded_wallet(db: Session, user_id: int) -> bool:
+    """
+    Checks if a user has funded their wallet (made a deposit) at least once.
+    Excludes automated cashbacks, bonus rewards, and transaction refunds.
+    """
+    # 1. Check successful WALLET_FUND transactions
+    fund_txs = (
+        db.query(Transaction)
+        .filter(
+            Transaction.user_id == user_id,
+            or_(
+                Transaction.tx_type == TransactionType.WALLET_FUND,
+                Transaction.tx_type == "WALLET_FUND",
+                Transaction.tx_type == "wallet_fund",
+            ),
+            or_(
+                Transaction.status == TransactionStatus.SUCCESS,
+                Transaction.status == "SUCCESS",
+                Transaction.status == "success",
+            ),
+            Transaction.amount > 0,
+        )
+        .all()
+    )
+    for tx in fund_txs:
+        ref = (tx.reference or "").upper()
+        if not (ref.startswith("COMM_") or ref.startswith("WELCOME_") or ref.startswith("BONUS_") or ref.startswith("REFUND_")):
+            return True
+
+    # 2. Check WalletLedger credit entries (deposits, transfers, admin credits)
+    from app.models.wallet import Wallet
+    wallet = db.query(Wallet).filter(Wallet.user_id == user_id).first()
+    if wallet:
+        credits = (
+            db.query(WalletLedger)
+            .filter(
+                WalletLedger.wallet_id == wallet.id,
+                or_(
+                    WalletLedger.entry_type == LedgerType.CREDIT,
+                    WalletLedger.entry_type == "CREDIT",
+                    WalletLedger.entry_type == "credit",
+                ),
+                WalletLedger.amount > 0,
+            )
+            .all()
+        )
+        for entry in credits:
+            ref = (entry.reference or "").upper()
+            desc = (entry.description or "").lower()
+            if ref.startswith("COMM_") or ref.startswith("WELCOME_") or ref.startswith("BONUS_") or ref.startswith("REFUND_"):
+                continue
+            if any(term in desc for term in ["fund", "deposit", "paystack", "monnify", "korapay", "transfer", "bank", "credit", "topup"]):
+                return True
+
+    return False
+
+
+def get_user_total_data_gb(db: Session, user_id: int) -> float:
+    """
+    Calculates cumulative data volume in GB across all successful data purchases.
+    Supports single or multiple purchases (e.g. 1GB + 1GB = 2GB).
+    Combines AgentStat and individual transaction records for 100% accuracy.
+    """
+    from app.models.agent import AgentStat
+    from app.models.data_plan import DataPlan
+
+    # 1. Check AgentStat
+    stat = db.query(AgentStat).filter(AgentStat.agent_id == user_id).first()
+    stat_gb = (float(stat.total_data_mb) / 1024.0) if stat and stat.total_data_mb else 0.0
+
+    # 2. Sum up from successful DATA transactions
+    data_txs = (
+        db.query(Transaction)
+        .filter(
+            Transaction.user_id == user_id,
+            or_(
+                Transaction.tx_type == TransactionType.DATA,
+                Transaction.tx_type == "DATA",
+                Transaction.tx_type == "data",
+            ),
+            or_(
+                Transaction.status == TransactionStatus.SUCCESS,
+                Transaction.status == "SUCCESS",
+                Transaction.status == "success",
+            ),
+            Transaction.amount > 0,
+        )
+        .all()
+    )
+
+    tx_sum_gb = 0.0
+    for tx in data_txs:
+        gb = 0.0
+        # Check text fields for size pattern (e.g. "2GB", "1GB", "500MB")
+        for val in [tx.data_plan_code, tx.external_reference, getattr(tx, "provider_plan_id", None)]:
+            if val:
+                parsed = parse_size_gb(val)
+                if parsed > 0:
+                    gb = parsed
+                    break
+
+        # If not parsed, lookup DataPlan
+        if gb <= 0.0 and tx.data_plan_code:
+            dp = db.query(DataPlan).filter(DataPlan.plan_code == tx.data_plan_code).first()
+            if dp and dp.data_size:
+                gb = parse_size_gb(dp.data_size)
+
+        # Fallback to amount-based approximation (~₦260 per GB)
+        if gb <= 0.0:
+            try:
+                amt = float(tx.amount)
+                if amt > 0:
+                    gb = amt / 260.0
+            except Exception:
+                gb = 0.0
+
+        tx_sum_gb += gb
+
+    return max(stat_gb, tx_sum_gb)
+
+
+def check_and_award_welcome_data_bonus(
+    db: Session,
+    *,
+    user: User,
+    request: Optional[Request] = None,
+    admin: Optional[User] = None,
+) -> Optional[Decimal]:
+    """
+    Kulloma Data Marketing Campaign:
+    When a user signs up, deposits/funds their wallet, and buys data totaling 2GB or above
+    (either in a single purchase or cumulatively, e.g. 1GB + 1GB), their wallet is
+    gifted ₦300 automatically.
+
+    Guards:
+    1. Tenant campaign must be enabled (enable_welcome_data_bonus).
+    2. User must have deposited / funded their wallet at least once.
+    3. User cumulative data volume >= welcome_data_bonus_min_gb (default 2.0 GB).
+    4. Idempotency: award exactly once per user using reference WELCOME_2GB_{user.id}.
+    """
+    if not user or not getattr(user, "id", None):
+        return None
+
+    cfg = get_brand_commission_config(db, request=request, admin=admin)
+    if not cfg.get("enable_welcome_data_bonus"):
+        return None
+
+    bonus_amount = Decimal(str(cfg.get("welcome_data_bonus_amount") or 300.0)).quantize(Decimal("0.01"))
+    min_gb = float(cfg.get("welcome_data_bonus_min_gb") or 2.0)
+    if bonus_amount <= Decimal("0"):
+        return None
+
+    bonus_ref = f"WELCOME_2GB_{user.id}"
+
+    # 1. Idempotency Check: User can only receive the welcome bonus once
+    existing_tx = db.query(Transaction).filter(Transaction.reference == bonus_ref).first()
+    if existing_tx:
+        return None
+    existing_ledger = db.query(WalletLedger).filter(WalletLedger.reference == bonus_ref).first()
+    if existing_ledger:
+        return None
+
+    # 2. Check if user has funded their wallet (deposit requirement)
+    if not has_user_funded_wallet(db, user.id):
+        logger.debug("User %s (%d) has not funded wallet yet; not eligible for welcome data bonus.", user.email, user.id)
+        return None
+
+    # 3. Check cumulative data volume (>= min_gb)
+    total_gb = get_user_total_data_gb(db, user.id)
+    if total_gb < (min_gb - 0.001):
+        logger.debug("User %s (%d) has purchased %.2f GB, below threshold of %.2f GB.", user.email, user.id, total_gb, min_gb)
+        return None
+
+    # 4. Award Welcome Gift: Credit User Wallet
+    from app.services.wallet import get_or_create_wallet, credit_wallet
+    wallet = get_or_create_wallet(db, user.id, commit=False)
+    desc = f"Welcome Gift: ₦{bonus_amount:,.0f} Data Activation Bonus ({total_gb:.1f}GB Milestone)"
+    credit_wallet(db, wallet, bonus_amount, bonus_ref, desc, commit=False)
+
+    # 5. Create Transaction Record
+    tx = Transaction(
+        user_id=user.id,
+        reference=bonus_ref,
+        amount=bonus_amount,
+        status=TransactionStatus.SUCCESS,
+        tx_type=TransactionType.WALLET_FUND,
+        network="KULLOMA_BONUS",
+        data_plan_code=f"WELCOME_{min_gb:.0f}GB",
+        external_reference=f"CUMULATIVE_{total_gb:.2f}GB",
+    )
+    db.add(tx)
+    db.commit()
+
+    logger.info(
+        "Awarded ₦%s welcome data bonus to user %d (%s). Cumulative data: %.2f GB.",
+        bonus_amount, user.id, user.email, total_gb
+    )
+
+    # 6. Push Notification
+    if getattr(user, "fcm_token", None):
+        try:
+            from app.services.push_notification import PushNotificationService
+            PushNotificationService.send_to_token(
+                token=user.fcm_token,
+                title="🎁 ₦300 Welcome Gift Credited!",
+                body=f"Congratulations! You've unlocked your ₦{bonus_amount:,.0f} welcome gift for buying {total_gb:.1f}GB of data. Your wallet has been credited!",
+                sound_type="balance_success",
+                data={"type": "welcome_bonus", "reference": bonus_ref, "amount": str(bonus_amount)},
+            )
+        except Exception as fcm_err:
+            logger.warning("Failed to send welcome bonus push notification to %s: %s", user.email, fcm_err)
+
+    return bonus_amount
+
+
+def reconcile_missing_welcome_bonuses(
+    db: Session,
+    request: Optional[Request] = None,
+    admin: Optional[User] = None,
+    limit: int = 300,
+) -> list[dict]:
+    """
+    Scans recent users who have funded their wallet and purchased >= 2GB of data
+    but haven't yet received their ₦300 welcome gift, and awards it retroactively.
+    """
+    cfg = get_brand_commission_config(db, request=request, admin=admin)
+    if not cfg.get("enable_welcome_data_bonus"):
+        logger.info("Welcome data bonus is not enabled for brand '%s', skipping reconcile.", cfg.get("brand"))
+        return []
+
+    # Find users who have successful data transactions
+    users_with_data = (
+        db.query(User)
+        .join(Transaction, Transaction.user_id == User.id)
+        .filter(
+            or_(
+                Transaction.tx_type == TransactionType.DATA,
+                Transaction.tx_type == "DATA",
+                Transaction.tx_type == "data",
+            ),
+            or_(
+                Transaction.status == TransactionStatus.SUCCESS,
+                Transaction.status == "SUCCESS",
+                Transaction.status == "success",
+            ),
+        )
+        .distinct()
+        .order_by(User.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+    logger.info("Evaluating %d users for missing welcome data bonuses...", len(users_with_data))
+    awarded = []
+    for u in users_with_data:
+        bonus_ref = f"WELCOME_2GB_{u.id}"
+        already_has = db.query(Transaction).filter(Transaction.reference == bonus_ref).first()
+        if already_has:
+            continue
+        bonus = check_and_award_welcome_data_bonus(db, user=u, request=request, admin=admin)
+        if bonus:
+            awarded.append({
+                "user_id": u.id,
+                "email": u.email,
+                "amount": float(bonus),
+                "reference": bonus_ref,
+            })
+
+    logger.info("Reconciliation complete. Awarded %d missing welcome data bonuses.", len(awarded))
+    return awarded

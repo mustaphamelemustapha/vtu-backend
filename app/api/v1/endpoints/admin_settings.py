@@ -60,6 +60,9 @@ class CommissionSettingsUpdate(BaseModel):
     ambassador_deposit_percent: Optional[float] = None
     agent_data_commission_percent: Optional[float] = None
     enable_agent_data_commission: Optional[bool] = None
+    enable_welcome_data_bonus: Optional[bool] = None
+    welcome_data_bonus_amount: Optional[float] = None
+    welcome_data_bonus_min_gb: Optional[float] = None
 
 
 @router.get("/commissions")
@@ -85,6 +88,9 @@ def update_commissions(
         ambassador_deposit_percent=payload.ambassador_deposit_percent,
         agent_data_commission_percent=payload.agent_data_commission_percent,
         enable_agent_data_commission=payload.enable_agent_data_commission,
+        enable_welcome_data_bonus=payload.enable_welcome_data_bonus,
+        welcome_data_bonus_amount=payload.welcome_data_bonus_amount,
+        welcome_data_bonus_min_gb=payload.welcome_data_bonus_min_gb,
         request=request,
         admin=admin,
     )
@@ -98,5 +104,17 @@ def reconcile_commissions(
 ):
     from app.services.commissions import reconcile_missing_agent_commissions
     reconciled = reconcile_missing_agent_commissions(db, request=request, admin=admin)
+    return {"status": "ok", "count": len(reconciled), "items": reconciled}
+
+
+@router.post("/commissions/reconcile-welcome-bonus")
+def reconcile_welcome_bonuses(
+    request: Request,
+    limit: int = 300,
+    db: Session = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    from app.services.commissions import reconcile_missing_welcome_bonuses
+    reconciled = reconcile_missing_welcome_bonuses(db, request=request, admin=admin, limit=limit)
     return {"status": "ok", "count": len(reconciled), "items": reconciled}
 

@@ -946,6 +946,16 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
             except Exception as comm_exc:
                 logger.warning("Failed to record agent data commission for %s: %s", reference, comm_exc)
 
+            try:
+                from app.services.commissions import check_and_award_welcome_data_bonus
+                check_and_award_welcome_data_bonus(
+                    db2,
+                    user=user,
+                    request=request,
+                )
+            except Exception as bonus_exc:
+                logger.warning("Failed to evaluate welcome data bonus for %s: %s", getattr(user, "email", user.id), bonus_exc)
+
         from app.services.push_notification import PushNotificationService
         if partial_refund_amount > Decimal("0") and fcm_token:
             PushNotificationService.send_to_token(

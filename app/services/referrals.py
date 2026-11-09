@@ -407,6 +407,11 @@ def trigger_referral_data_activity(db: Session, transaction: Transaction) -> Non
             user = db.query(User).filter(User.id == transaction.user_id).first()
         if user:
             record_referral_data_activity(db, user=user, tx_type="data", amount=transaction.amount, data_mb=mb_size)
+            try:
+                from app.services.commissions import check_and_award_welcome_data_bonus
+                check_and_award_welcome_data_bonus(db, user=user)
+            except Exception as bonus_err:
+                logging.getLogger(__name__).warning("Failed to evaluate welcome data bonus in referral trigger: %s", bonus_err)
     except Exception as exc:
         import logging
         logging.getLogger(__name__).error("Failed to trigger referral data activity: %s", exc)
