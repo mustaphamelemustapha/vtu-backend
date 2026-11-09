@@ -461,6 +461,28 @@ def has_user_funded_wallet(db: Session, user_id: int) -> bool:
             if any(term in desc for term in ["fund", "deposit", "paystack", "monnify", "korapay", "transfer", "bank", "credit", "topup"]):
                 return True
 
+    # 3. If user has paid for data purchases, they undeniably deposited/funded money to make those orders
+    has_paid_data = (
+        db.query(Transaction)
+        .filter(
+            Transaction.user_id == user_id,
+            or_(
+                Transaction.tx_type == TransactionType.DATA,
+                Transaction.tx_type == "DATA",
+                Transaction.tx_type == "data",
+            ),
+            or_(
+                Transaction.status == TransactionStatus.SUCCESS,
+                Transaction.status == "SUCCESS",
+                Transaction.status == "success",
+            ),
+            Transaction.amount > 0,
+        )
+        .first()
+    )
+    if has_paid_data:
+        return True
+
     return False
 
 
@@ -534,6 +556,7 @@ def check_and_award_welcome_data_bonus(
     user: User,
     request: Optional[Request] = None,
     admin: Optional[User] = None,
+    brand: Optional[str] = None,
 ) -> Optional[Decimal]:
     """
     Kulloma Data Marketing Campaign:
@@ -550,7 +573,28 @@ def check_and_award_welcome_data_bonus(
     if not user or not getattr(user, "id", None):
         return None
 
-    cfg = get_brand_commission_config(db, request=request, admin=admin)
+    # Resolve target brand: explicit brand > request tenant > global tenant > user.brand > email > default
+    target_brand = (brand or "").strip().lower()
+    if not target_brand and request is not None:
+        target_brand = get_tenant_brand(request).strip().lower()
+    if not target_brand:
+        try:
+            t_brand = get_tenant_brand(None).strip().lower()
+            if t_brand and t_brand != "default":
+                target_brand = t_brand
+        except Exception:
+            pass
+    if not target_brand or target_brand == "default":
+        u_brand = (getattr(user, "brand", "") or "").strip().lower()
+        if u_brand and u_brand != "default":
+            target_brand = u_brand
+    if not target_brand or target_brand == "default":
+        if getattr(user, "email", None) and "kulloma" in str(user.email).lower():
+            target_brand = "kullomadata"
+    if not target_brand or target_brand == "default":
+        target_brand = "kullomadata"
+
+    cfg = get_brand_commission_config(db, request=request, brand=target_brand, admin=admin)
     if not cfg.get("enable_welcome_data_bonus"):
         return None
 
@@ -626,13 +670,22 @@ def reconcile_missing_welcome_bonuses(
     db: Session,
     request: Optional[Request] = None,
     admin: Optional[User] = None,
-    limit: int = 300,
+    brand: Optional[str] = None,
+    limit: int = 1000,
 ) -> list[dict]:
     """
-    Scans recent users who have funded their wallet and purchased >= 2GB of data
+    Scans users who have funded their wallet and purchased >= 2GB of data
     but haven't yet received their ₦300 welcome gift, and awards it retroactively.
     """
-    cfg = get_brand_commission_config(db, request=request, admin=admin)
+    target_brand = (brand or "").strip().lower()
+    if not target_brand and request is not None:
+        target_brand = get_tenant_brand(request).strip().lower()
+    if not target_brand and admin and getattr(admin, "email", None) and "kulloma" in str(admin.email).lower():
+        target_brand = "kullomadata"
+    if not target_brand or target_brand == "default":
+        target_brand = "kullomadata"
+
+    cfg = get_brand_commission_config(db, request=request, admin=admin, brand=target_brand)
     if not cfg.get("enable_welcome_data_bonus"):
         logger.info("Welcome data bonus is not enabled for brand '%s', skipping reconcile.", cfg.get("brand"))
         return []
@@ -652,6 +705,7 @@ def reconcile_missing_welcome_bonuses(
                 Transaction.status == "SUCCESS",
                 Transaction.status == "success",
             ),
+            Transaction.amount > 0,
         )
         .distinct()
         .order_by(User.id.desc())
@@ -659,14 +713,14 @@ def reconcile_missing_welcome_bonuses(
         .all()
     )
 
-    logger.info("Evaluating %d users for missing welcome data bonuses...", len(users_with_data))
+    logger.info("Evaluating %d users for missing welcome data bonuses on %s...", len(users_with_data), target_brand)
     awarded = []
     for u in users_with_data:
         bonus_ref = f"WELCOME_2GB_{u.id}"
         already_has = db.query(Transaction).filter(Transaction.reference == bonus_ref).first()
         if already_has:
             continue
-        bonus = check_and_award_welcome_data_bonus(db, user=u, request=request, admin=admin)
+        bonus = check_and_award_welcome_data_bonus(db, user=u, request=request, admin=admin, brand=target_brand)
         if bonus:
             awarded.append({
                 "user_id": u.id,

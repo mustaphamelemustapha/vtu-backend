@@ -39,6 +39,26 @@ app.add_middleware(SlowAPIMiddleware)
 _started_at = time.time()
 
 
+@app.middleware("http")
+async def request_logger_middleware(request: Request, call_next):
+    start_time = time.time()
+    method = request.method
+    path = request.url.path
+
+    response = await call_next(request)
+
+    duration_ms = round((time.time() - start_time) * 1000, 2)
+    client_ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else "-")
+    if "," in client_ip:
+        client_ip = client_ip.split(",")[0].strip()
+
+    status_code = response.status_code
+    logging.getLogger("app.access").info(
+        f'{client_ip} - "{method} {path}" {status_code} ({duration_ms}ms)'
+    )
+    return response
+
+
 @app.exception_handler(SQLAlchemyTimeoutError)
 async def sqlalchemy_timeout_handler(request, exc):
     logging.getLogger(__name__).warning("Database pool timeout on %s %s: %s", request.method, request.url.path, exc)
@@ -86,22 +106,29 @@ allow_origins = list(
     dict.fromkeys(
         configured_origins
         + [
+            "https://mzdata.org",
+            "https://www.mzdata.org",
+            "https://api.mzdata.org",
             "https://kullomadata.com",
             "https://www.kullomadata.com",
+            "https://api.kullomadata.com",
+            "https://meledata.ng",
+            "https://www.meledata.ng",
+            "https://api.meledata.ng",
             "https://vtu-frontend-beta.vercel.app",
             "https://vtu-frontend-git-main-mmt-ech-globe.vercel.app",
             "https://axisvtu.vercel.app",
             "https://axisvtu.com",
             "https://www.axisvtu.com",
-            "https://kullomadata.com",
-            "https://www.kullomadata.com",
             "https://meledata.vercel.app",
+            "http://localhost:3000",
+            "http://localhost:5173",
             *([frontend_origin] if frontend_origin else []),
         ]
     )
 )
 allow_origin_regex = (
-    r"^https:\/\/(?:vtu-frontend|axisvtu|meledata|kullomadata)(?:-[A-Za-z0-9-]+)?\.(?:vercel\.app|com|ng)$"
+    r"^https:\/\/(?:vtu-frontend|axisvtu|meledata|kullomadata|mzdata)(?:-[A-Za-z0-9-]+)?\.(?:vercel\.app|com|ng|org)$"
     r"|^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$"
 )
 
@@ -219,7 +246,6 @@ def ensure_tables():
     _ensure_all_database_enums()
     _ensure_virtual_account_provider_enum()
     if not settings.auto_create_tables:
-        _bootstrap_admins()
         _ensure_user_phone_column()
         _ensure_user_state_column()
         _ensure_user_security_pin_columns()
@@ -248,6 +274,7 @@ def ensure_tables():
         _ensure_user_brand_column()
         _ensure_broadcast_announcement_brand_column()
         _ensure_userrole_enum()
+        _bootstrap_admins()
         _run_alembic_upgrade()
         try:
             from app.services.push_notification import PushNotificationService
@@ -255,14 +282,15 @@ def ensure_tables():
         except Exception as e:
             logging.getLogger(__name__).warning("Firebase Admin initialization on startup skipped: %s", e)
         try:
-            from app.services.commissions import reconcile_missing_agent_commissions
+            from app.services.commissions import reconcile_missing_agent_commissions, reconcile_missing_welcome_bonuses
             db_rec = SessionLocal()
             try:
                 reconcile_missing_agent_commissions(db_rec, limit=100)
+                reconcile_missing_welcome_bonuses(db_rec, brand="kullomadata", limit=1000)
             finally:
                 db_rec.close()
         except Exception as e:
-            logging.getLogger(__name__).warning("Agent commission reconciliation on startup skipped: %s", e)
+            logging.getLogger(__name__).warning("Commission / welcome bonus reconciliation on startup skipped: %s", e)
         return
 
     # Optional local fallback for fresh environments.
@@ -1187,6 +1215,8 @@ def _run_alembic_upgrade() -> None:
             logging.getLogger(__name__).info("Programmatic alembic upgrade head finished successfully.")
     except Exception as exc:
         logging.getLogger(__name__).warning("Programmatic alembic upgrade failed: %s", exc)
+    finally:
+        configure_logging()
 
 
 @app.get("/healthz")
