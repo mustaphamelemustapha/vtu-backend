@@ -118,3 +118,12 @@ def reconcile_welcome_bonuses(
     reconciled = reconcile_missing_welcome_bonuses(db, request=request, admin=admin, limit=limit)
     return {"status": "ok", "count": len(reconciled), "items": reconciled}
 
+
+@router.post("/commissions/purge-welcome-bonuses")
+def purge_welcome_bonuses(
+    db: Session = Depends(get_db),
+    admin=Depends(require_admin),
+):
+    from app.services.commissions import purge_accidental_welcome_bonuses
+    return purge_accidental_welcome_bonuses(db, brand="meledata")
+

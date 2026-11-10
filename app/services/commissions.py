@@ -751,3 +751,75 @@ def reconcile_missing_welcome_bonuses(
 
     logger.info("Reconciliation complete. Awarded %d missing welcome data bonuses.", len(awarded))
     return awarded
+
+
+def purge_accidental_welcome_bonuses(db: Session, brand: Optional[str] = "meledata") -> dict:
+    """
+    Finds and reverts any WELCOME_2GB_* / KULLOMA_BONUS transactions:
+    - Deducts the amount from the user's wallet
+    - Deletes the ledger entry
+    - Deletes the transaction record
+    Strictly safeguards non-Kulloma users.
+    """
+    from sqlalchemy import or_
+    from app.models.transaction import Transaction
+    from app.models.wallet import Wallet
+    from app.models.wallet_ledger import WalletLedger
+    from app.models.user import User
+
+    query = db.query(Transaction).filter(
+        or_(
+            Transaction.reference.like("WELCOME_2GB_%"),
+            Transaction.network == "KULLOMA_BONUS",
+            Transaction.provider == "KULLOMA_BONUS",
+        )
+    )
+
+    if brand == "meledata":
+        query = query.join(User, User.id == Transaction.user_id).filter(
+            User.brand != "kullomadata",
+            ~User.email.ilike("%kulloma%"),
+        )
+
+    bogus_txs = query.all()
+    if not bogus_txs:
+        return {"status": "ok", "reverted_count": 0, "total_amount": 0.0, "details": []}
+
+    reverted = []
+    total_deducted = Decimal("0.0")
+
+    for tx in bogus_txs:
+        user_id = tx.user_id
+        amount = Decimal(str(tx.amount or 0))
+        ref = tx.reference
+        old_bal = None
+        new_bal = None
+
+        if user_id and amount > Decimal("0"):
+            wallet = db.query(Wallet).filter(Wallet.user_id == user_id).first()
+            if wallet and wallet.balance is not None:
+                old_bal = float(wallet.balance)
+                wallet.balance = max(Decimal("0.0"), wallet.balance - amount)
+                new_bal = float(wallet.balance)
+                total_deducted += amount
+
+        if ref:
+            db.query(WalletLedger).filter(WalletLedger.reference == ref).delete(synchronize_session=False)
+
+        db.delete(tx)
+        reverted.append({
+            "user_id": user_id,
+            "reference": ref,
+            "amount": float(amount),
+            "old_balance": old_bal,
+            "new_balance": new_bal,
+        })
+
+    db.commit()
+    logger.info("Purged %d accidental welcome bonuses, deducted total ₦%s", len(reverted), total_deducted)
+    return {
+        "status": "ok",
+        "reverted_count": len(reverted),
+        "total_amount": float(total_deducted),
+        "details": reverted,
+    }
