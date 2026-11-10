@@ -70,13 +70,13 @@ def get_brand_commission_config(
 
     if not effective_brand or effective_brand == "default":
         # 1. Check logged in admin identity if available
-        if admin and getattr(admin, "email", None):
-            admin_email = str(admin.email).lower()
-            if "mele" in admin_email:
+        if admin:
+            admin_ident = f"{getattr(admin, 'email', '')} {getattr(admin, 'full_name', '')}".lower()
+            if "mele" in admin_ident or "mmtech" in admin_ident:
                 effective_brand = "meledata"
-            elif "mz" in admin_email:
+            elif "mz" in admin_ident:
                 effective_brand = "mzdata"
-            elif "kulloma" in admin_email:
+            elif "kulloma" in admin_ident:
                 effective_brand = "kullomadata"
 
         # 2. Check SystemSetting for explicit brand override

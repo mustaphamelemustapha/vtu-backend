@@ -337,3 +337,58 @@ class UserPricingOverrideOut(BaseModel):
 
     class Config:
         orm_mode = True
+
+
+class DeveloperListItem(BaseModel):
+    id: int
+    full_name: Optional[str] = None
+    email: str
+    phone_number: Optional[str] = None
+    state: Optional[str] = None
+    brand: Optional[str] = None
+    role: str
+    is_developer: bool
+    developer_status: str
+    api_public_key: Optional[str] = None
+    webhook_url: Optional[str] = None
+    has_keys: bool
+    wallet_balance: float
+    total_api_orders: int
+    successful_api_orders: int
+    total_api_spent: float
+    total_api_data_gb: float
+    last_api_activity: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+
+class DevelopersSummary(BaseModel):
+    total_developers: int
+    active_developers: int
+    suspended_developers: int
+    applied_developers: int
+    total_api_volume_spent: float
+    total_api_data_gb: float
+    total_api_requests_count: int
+
+
+class AdminDevelopersResponse(BaseModel):
+    items: List[DeveloperListItem]
+    total: int
+    page: int
+    page_size: int
+    summary: DevelopersSummary
+
+
+class DeveloperKeyResetResponse(BaseModel):
+    user_id: int
+    api_public_key: str
+    api_secret_key: str
+
+
+class DeveloperWebhookUpdate(BaseModel):
+    webhook_url: Optional[str] = None
+
+
+class DeveloperRegisterRequest(BaseModel):
+    user_id: int
+

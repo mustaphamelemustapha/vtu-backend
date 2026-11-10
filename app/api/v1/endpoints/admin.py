@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_, select, union_all, String, cast, inspect
+from sqlalchemy import func, or_, select, union_all, String, cast, inspect, case, desc, and_
 from app.core.database import get_db
 from app.core.config import get_settings
 from app.dependencies import require_admin
@@ -39,6 +39,12 @@ from app.schemas.admin import (
     UpgradeApiUserResponse,
     UserPricingOverrideCreate,
     UserPricingOverrideOut,
+    DeveloperListItem,
+    DevelopersSummary,
+    AdminDevelopersResponse,
+    DeveloperKeyResetResponse,
+    DeveloperWebhookUpdate,
+    DeveloperRegisterRequest,
 )
 from app.services.wallet import get_or_create_wallet, credit_wallet, debit_wallet
 from app.services.pricing import build_service_pricing_key, parse_pricing_key
@@ -2846,6 +2852,226 @@ def revoke_referral(
     return {"status": "ok", "message": "Referral successfully revoked and connection cleared."}
 
 
+@router.get("/developers", response_model=AdminDevelopersResponse)
+def list_admin_developers(
+    q: Optional[str] = None,
+    status: Optional[str] = "all",
+    brand: Optional[str] = "all",
+    page: int = 1,
+    page_size: int = 50,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    List all API developers/resellers who vend data or use the platform API,
+    with their sales volume, data GB delivered, wallet balance, and API credentials.
+    """
+    from app.services.commissions import get_user_total_data_gb
+    from app.models.wallet import Wallet
+
+    api_user_subq = db.query(ApiLog.user_id).filter(ApiLog.user_id.isnot(None)).distinct()
+    
+    conds = [
+        or_(
+            User.is_developer == True,
+            User.api_public_key.isnot(None),
+            User.developer_status.in_(["approved", "applied", "suspended"]),
+            User.id.in_(api_user_subq)
+        )
+    ]
+
+    if brand and brand != "all":
+        conds.append(User.brand == brand)
+
+    if status and status != "all":
+        st = status.lower().strip()
+        if st in ("approved", "active"):
+            conds.append(or_(User.developer_status == "approved", User.is_developer == True))
+        elif st == "suspended":
+            conds.append(User.developer_status == "suspended")
+        elif st == "applied":
+            conds.append(User.developer_status == "applied")
+
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        conds.append(or_(
+            User.email.ilike(term),
+            User.full_name.ilike(term),
+            User.phone_number.ilike(term),
+            User.api_public_key.ilike(term)
+        ))
+
+    base_query = db.query(User).filter(*conds)
+    total = base_query.count()
+
+    users = (
+        base_query
+        .order_by(User.updated_at.desc(), User.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    user_ids = [u.id for u in users]
+
+    # Pre-fetch wallets
+    wallets_map = {}
+    if user_ids:
+        wallets = db.query(Wallet).filter(Wallet.user_id.in_(user_ids)).all()
+        for w in wallets:
+            wallets_map[w.user_id] = float(w.balance or 0.0)
+
+    # Pre-fetch transaction stats for these users
+    tx_stats_map = {}
+    if user_ids:
+        rows = (
+            db.query(
+                Transaction.user_id,
+                func.count(Transaction.id).label("total_orders"),
+                func.coalesce(func.sum(case((Transaction.status.in_([TransactionStatus.SUCCESS, "SUCCESS", "success"]), 1), else_=0)), 0).label("success_orders"),
+                func.coalesce(func.sum(case((Transaction.status.in_([TransactionStatus.SUCCESS, "SUCCESS", "success"]), Transaction.amount), else_=0)), 0).label("total_spent"),
+                func.max(Transaction.created_at).label("last_tx")
+            )
+            .filter(
+                Transaction.user_id.in_(user_ids),
+                or_(
+                    Transaction.tx_type == TransactionType.DATA,
+                    Transaction.tx_type.in_(["DATA", "data"])
+                )
+            )
+            .group_by(Transaction.user_id)
+            .all()
+        )
+        for r in rows:
+            tx_stats_map[r.user_id] = {
+                "total_orders": int(r.total_orders or 0),
+                "success_orders": int(r.success_orders or 0),
+                "total_spent": float(r.total_spent or 0.0),
+                "last_tx": r.last_tx
+            }
+
+    # Pre-fetch last API log timestamp
+    api_log_map = {}
+    if user_ids:
+        log_rows = (
+            db.query(ApiLog.user_id, func.max(ApiLog.created_at).label("last_log"))
+            .filter(ApiLog.user_id.in_(user_ids))
+            .group_by(ApiLog.user_id)
+            .all()
+        )
+        for lr in log_rows:
+            api_log_map[lr.user_id] = lr.last_log
+
+    items = []
+    for u in users:
+        w_bal = wallets_map.get(u.id, 0.0)
+        t_stat = tx_stats_map.get(u.id, {
+            "total_orders": 0,
+            "success_orders": 0,
+            "total_spent": 0.0,
+            "last_tx": None
+        })
+        last_log = api_log_map.get(u.id)
+        candidates = [c for c in [t_stat["last_tx"], last_log, u.updated_at] if c is not None]
+        last_act = max(candidates) if candidates else None
+
+        total_gb = get_user_total_data_gb(db, u.id)
+
+        items.append(
+            DeveloperListItem(
+                id=u.id,
+                full_name=u.full_name,
+                email=u.email,
+                phone_number=u.phone_number,
+                state=u.state,
+                brand=u.brand or "meledata",
+                role=u.role.value if hasattr(u.role, "value") else str(u.role),
+                is_developer=bool(u.is_developer),
+                developer_status=str(u.developer_status or ("approved" if u.is_developer else "none")),
+                api_public_key=u.api_public_key,
+                webhook_url=u.webhook_url,
+                has_keys=bool(u.api_public_key and u.api_secret_key_hash),
+                wallet_balance=w_bal,
+                total_api_orders=t_stat["total_orders"],
+                successful_api_orders=t_stat["success_orders"],
+                total_api_spent=t_stat["total_spent"],
+                total_api_data_gb=round(total_gb, 2),
+                last_api_activity=last_act,
+                created_at=u.created_at,
+            )
+        )
+
+    # Summary metrics across all developers in the current filter/brand
+    all_devs_query = db.query(User).filter(
+        or_(
+            User.is_developer == True,
+            User.api_public_key.isnot(None),
+            User.developer_status.in_(["approved", "applied", "suspended"]),
+            User.id.in_(api_user_subq)
+        )
+    )
+    if brand and brand != "all":
+        all_devs_query = all_devs_query.filter(User.brand == brand)
+
+    all_dev_users = all_devs_query.all()
+    all_dev_ids = [d.id for d in all_dev_users]
+
+    total_devs = len(all_dev_users)
+    active_devs = sum(1 for d in all_dev_users if d.is_developer or d.developer_status == "approved")
+    suspended_devs = sum(1 for d in all_dev_users if d.developer_status == "suspended")
+    applied_devs = sum(1 for d in all_dev_users if d.developer_status == "applied")
+
+    total_vol_spent = 0.0
+    total_gb_all = 0.0
+    total_api_requests = 0
+
+    if all_dev_ids:
+        vol = (
+            db.query(func.coalesce(func.sum(Transaction.amount), 0))
+            .filter(
+                Transaction.user_id.in_(all_dev_ids),
+                or_(
+                    Transaction.tx_type == TransactionType.DATA,
+                    Transaction.tx_type.in_(["DATA", "data"])
+                ),
+                Transaction.status.in_([TransactionStatus.SUCCESS, "SUCCESS", "success"])
+            )
+            .scalar()
+        )
+        total_vol_spent = float(vol or 0.0)
+
+        from app.models.agent import AgentStat
+        agent_stat_sum = (
+            db.query(func.coalesce(func.sum(AgentStat.total_data_mb), 0))
+            .filter(AgentStat.agent_id.in_(all_dev_ids))
+            .scalar()
+        )
+        total_gb_all = round(float(agent_stat_sum or 0.0) / 1024.0, 2)
+        if total_gb_all == 0.0 and items:
+            total_gb_all = round(sum(it.total_api_data_gb for it in items), 2)
+
+        reqs = db.query(func.count(ApiLog.id)).filter(ApiLog.user_id.in_(all_dev_ids)).scalar()
+        total_api_requests = int(reqs or 0)
+
+    summary = DevelopersSummary(
+        total_developers=total_devs,
+        active_developers=active_devs,
+        suspended_developers=suspended_devs,
+        applied_developers=applied_devs,
+        total_api_volume_spent=total_vol_spent,
+        total_api_data_gb=total_gb_all,
+        total_api_requests_count=total_api_requests,
+    )
+
+    return AdminDevelopersResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        summary=summary,
+    )
+
+
 @router.get("/developers/applications")
 def list_developer_applications(
     admin: User = Depends(require_admin),
@@ -2871,7 +3097,7 @@ def approve_developer_application(
     db: Session = Depends(get_db)
 ):
     """
-    Approve a developer application and give developer access.
+    Approve a developer application and give developer access. Auto-generates key pair if missing.
     """
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -2880,6 +3106,13 @@ def approve_developer_application(
     user.developer_status = "approved"
     user.is_developer = True
     
+    sec_plain = None
+    if not user.api_public_key or not user.api_secret_key_hash:
+        from app.api.v1.endpoints.developer import generate_key_pair
+        pub, sec_plain, sec_hash = generate_key_pair()
+        user.api_public_key = pub
+        user.api_secret_key_hash = sec_hash
+
     audit_log = AdminAuditLog(
         admin_email=admin.email,
         action="developer_approve",
@@ -2888,7 +3121,13 @@ def approve_developer_application(
     )
     db.add(audit_log)
     db.commit()
-    return {"status": "ok", "message": "Developer successfully approved."}
+    db.refresh(user)
+    return {
+        "status": "ok",
+        "message": "Developer successfully approved.",
+        "api_public_key": user.api_public_key,
+        "api_secret_key": sec_plain
+    }
 
 
 @router.post("/developers/{user_id}/suspend")
@@ -2916,6 +3155,112 @@ def suspend_developer_access(
     db.add(audit_log)
     db.commit()
     return {"status": "ok", "message": "Developer successfully suspended."}
+
+
+@router.post("/developers/{user_id}/reset-keys", response_model=DeveloperKeyResetResponse)
+def reset_developer_keys(
+    user_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Regenerate API keys for a developer and return the new public and secret keys.
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    from app.api.v1.endpoints.developer import generate_key_pair
+    pub, sec_plain, sec_hash = generate_key_pair()
+    user.api_public_key = pub
+    user.api_secret_key_hash = sec_hash
+
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action="developer_reset_keys",
+        target=str(user_id),
+        details={"email": user.email, "message": "Regenerated API key pair"}
+    )
+    db.add(audit_log)
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "user_id": user.id,
+        "api_public_key": pub,
+        "api_secret_key": sec_plain
+    }
+
+
+@router.put("/developers/{user_id}/webhook")
+def update_developer_webhook(
+    user_id: int,
+    payload: DeveloperWebhookUpdate,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Update or configure developer webhook URL for instant delivery notifications.
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.webhook_url = payload.webhook_url.strip() if payload.webhook_url else None
+
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action="developer_update_webhook",
+        target=str(user_id),
+        details={"email": user.email, "webhook_url": user.webhook_url}
+    )
+    db.add(audit_log)
+    db.commit()
+    return {"status": "ok", "webhook_url": user.webhook_url}
+
+
+@router.post("/developers/register")
+def register_developer(
+    payload: DeveloperRegisterRequest,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Register or upgrade an existing user to an API developer with immediate approved status and key pair.
+    """
+    user = db.query(User).filter(User.id == payload.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.is_developer = True
+    user.developer_status = "approved"
+
+    sec_plain = None
+    if not user.api_public_key or not user.api_secret_key_hash:
+        from app.api.v1.endpoints.developer import generate_key_pair
+        pub, sec_plain, sec_hash = generate_key_pair()
+        user.api_public_key = pub
+        user.api_secret_key_hash = sec_hash
+
+    audit_log = AdminAuditLog(
+        admin_email=admin.email,
+        action="developer_register",
+        target=str(user.id),
+        details={"email": user.email, "message": "Upgraded user to API developer"}
+    )
+    db.add(audit_log)
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "status": "ok",
+        "user_id": user.id,
+        "email": user.email,
+        "full_name": user.full_name,
+        "api_public_key": user.api_public_key,
+        "api_secret_key": sec_plain
+    }
+
 
 
 @router.get("/provider-balances")
