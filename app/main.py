@@ -699,8 +699,17 @@ def _ensure_broadcast_announcement_button_columns() -> None:
             if "button_link" not in cols:
                 conn.execute(text("ALTER TABLE broadcast_announcements ADD COLUMN button_link VARCHAR(255) NULL"))
                 logging.getLogger(__name__).info("Added broadcast_announcements.button_link column.")
+            if "image_url" not in cols:
+                conn.execute(text("ALTER TABLE broadcast_announcements ADD COLUMN image_url VARCHAR(500) NULL"))
+                logging.getLogger(__name__).info("Added broadcast_announcements.image_url column.")
+            if "is_popup" not in cols:
+                conn.execute(text("ALTER TABLE broadcast_announcements ADD COLUMN is_popup BOOLEAN DEFAULT FALSE NOT NULL"))
+                logging.getLogger(__name__).info("Added broadcast_announcements.is_popup column.")
+            if "brand" not in cols:
+                conn.execute(text("ALTER TABLE broadcast_announcements ADD COLUMN brand VARCHAR(32) DEFAULT 'all'"))
+                logging.getLogger(__name__).info("Added broadcast_announcements.brand column.")
     except Exception as exc:
-        logging.getLogger(__name__).warning("Could not ensure broadcast_announcements button columns: %s", exc)
+        logging.getLogger(__name__).warning("Could not ensure broadcast_announcements columns: %s", exc)
 
 
 def _ensure_user_developer_columns() -> None:

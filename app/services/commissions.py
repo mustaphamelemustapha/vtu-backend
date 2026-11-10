@@ -111,7 +111,9 @@ def get_brand_commission_config(
     agent_setting = db.query(SystemSetting).filter(SystemSetting.key == "comm_agent_data_percent").first()
     if agent_setting and agent_setting.value:
         try:
-            agent_pct = Decimal(str(agent_setting.value.strip()))
+            val = Decimal(str(agent_setting.value.strip()))
+            if val > Decimal("0"):
+                agent_pct = val
         except Exception:
             pass
 
@@ -121,6 +123,8 @@ def get_brand_commission_config(
     if enable_setting and enable_setting.value is not None:
         val = str(enable_setting.value).strip().lower()
         enable_agent = val in ("true", "1", "yes", "on")
+    elif agent_pct > Decimal("0"):
+        enable_agent = True
 
     # 4. Welcome 2GB Marketing Gift Campaign
     enable_welcome = defaults.get("enable_welcome_data_bonus", False)

@@ -135,29 +135,37 @@ def list_active_broadcasts(
     _ = user
     if not _has_table(db):
         return []
-    from app.core.tenant import get_tenant_brand
-    current_brand = get_tenant_brand(request)
-    now = _utcnow()
-    brand_filter = or_(
-        BroadcastAnnouncement.brand.is_(None),
-        BroadcastAnnouncement.brand == "all",
-        BroadcastAnnouncement.brand == current_brand,
-    )
-    rows = (
-        db.query(BroadcastAnnouncement)
-        .filter(
-            and_(
-                BroadcastAnnouncement.is_active.is_(True),
-                or_(BroadcastAnnouncement.starts_at.is_(None), BroadcastAnnouncement.starts_at <= now),
-                or_(BroadcastAnnouncement.ends_at.is_(None), BroadcastAnnouncement.ends_at >= now),
-                brand_filter,
-            )
+    try:
+        from app.core.tenant import get_tenant_brand
+        current_brand = get_tenant_brand(request)
+        now = _utcnow()
+        brand_filter = or_(
+            BroadcastAnnouncement.brand.is_(None),
+            BroadcastAnnouncement.brand == "all",
+            BroadcastAnnouncement.brand == current_brand,
         )
-        .order_by(BroadcastAnnouncement.created_at.desc(), BroadcastAnnouncement.id.desc())
-        .limit(30)
-        .all()
-    )
-    return [_to_out(row) for row in rows]
+        rows = (
+            db.query(BroadcastAnnouncement)
+            .filter(
+                and_(
+                    BroadcastAnnouncement.is_active.is_(True),
+                    or_(BroadcastAnnouncement.starts_at.is_(None), BroadcastAnnouncement.starts_at <= now),
+                    or_(BroadcastAnnouncement.ends_at.is_(None), BroadcastAnnouncement.ends_at >= now),
+                    brand_filter,
+                )
+            )
+            .order_by(BroadcastAnnouncement.created_at.desc(), BroadcastAnnouncement.id.desc())
+            .limit(30)
+            .all()
+        )
+        return [_to_out(row) for row in rows]
+    except Exception as exc:
+        logger.warning("Error fetching active broadcasts (resilient fallback to []): %s", exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return []
 
 
 @router.get("/broadcast/admin", response_model=list[BroadcastAnnouncementOut])
@@ -169,23 +177,31 @@ def admin_list_broadcasts(
     _ = admin
     if not _has_table(db):
         return []
-    from app.core.tenant import get_tenant_brand
-    current_brand = get_tenant_brand(request)
-    query = db.query(BroadcastAnnouncement)
-    if current_brand and current_brand != "default":
-        query = query.filter(
-            or_(
-                BroadcastAnnouncement.brand == current_brand,
-                BroadcastAnnouncement.brand == "all",
-                BroadcastAnnouncement.brand.is_(None),
+    try:
+        from app.core.tenant import get_tenant_brand
+        current_brand = get_tenant_brand(request)
+        query = db.query(BroadcastAnnouncement)
+        if current_brand and current_brand != "default":
+            query = query.filter(
+                or_(
+                    BroadcastAnnouncement.brand == current_brand,
+                    BroadcastAnnouncement.brand == "all",
+                    BroadcastAnnouncement.brand.is_(None),
+                )
             )
+        rows = (
+            query.order_by(BroadcastAnnouncement.created_at.desc(), BroadcastAnnouncement.id.desc())
+            .limit(300)
+            .all()
         )
-    rows = (
-        query.order_by(BroadcastAnnouncement.created_at.desc(), BroadcastAnnouncement.id.desc())
-        .limit(300)
-        .all()
-    )
-    return [_to_out(row) for row in rows]
+        return [_to_out(row) for row in rows]
+    except Exception as exc:
+        logger.warning("Error fetching admin broadcasts: %s", exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return []
 
 
 @router.post("/broadcast/admin", response_model=BroadcastAnnouncementOut)
