@@ -276,21 +276,21 @@ def ensure_tables():
         _ensure_userrole_enum()
         _bootstrap_admins()
         _run_alembic_upgrade()
+        _revert_accidental_welcome_bonuses()
         try:
             from app.services.push_notification import PushNotificationService
             PushNotificationService._initialize()
         except Exception as e:
             logging.getLogger(__name__).warning("Firebase Admin initialization on startup skipped: %s", e)
         try:
-            from app.services.commissions import reconcile_missing_agent_commissions, reconcile_missing_welcome_bonuses
+            from app.services.commissions import reconcile_missing_agent_commissions
             db_rec = SessionLocal()
             try:
                 reconcile_missing_agent_commissions(db_rec, limit=100)
-                reconcile_missing_welcome_bonuses(db_rec, brand="kullomadata", limit=1000)
             finally:
                 db_rec.close()
         except Exception as e:
-            logging.getLogger(__name__).warning("Commission / welcome bonus reconciliation on startup skipped: %s", e)
+            logging.getLogger(__name__).warning("Commission reconciliation on startup skipped: %s", e)
         return
 
     # Optional local fallback for fresh environments.
@@ -1161,6 +1161,72 @@ def _ensure_broadcast_announcement_brand_column() -> None:
             pass
     except Exception as exc:
         logging.getLogger(__name__).warning("Could not ensure broadcast_announcements.brand column: %s", exc)
+
+
+def _revert_accidental_welcome_bonuses() -> None:
+    """
+    Purges any accidental welcome bonus transactions (WELCOME_2GB_* / KULLOMA_BONUS)
+    awarded to non-Kulloma users (e.g. Mele Data users) and deducts the funds from affected wallets.
+    """
+    try:
+        from app.models.transaction import Transaction
+        from app.models.wallet import Wallet
+        from app.models.wallet_ledger import WalletLedger
+        from app.models.user import User
+        from decimal import Decimal
+
+        db = SessionLocal()
+        try:
+            bogus_txs = (
+                db.query(Transaction)
+                .join(User, User.id == Transaction.user_id)
+                .filter(
+                    or_(
+                        Transaction.reference.like("WELCOME_2GB_%"),
+                        Transaction.network == "KULLOMA_BONUS",
+                        Transaction.provider == "KULLOMA_BONUS",
+                    ),
+                    User.brand != "kullomadata",
+                    ~User.email.ilike("%kulloma%"),
+                )
+                .all()
+            )
+
+            if not bogus_txs:
+                return
+
+            logger = logging.getLogger(__name__)
+            logger.info("Found %d accidental welcome bonus transactions on non-Kulloma users to revert.", len(bogus_txs))
+
+            for tx in bogus_txs:
+                user_id = tx.user_id
+                amount = Decimal(str(tx.amount or 0))
+                ref = tx.reference
+
+                # 1. Deduct amount from user wallet
+                if user_id and amount > Decimal("0"):
+                    wallet = db.query(Wallet).filter(Wallet.user_id == user_id).first()
+                    if wallet and wallet.balance is not None:
+                        old_bal = wallet.balance
+                        wallet.balance = max(Decimal("0.0"), wallet.balance - amount)
+                        logger.info("Reverted ₦%s from wallet of user %d (bal: %s -> %s)", amount, user_id, old_bal, wallet.balance)
+
+                # 2. Delete wallet ledger entry
+                if ref:
+                    db.query(WalletLedger).filter(WalletLedger.reference == ref).delete(synchronize_session=False)
+
+                # 3. Delete the transaction record
+                db.delete(tx)
+
+            db.commit()
+            logger.info("Successfully reverted %d accidental welcome bonus transactions.", len(bogus_txs))
+        except Exception as e:
+            db.rollback()
+            logging.getLogger(__name__).warning("Error reverting accidental welcome bonuses: %s", e)
+        finally:
+            db.close()
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Could not execute _revert_accidental_welcome_bonuses: %s", exc)
 
 
 def _ensure_all_database_enums() -> None:

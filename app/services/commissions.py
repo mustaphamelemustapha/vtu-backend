@@ -595,8 +595,16 @@ def check_and_award_welcome_data_bonus(
     if not target_brand or target_brand == "default":
         if getattr(user, "email", None) and "kulloma" in str(user.email).lower():
             target_brand = "kullomadata"
-    if not target_brand or target_brand == "default":
-        target_brand = "kullomadata"
+
+    # STRICT GUARD: This welcome bonus campaign is EXCLUSIVELY for Kulloma Data.
+    # Never execute or award bonuses for Mele Data, MZ Data, or other clients.
+    is_kulloma = (
+        target_brand == "kullomadata"
+        or (getattr(user, "brand", "") or "").strip().lower() == "kullomadata"
+        or ("kulloma" in (getattr(user, "email", "") or "").lower())
+    )
+    if not is_kulloma or target_brand != "kullomadata":
+        return None
 
     cfg = get_brand_commission_config(db, request=request, brand=target_brand, admin=admin)
     if not cfg.get("enable_welcome_data_bonus"):
@@ -689,16 +697,24 @@ def reconcile_missing_welcome_bonuses(
     if not target_brand or target_brand == "default":
         target_brand = "kullomadata"
 
+    if target_brand != "kullomadata":
+        logger.info("Welcome data bonus is strictly for kullomadata. Skipping reconcile for brand '%s'.", target_brand)
+        return []
+
     cfg = get_brand_commission_config(db, request=request, admin=admin, brand=target_brand)
     if not cfg.get("enable_welcome_data_bonus"):
         logger.info("Welcome data bonus is not enabled for brand '%s', skipping reconcile.", cfg.get("brand"))
         return []
 
-    # Find users who have successful data transactions
+    # Find users who have successful data transactions (strictly scoped to Kulloma Data)
     users_with_data = (
         db.query(User)
         .join(Transaction, Transaction.user_id == User.id)
         .filter(
+            or_(
+                User.brand == "kullomadata",
+                User.email.ilike("%kulloma%"),
+            ),
             or_(
                 Transaction.tx_type == TransactionType.DATA,
                 Transaction.tx_type == "DATA",
