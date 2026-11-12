@@ -70,6 +70,14 @@ def get_developer_user(
     # 3. Fallback to HTTPBearer credentials
     if not token and credentials:
         token = credentials.credentials.strip()
+
+    # 4. Fallback to Query Parameter (?api_key=... or ?token=...)
+    if not token:
+        token = (
+            request.query_params.get("api_key")
+            or request.query_params.get("token")
+            or request.query_params.get("apiKey")
+        )
         
     if not token:
         from app.core.exceptions import DeveloperAPIException
@@ -219,6 +227,10 @@ SANDBOX_BALANCES = {}
 
 @router.get("/wallet")
 @router.get("/wallet/")
+@router.get("/user")
+@router.get("/user/")
+@router.get("/balance")
+@router.get("/balance/")
 def get_wallet_balance_amigo_style(user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
     is_test = getattr(user, "is_test_mode", False)
     if is_test:
@@ -226,16 +238,25 @@ def get_wallet_balance_amigo_style(user: User = Depends(get_developer_user), db:
     else:
         wallet = get_or_create_wallet(db, user.id)
         bal = float(wallet.balance)
-        
+
     return {
+        "status": "success",
         "success": True,
+        "message": "Wallet balance retrieved successfully",
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "username": user.email,
+            "full_name": user.full_name,
+            "wallet_balance": bal,
+        },
         "data": {
             "balance": bal,
             "display": f"₦{bal:,.2f}",
             "currency": "NGN",
             "livemode": not is_test,
-            "mode": "test" if is_test else "live"
-        }
+            "mode": "test" if is_test else "live",
+        },
     }
 
 
@@ -342,6 +363,10 @@ def get_balance(user: User = Depends(get_developer_user), db: Session = Depends(
 
 
 @router.get("/data/plans", response_model=DeveloperDataPlansResponse)
+@router.get("/data_plans", response_model=DeveloperDataPlansResponse)
+@router.get("/data_plans/", response_model=DeveloperDataPlansResponse)
+@router.get("/plans", response_model=DeveloperDataPlansResponse)
+@router.get("/plans/", response_model=DeveloperDataPlansResponse)
 def list_data_plans(user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
     plans = db.query(DataPlan).filter(DataPlan.is_active == True).all()
     result = []
@@ -364,6 +389,8 @@ def list_data_plans(user: User = Depends(get_developer_user), db: Session = Depe
 
 
 @router.post("/data/purchase", response_model=DeveloperPurchaseResponse)
+@router.post("/data", response_model=DeveloperPurchaseResponse)
+@router.post("/data/", response_model=DeveloperPurchaseResponse)
 @limiter.limit("30/minute")
 def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
     from app.core.exceptions import DeveloperAPIException
@@ -707,6 +734,10 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
 
 
 @router.post("/airtime/purchase", response_model=DeveloperPurchaseResponse)
+@router.post("/airtime", response_model=DeveloperPurchaseResponse)
+@router.post("/airtime/", response_model=DeveloperPurchaseResponse)
+@router.post("/topup", response_model=DeveloperPurchaseResponse)
+@router.post("/topup/", response_model=DeveloperPurchaseResponse)
 @limiter.limit("30/minute")
 def developer_buy_airtime(request: Request, payload: DeveloperAirtimePurchaseRequest, user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
     from app.core.exceptions import DeveloperAPIException

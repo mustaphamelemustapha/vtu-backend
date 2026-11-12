@@ -88,14 +88,82 @@ class DeveloperDataPurchaseRequest(BaseModel):
     network: str = Field(..., description="MTN, GLO, AIRTEL, or 9MOBILE")
     plan_id: Optional[Union[int, str]] = Field(None, description="The numerical plan ID")
     plan_code: Optional[str] = Field(None, description="Plan code as alternative to plan_id")
-    reference: str = Field(..., description="Unique developer transaction reference")
+    reference: Optional[str] = Field(None, description="Unique developer transaction reference")
+    ported_number: Optional[bool] = Field(False, description="Whether the phone number is ported")
 
     @root_validator(pre=True)
-    def check_plan_identifier(cls, values):
-        if not values.get("plan_id") and values.get("plan_code"):
-            values["plan_id"] = values["plan_code"]
-        if not values.get("plan_id"):
-            raise ValueError("Either 'plan_id' or 'plan_code' is required.")
+    def normalize_data_payload(cls, values):
+        if not isinstance(values, dict):
+            return values
+
+        # 1. Phone number aliases (phone, mobile_number, recipient, number)
+        phone = (
+            values.get("phone_number")
+            or values.get("phone")
+            or values.get("mobile_number")
+            or values.get("recipient")
+            or values.get("number")
+        )
+        if phone:
+            values["phone_number"] = str(phone).strip()
+
+        # 2. Plan identifier aliases (plan, plan_id, plan_code, data_plan)
+        plan = (
+            values.get("plan_id")
+            or values.get("plan")
+            or values.get("plan_code")
+            or values.get("data_plan")
+        )
+        if plan is not None:
+            values["plan_id"] = plan
+            values["plan_code"] = str(plan)
+
+        # 3. Network identifier aliases (network, network_id, network_name)
+        # Standard Nigerian mappings: 1=MTN, 2=GLO, 3=9MOBILE, 4=AIRTEL
+        net = values.get("network") or values.get("network_id") or values.get("network_name")
+        if net is not None:
+            net_str = str(net).strip().lower()
+            if net_str in ("1", "mtn"):
+                values["network"] = "MTN"
+            elif net_str in ("2", "glo"):
+                values["network"] = "GLO"
+            elif net_str in ("3", "9mobile", "etisalat"):
+                values["network"] = "9MOBILE"
+            elif net_str in ("4", "airtel"):
+                values["network"] = "AIRTEL"
+            else:
+                values["network"] = str(net).upper()
+
+        # 4. Reference aliases (reference, request-id, request_id, ident, ref)
+        ref = (
+            values.get("reference")
+            or values.get("request-id")
+            or values.get("request_id")
+            or values.get("ident")
+            or values.get("ref")
+        )
+        if not ref:
+            import secrets
+            ref = f"REQ_{secrets.token_hex(8).upper()}"
+        values["reference"] = str(ref).strip()
+
+        # 5. Ported number / bypass flag
+        ported = (
+            values.get("ported_number")
+            or values.get("Ported_number")
+            or values.get("bypass")
+            or values.get("ported")
+        )
+        if ported is not None:
+            values["ported_number"] = bool(ported)
+
+        if not values.get("phone_number"):
+            raise ValueError("Recipient phone number is required (pass 'phone_number', 'phone', or 'mobile_number').")
+        if not values.get("plan_id") and not values.get("plan_code"):
+            raise ValueError("Plan ID is required (pass 'plan_id' or 'plan').")
+        if not values.get("network"):
+            raise ValueError("Network is required (pass 'network' e.g. MTN, GLO, AIRTEL, 9MOBILE).")
+
         return values
 
 
@@ -103,7 +171,65 @@ class DeveloperAirtimePurchaseRequest(BaseModel):
     phone_number: str = Field(..., description="Recipient phone number")
     network: str = Field(..., description="MTN, GLO, AIRTEL, or 9MOBILE")
     amount: Decimal = Field(..., description="Amount of airtime to buy")
-    reference: str = Field(..., description="Unique developer transaction reference")
+    reference: Optional[str] = Field(None, description="Unique developer transaction reference")
+
+    @root_validator(pre=True)
+    def normalize_airtime_payload(cls, values):
+        if not isinstance(values, dict):
+            return values
+
+        # 1. Phone number aliases
+        phone = (
+            values.get("phone_number")
+            or values.get("phone")
+            or values.get("mobile_number")
+            or values.get("recipient")
+            or values.get("number")
+        )
+        if phone:
+            values["phone_number"] = str(phone).strip()
+
+        # 2. Network identifier aliases
+        net = values.get("network") or values.get("network_id") or values.get("network_name")
+        if net is not None:
+            net_str = str(net).strip().lower()
+            if net_str in ("1", "mtn"):
+                values["network"] = "MTN"
+            elif net_str in ("2", "glo"):
+                values["network"] = "GLO"
+            elif net_str in ("3", "9mobile", "etisalat"):
+                values["network"] = "9MOBILE"
+            elif net_str in ("4", "airtel"):
+                values["network"] = "AIRTEL"
+            else:
+                values["network"] = str(net).upper()
+
+        # 3. Amount aliases
+        amt = values.get("amount") or values.get("airtime_amount")
+        if amt is not None:
+            values["amount"] = Decimal(str(amt))
+
+        # 4. Reference aliases
+        ref = (
+            values.get("reference")
+            or values.get("request-id")
+            or values.get("request_id")
+            or values.get("ident")
+            or values.get("ref")
+        )
+        if not ref:
+            import secrets
+            ref = f"AIR_{secrets.token_hex(8).upper()}"
+        values["reference"] = str(ref).strip()
+
+        if not values.get("phone_number"):
+            raise ValueError("Recipient phone number is required (pass 'phone_number', 'phone', or 'mobile_number').")
+        if not values.get("network"):
+            raise ValueError("Network is required (pass 'network' e.g. MTN, GLO, AIRTEL, 9MOBILE).")
+        if not values.get("amount"):
+            raise ValueError("Amount is required.")
+
+        return values
 
 
 class DeveloperPurchaseData(BaseModel):
