@@ -234,7 +234,12 @@ def _upsert_plan_from_provider(db: Session, item: dict) -> bool:
 # --- ENDPOINTS ---
 
 @router.get("/plans", response_model=list[DataPlanOut])
-def list_data_plans(user: Optional[User] = Depends(get_optional_user), db: Session = Depends(get_db)):
+def list_data_plans(
+    role: Optional[str] = None,
+    for_developer: Optional[bool] = False,
+    user: Optional[User] = Depends(get_optional_user),
+    db: Session = Depends(get_db)
+):
     all_count = db.query(DataPlan).count()
     # Match plans where is_active is True or NULL (never drop plans unless is_active is explicitly False)
     plans = db.query(DataPlan).filter(DataPlan.is_active != False).all()
@@ -250,6 +255,12 @@ def list_data_plans(user: Optional[User] = Depends(get_optional_user), db: Sessi
     logger.info(
         "User %s requested plans. Total in DB: %d, Active: %d, Breakdown: %s",
         getattr(user, "email", "guest"), all_count, len(plans), breakdown
+    )
+
+    is_developer_request = (
+        bool(for_developer) or
+        (role and str(role).strip().lower() in ("developer", "api", "reseller_api")) or
+        (user and (getattr(user, "is_developer", False) or str(getattr(user, "role", "")).lower() in ("developer", "api")))
     )
 
     promo_snapshot = {"active": False, "remaining": 0, "limit": 0, "price": Decimal("250")}
@@ -303,7 +314,9 @@ def list_data_plans(user: Optional[User] = Depends(get_optional_user), db: Sessi
                 agent_price = getattr(plan, "agent_price", None)
                 base = Decimal(str(plan.base_price if plan.base_price is not None else "0"))
                 
-                if pricing_role is not None and str(pricing_role).lower() in ("reseller", "agent") and agent_price is not None:
+                if is_developer_request and getattr(plan, "api_price", None) is not None:
+                    price = Decimal(str(plan.api_price))
+                elif pricing_role is not None and str(pricing_role).lower() in ("reseller", "agent") and agent_price is not None:
                     price = Decimal(str(agent_price))
                 elif display is not None:
                     price = Decimal(str(display))
@@ -357,6 +370,8 @@ def list_data_plans(user: Optional[User] = Depends(get_optional_user), db: Sessi
                     cashback_amount=Decimal(str(cashback_amount)) if cashback_amount is not None else None,
                     cashback_label=str(cashback_label) if cashback_label is not None else None,
                     data_type=str(getattr(plan, "data_type", None)) if getattr(plan, "data_type", None) else None,
+                    api_price=Decimal(str(plan.api_price)) if getattr(plan, "api_price", None) is not None else None,
+                    agent_price=Decimal(str(plan.agent_price)) if getattr(plan, "agent_price", None) is not None else None,
                 )
             )
         except Exception as ser_err:

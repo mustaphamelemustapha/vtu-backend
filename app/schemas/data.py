@@ -20,6 +20,8 @@ class DataPlanOut(BaseModel):
     provider: Optional[str] = None
     provider_plan_id: Optional[str] = None
     data_type: Optional[str] = None
+    api_price: Optional[Decimal] = None
+    agent_price: Optional[Decimal] = None
     cashback_amount: Optional[Decimal] = None
     cashback_label: Optional[str] = None
 
