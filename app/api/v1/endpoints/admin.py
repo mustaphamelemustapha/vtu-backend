@@ -2869,28 +2869,32 @@ def list_admin_developers(
     from app.services.commissions import get_user_total_data_gb
     from app.models.wallet import Wallet
 
-    api_user_subq = db.query(ApiLog.user_id).filter(ApiLog.user_id.isnot(None)).distinct()
-    
-    conds = [
-        or_(
-            User.is_developer == True,
-            User.api_public_key.isnot(None),
-            User.developer_status.in_(["approved", "applied", "suspended"]),
-            User.id.in_(api_user_subq)
-        )
-    ]
+    # Strictly identify authorized developers who are permitted to vend data
+    is_approved_dev = or_(
+        User.is_developer == True,
+        User.developer_status == "approved",
+        User.role == UserRole.DEVELOPER,
+        User.role == "developer"
+    )
 
-    if brand and brand != "all":
-        conds.append(User.brand == brand)
-
-    if status and status != "all":
-        st = status.lower().strip()
-        if st in ("approved", "active"):
-            conds.append(or_(User.developer_status == "approved", User.is_developer == True))
-        elif st == "suspended":
-            conds.append(User.developer_status == "suspended")
-        elif st == "applied":
-            conds.append(User.developer_status == "applied")
+    st = (status or "all").lower().strip()
+    if st == "applied":
+        conds = [User.developer_status == "applied"]
+    elif st == "suspended":
+        conds = [User.developer_status == "suspended"]
+    elif st in ("approved", "active"):
+        conds = [
+            is_approved_dev,
+            User.developer_status != "suspended",
+            User.is_active == True
+        ]
+    else:
+        # Default "all": Strictly authorized and actively permitted developers only
+        conds = [
+            is_approved_dev,
+            User.developer_status != "suspended",
+            User.is_active == True
+        ]
 
     if q and q.strip():
         term = f"%{q.strip()}%"
@@ -3001,25 +3005,35 @@ def list_admin_developers(
             )
         )
 
-    # Summary metrics across all developers in the current filter/brand
+    # Summary metrics across all legitimate developer accounts (approved, applied, suspended)
     all_devs_query = db.query(User).filter(
         or_(
             User.is_developer == True,
-            User.api_public_key.isnot(None),
             User.developer_status.in_(["approved", "applied", "suspended"]),
-            User.id.in_(api_user_subq)
+            User.role == UserRole.DEVELOPER,
+            User.role == "developer"
         )
     )
     if brand and brand != "all":
         all_devs_query = all_devs_query.filter(User.brand == brand)
 
     all_dev_users = all_devs_query.all()
-    all_dev_ids = [d.id for d in all_dev_users]
 
-    total_devs = len(all_dev_users)
-    active_devs = sum(1 for d in all_dev_users if d.is_developer or d.developer_status == "approved")
-    suspended_devs = sum(1 for d in all_dev_users if d.developer_status == "suspended")
-    applied_devs = sum(1 for d in all_dev_users if d.developer_status == "applied")
+    active_dev_users = [
+        d for d in all_dev_users
+        if (d.is_developer or d.developer_status == "approved" or str(getattr(d, "role", "")).lower() == "developer")
+        and d.developer_status != "suspended"
+        and d.is_active
+    ]
+    suspended_dev_users = [d for d in all_dev_users if d.developer_status == "suspended"]
+    applied_dev_users = [d for d in all_dev_users if d.developer_status == "applied"]
+
+    total_devs = len(active_dev_users)
+    active_devs = len(active_dev_users)
+    suspended_devs = len(suspended_dev_users)
+    applied_devs = len(applied_dev_users)
+
+    all_dev_ids = [d.id for d in active_dev_users]
 
     total_vol_spent = 0.0
     total_gb_all = 0.0
