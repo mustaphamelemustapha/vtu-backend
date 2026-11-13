@@ -169,12 +169,20 @@ def pin_reset_request(
     set_reset_token(user, token, expires_at)
     db.commit()
 
+    from app.core.tenant import get_tenant_brand
+    target_brand = getattr(user, "brand", None) or get_tenant_brand(request)
     try:
-        send_transaction_pin_reset_email(user.email, token)
+        import inspect
+        sig = inspect.signature(send_transaction_pin_reset_email)
+        if "brand" in sig.parameters:
+            send_transaction_pin_reset_email(user.email, token, brand=target_brand)
+        else:
+            send_transaction_pin_reset_email(user.email, token)
     except Exception as exc:
         logger.warning(
-            "Transaction PIN reset email failed to=%s provider=%s error=%s",
+            "Transaction PIN reset email failed to=%s brand=%s provider=%s error=%s",
             user.email,
+            target_brand,
             settings.email_provider,
             exc,
         )

@@ -106,7 +106,16 @@ def register(request: Request, payload: RegisterRequest, background_tasks: Backg
     db.refresh(user)
 
     get_or_create_wallet(db, user.id)
-    background_tasks.add_task(send_welcome_email, user.email, payload.password, user.full_name)
+    target_brand = user.brand or tenant_brand
+    try:
+        import inspect
+        sig = inspect.signature(send_welcome_email)
+        if "brand" in sig.parameters:
+            background_tasks.add_task(send_welcome_email, user.email, payload.password, user.full_name, brand=target_brand)
+        else:
+            background_tasks.add_task(send_welcome_email, user.email, payload.password, user.full_name)
+    except Exception:
+        background_tasks.add_task(send_welcome_email, user.email, payload.password, user.full_name)
     return user
 
 
@@ -116,11 +125,13 @@ def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)
     identifier = (payload.email or "").strip()
     user = None
     if "@" in identifier:
-        user = db.query(User).filter(User.email == identifier).first()
+        user = db.query(User).filter(User.email.ilike(identifier)).first()
     else:
         phone = _normalize_phone(identifier)
         if phone:
             user = db.query(User).filter(User.phone_number == phone).first()
+        if not user:
+            user = db.query(User).filter(User.email.ilike(identifier)).first()
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not user.is_active:
@@ -144,11 +155,13 @@ def pin_login(request: Request, payload: PinLoginRequest, db: Session = Depends(
     identifier = (payload.identifier or "").strip()
     user = None
     if "@" in identifier:
-        user = db.query(User).filter(User.email == identifier).first()
+        user = db.query(User).filter(User.email.ilike(identifier)).first()
     else:
         phone = _normalize_phone(identifier)
         if phone:
             user = db.query(User).filter(User.phone_number == phone).first()
+        if not user:
+            user = db.query(User).filter(User.email.ilike(identifier)).first()
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     if not user.is_active:
@@ -177,11 +190,13 @@ def lookup_user(request: Request, payload: LookupRequest, db: Session = Depends(
     identifier = (payload.identifier or "").strip()
     user = None
     if "@" in identifier:
-        user = db.query(User).filter(User.email == identifier).first()
+        user = db.query(User).filter(User.email.ilike(identifier)).first()
     else:
         phone = _normalize_phone(identifier)
         if phone:
             user = db.query(User).filter(User.phone_number == phone).first()
+        if not user:
+            user = db.query(User).filter(User.email.ilike(identifier)).first()
     if not user:
         return {"exists": False}
     return {"exists": True}
@@ -226,13 +241,21 @@ def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Sessio
         user.reset_token = reset_token
         user.reset_token_expires_at = _utcnow() + timedelta(minutes=15)
         db.commit()
+        from app.core.tenant import get_tenant_brand
+        target_brand = getattr(user, "brand", None) or get_tenant_brand(request)
         try:
-            # Send OTP via Email
-            send_password_reset_otp_email(user.email, reset_token)
+            # Send OTP via Email with brand
+            import inspect
+            sig = inspect.signature(send_password_reset_otp_email)
+            if "brand" in sig.parameters:
+                send_password_reset_otp_email(user.email, reset_token, brand=target_brand)
+            else:
+                send_password_reset_otp_email(user.email, reset_token)
         except Exception as exc:
             logger.warning(
-                "Password reset email send failed to=%s error=%s",
+                "Password reset email send failed to=%s brand=%s error=%s",
                 user.email,
+                target_brand,
                 exc,
             )
 
