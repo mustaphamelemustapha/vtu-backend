@@ -691,7 +691,23 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
                 )
                 tx_provider = "meledata"
 
-            elif p_name and p_name not in ("amigo", "clubkonnect", "smeplug", "sim", "autosync", "mzdata", "boltnet"):
+            elif p_name in ("telecom_abode", "telecomabode"):
+                from app.providers.telecom_abode_provider import TelecomAbodeProvider
+                telecom = TelecomAbodeProvider(db=db)
+                clean_plan_id = str(p_plan_id or plan_plan_code or "").strip()
+                if ":" in clean_plan_id:
+                    clean_plan_id = clean_plan_id.split(":")[-1]
+                elif clean_plan_id.startswith(f"{p_name}.") and clean_plan_id.count(".") >= 2:
+                    clean_plan_id = clean_plan_id.split(".")[-1]
+                p_res = telecom.purchase_data(
+                    network=network_key,
+                    phone=phone,
+                    plan_id=clean_plan_id,
+                    request_id=target_ref
+                )
+                tx_provider = "telecom_abode"
+
+            elif p_name and p_name not in ("amigo", "clubkonnect", "smeplug", "sim", "autosync", "mzdata", "boltnet", "telecom_abode", "telecomabode"):
                 from app.core.database import SessionLocal
                 _db = SessionLocal()
                 try:

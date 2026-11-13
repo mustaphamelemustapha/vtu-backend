@@ -124,7 +124,34 @@ def get_provider_plans(identifier: str, network: Optional[str] = None, db: Sessi
         except Exception as e:
             return {"status": False, "message": f"Failed to fetch ClubKonnect plans: {str(e)}", "plans": []}
 
-    # 4. Generic / MELE DATA / Custom Provider
+    # 4. Telecom Abode
+    elif clean_identifier in ("telecom_abode", "telecomabode"):
+        try:
+            from app.providers.telecom_abode_provider import TelecomAbodeProvider
+            prov = db.query(IntegrationProvider).filter(IntegrationProvider.identifier.in_(["telecom_abode", "telecomabode"])).first()
+            api_key = (prov.api_key if prov else "") or getattr(settings, "telecom_abode_api_key", "")
+            base_url = str((prov.base_url if prov else "") or getattr(settings, "telecom_abode_base_url", "https://telecomabode.com.ng/api")).rstrip("/")
+
+            if not api_key:
+                return {
+                    "status": False,
+                    "message": "Telecom Abode API Key is not configured. Please enter your API Key in Integrations settings or .env file.",
+                    "plans": []
+                }
+
+            telecom = TelecomAbodeProvider(api_key=api_key, base_url=base_url, db=db)
+            plans = telecom.fetch_data_plans(network=network)
+            if not plans:
+                return {
+                    "status": False,
+                    "message": f"No data plans returned from Telecom Abode for network {network.upper() if network else 'ALL'}. Please check your API key in Integrations settings.",
+                    "plans": []
+                }
+            return {"status": True, "provider": "telecom_abode", "plans": plans}
+        except Exception as e:
+            return {"status": False, "message": f"Failed to fetch Telecom Abode plans: {str(e)}", "plans": []}
+
+    # 5. Generic / MELE DATA / Custom Provider
     else:
         prov = db.query(IntegrationProvider).filter(IntegrationProvider.identifier == clean_identifier).first()
         base_url = str((prov.base_url if prov else None) or ("https://api.meledata.ng/api/v1" if clean_identifier == "meledata" else "")).rstrip("/")
@@ -328,7 +355,28 @@ def test_provider_connection(payload: TestProviderRequest, db: Session = Depends
         except Exception as e:
             return {"status": False, "message": f"ClubKonnect error: {str(e)}"}
 
-    # 4. Generic / MELE DATA / Custom Provider
+    # 4. Telecom Abode
+    elif identifier in ("telecom_abode", "telecomabode"):
+        try:
+            from app.providers.telecom_abode_provider import TelecomAbodeProvider
+            telecom = TelecomAbodeProvider(api_key=api_key, base_url=base_url or "https://telecomabode.com.ng/api", db=db)
+            bal = telecom.get_balance()
+            if bal is not None:
+                _persist_bal(bal)
+                return {
+                    "status": True,
+                    "message": "Connection to Telecom Abode verified successfully!",
+                    "balance": float(bal),
+                    "raw_response": {"balance": bal}
+                }
+            return {
+                "status": False,
+                "message": "Telecom Abode returned an error or invalid response. Please verify your API Key."
+            }
+        except Exception as e:
+            return {"status": False, "message": f"Telecom Abode error: {str(e)}"}
+
+    # 5. Generic / MELE DATA / Custom Provider
     else:
         if not base_url:
             return {"status": False, "message": "API Base URL is required to test custom provider connection."}
