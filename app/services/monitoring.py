@@ -103,7 +103,52 @@ def _fetch_single_provider_balance(db: Session, prov: IntegrationProvider) -> fl
         except Exception as e:
             return f"Error: {e}"
 
-    # 4. Generic / Mele Data / MZ Data / Custom VTU Provider
+    # 4. Telecom Abode
+    if identifier in ("telecom_abode", "telecomabode"):
+        try:
+            from app.providers.telecom_abode_provider import TelecomAbodeProvider
+            telecom = TelecomAbodeProvider(
+                api_key=api_key,
+                base_url=base_url or "https://telecomabode.com.ng/api",
+                db=db,
+            )
+            bal = telecom.get_balance()
+            if bal is not None and isinstance(bal, (int, float)):
+                return float(bal)
+        except Exception as e:
+            logger.warning("Monitoring TelecomAbode get_balance error: %s", e)
+
+        # Fallback to direct HTTP with Token authorization (Django/DRF header)
+        if api_key:
+            target_base = (base_url or "https://telecomabode.com.ng/api").rstrip("/")
+            for url in (f"{target_base}/user", f"{target_base}/balance", f"{target_base}/wallet"):
+                try:
+                    resp = requests.get(
+                        url,
+                        headers={
+                            "Authorization": f"Token {api_key}",
+                            "Content-Type": "application/json",
+                            "Accept": "application/json",
+                        },
+                        timeout=10,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if isinstance(data, dict):
+                            val = data.get("balance") or data.get("wallet")
+                            if val is None and isinstance(data.get("user"), dict):
+                                val = data["user"].get("wallet") or data["user"].get("balance")
+                            if val is not None:
+                                return float(val)
+                except Exception:
+                    pass
+
+        # If live fetch failed, fall back to last verified balance saved on the provider record
+        if getattr(prov, "balance", None) is not None:
+            return float(prov.balance)
+        return "Error: Could not fetch balance"
+
+    # 5. Generic / Mele Data / MZ Data / Custom VTU Provider
     if identifier == "meledata":
         if not base_url:
             base_url = "https://api.meledata.ng/api/v1"
@@ -201,7 +246,15 @@ def check_provider_balances_detailed(db: Session) -> tuple[dict, list[dict]]:
         results[prov.identifier] = bal_or_err
 
         is_error = not isinstance(bal_or_err, (int, float))
-        numeric_bal = float(bal_or_err) if not is_error else 0.0
+        # If live check failed with an error, but provider has a saved verified balance in DB,
+        # use the saved balance so the dashboard remains informative and operational
+        if is_error and getattr(prov, "balance", None) is not None and float(prov.balance) >= 0:
+            numeric_bal = float(prov.balance)
+            is_error = False
+            bal_or_err = numeric_bal
+        else:
+            numeric_bal = float(bal_or_err) if not is_error else 0.0
+
         is_low = (not is_error) and (threshold > 0) and (numeric_bal < threshold)
 
         if not is_error:
