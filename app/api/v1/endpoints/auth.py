@@ -139,9 +139,10 @@ def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)
 
     from app.core.tenant import get_tenant_brand
     t_brand = get_tenant_brand(request)
-    if t_brand and t_brand != "default" and not user.brand:
-        user.brand = t_brand
-        db.commit()
+    if t_brand and t_brand != "default":
+        if not user.brand or (t_brand == "kullomadata" and user.brand != "kullomadata"):
+            user.brand = t_brand
+            db.commit()
 
     return TokenPair(
         access_token=create_access_token(str(user.id), user.role.value),
@@ -174,8 +175,9 @@ def pin_login(request: Request, payload: PinLoginRequest, db: Session = Depends(
 
     from app.core.tenant import get_tenant_brand
     t_brand = get_tenant_brand(request)
-    if t_brand and t_brand != "default" and not user.brand:
-        user.brand = t_brand
+    if t_brand and t_brand != "default":
+        if not user.brand or (t_brand == "kullomadata" and user.brand != "kullomadata"):
+            user.brand = t_brand
 
     db.commit()
     return TokenPair(

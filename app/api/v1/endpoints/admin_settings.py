@@ -110,12 +110,21 @@ def reconcile_commissions(
 @router.post("/commissions/reconcile-welcome-bonus")
 def reconcile_welcome_bonuses(
     request: Request,
-    limit: int = 300,
+    limit: int = 500,
+    brand: Optional[str] = "kullomadata",
+    all_users: bool = False,
     db: Session = Depends(get_db),
     admin=Depends(require_admin),
 ):
     from app.services.commissions import reconcile_missing_welcome_bonuses
-    reconciled = reconcile_missing_welcome_bonuses(db, request=request, admin=admin, limit=limit)
+    reconciled = reconcile_missing_welcome_bonuses(
+        db,
+        request=request,
+        admin=admin,
+        brand=brand or "kullomadata",
+        limit=limit,
+        all_users=all_users,
+    )
     return {"status": "ok", "count": len(reconciled), "items": reconciled}
 
 

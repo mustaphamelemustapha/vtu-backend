@@ -979,10 +979,12 @@ def _buy_data_impl(request: Request, payload: BuyDataRequest, user: User, db: Se
 
             try:
                 from app.services.commissions import check_and_award_welcome_data_bonus
+                current_gb = float(_parse_size_gb(plan_data_size))
                 check_and_award_welcome_data_bonus(
                     db2,
                     user=user,
                     request=request,
+                    current_data_gb=current_gb,
                 )
             except Exception as bonus_exc:
                 logger.warning("Failed to evaluate welcome data bonus for %s: %s", getattr(user, "email", user.id), bonus_exc)

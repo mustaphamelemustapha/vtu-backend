@@ -10,8 +10,9 @@ logger = logging.getLogger("reconcile_kulloma")
 def main():
     db = SessionLocal()
     try:
-        logger.info("Starting Kulloma Data 2GB Welcome Bonus reconciliation...")
-        awarded = reconcile_missing_welcome_bonuses(db, brand="kullomadata", limit=2000)
+        all_users = "--all" in sys.argv
+        logger.info("Starting Kulloma Data 2GB Welcome Bonus reconciliation (all_users=%s)...", all_users)
+        awarded = reconcile_missing_welcome_bonuses(db, brand="kullomadata", limit=2000, all_users=all_users)
         logger.info("Successfully reconciled %d users with ₦300 welcome gift!", len(awarded))
         for item in awarded:
             logger.info("  ✓ User #%s (%s): Credited ₦%s [Ref: %s]", item['user_id'], item['email'], item['amount'], item['reference'])
@@ -20,3 +21,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
