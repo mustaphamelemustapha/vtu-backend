@@ -111,7 +111,7 @@ def test_developer_workflow(db: Session = next(get_db())):
     res = client.post("/api/v1/developer/data/purchase", json=purchase_payload, headers=dev_headers)
     assert res.status_code == 200
     purchase_res = res.json()
-    assert purchase_res["status"] in {"success", "pending", "failed", "refunded"}
+    assert purchase_res["data"]["status"] in {"success", "pending", "failed", "refunded"}
     
     # Assert transaction was recorded in DB
     tx_rec = db.query(Transaction).filter(Transaction.user_id == test_user.id, Transaction.reference == f"DEV_{test_user.id}_{purchase_payload['reference']}").first()
@@ -139,7 +139,7 @@ def test_developer_workflow(db: Session = next(get_db())):
     res = client.post("/api/v1/developer/airtime/purchase", json=airtime_payload, headers=dev_headers)
     assert res.status_code == 200
     airtime_res = res.json()
-    assert airtime_res["status"] in {"success", "pending", "failed", "refunded"}
+    assert airtime_res["data"]["status"] in {"success", "pending", "failed", "refunded"}
 
     # Assert airtime transaction was recorded in DB
     airtime_tx_rec = db.query(ServiceTransaction).filter(ServiceTransaction.user_id == test_user.id, ServiceTransaction.reference == f"DEV_{test_user.id}_{airtime_payload['reference']}").first()
@@ -153,3 +153,87 @@ def test_developer_workflow(db: Session = next(get_db())):
     db.delete(wallet)
     db.delete(test_user)
     db.commit()
+
+
+def test_developer_telecom_abode_routing(db: Session = next(get_db())):
+    from unittest.mock import patch
+    client = TestClient(app)
+
+    email = "dev_telecom_abode_test@meledata.ng"
+    db.query(User).filter(User.email == email).delete()
+    db.commit()
+
+    user = User(
+        email=email,
+        full_name="Telecom Abode Dev",
+        hashed_password="mockpassword",
+        role=UserRole.USER,
+        referral_code="DEVTESTTA",
+        is_active=True,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    from app.services.wallet import get_or_create_wallet
+    wallet = get_or_create_wallet(db, user.id)
+    wallet.balance = 5000.0
+    db.commit()
+
+    token = create_access_token(str(user.id), user.role.value)
+    headers = {"Authorization": f"Bearer {token}"}
+    client.post("/api/v1/developer/apply", json={"additional_info": "Test"}, headers=headers)
+    keys_res = client.post("/api/v1/developer/keys/generate", headers=headers).json()
+    dev_headers = {"Authorization": f"Bearer {keys_res['api_secret_key']}"}
+
+    plan_code = "DEV_TELECOM_ABODE_1GB"
+    db.query(DataPlan).filter(DataPlan.plan_code == plan_code).delete()
+    db.commit()
+
+    plan = DataPlan(
+        network="mtn",
+        plan_code=plan_code,
+        plan_name="Telecom Abode MTN 1GB",
+        data_size="1GB",
+        validity="30 days",
+        base_price=230.0,
+        provider="telecom_abode",
+        provider_plan_id="605",
+        is_active=True,
+    )
+    db.add(plan)
+    db.commit()
+    db.refresh(plan)
+
+    with patch("app.providers.telecom_abode_provider.TelecomAbodeProvider.purchase_data") as mock_purchase:
+        mock_purchase.return_value = {
+            "status": "success",
+            "provider_reference": "TA_TX_999",
+            "message": "Purchased successfully"
+        }
+
+        res = client.post("/api/v1/developer/data/purchase", json={
+            "phone_number": "08011223344",
+            "network": "MTN",
+            "plan_code": plan_code,
+            "reference": "TA_CLIENT_REF_001"
+        }, headers=dev_headers)
+
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] is True
+        assert data["data"]["status"] == "success"
+        mock_purchase.assert_called_once()
+        args, kwargs = mock_purchase.call_args
+        assert kwargs.get("network") == "mtn"
+        assert kwargs.get("phone") == "08011223344"
+        assert kwargs.get("plan_id") == "605"
+
+    # Cleanup
+    db.query(Transaction).filter(Transaction.user_id == user.id).delete()
+    db.query(WalletLedger).filter(WalletLedger.wallet_id == wallet.id).delete()
+    db.delete(plan)
+    db.delete(wallet)
+    db.delete(user)
+    db.commit()
+

@@ -578,6 +578,84 @@ def developer_buy_data(request: Request, payload: DeveloperDataPurchaseRequest, 
                     p_res = {"status": "pending", "provider_reference": res.external_reference}
                 else:
                     p_res = {"status": "failed", "error": res.message}
+            elif p_name in ("telecom_abode", "telecomabode"):
+                from app.providers.telecom_abode_provider import TelecomAbodeProvider
+                telecom = TelecomAbodeProvider()
+                clean_plan_id = str(target_plan_id or "").strip()
+                if ":" in clean_plan_id:
+                    clean_plan_id = clean_plan_id.split(":")[-1]
+                elif clean_plan_id.startswith(f"{p_name}.") and clean_plan_id.count(".") >= 2:
+                    clean_plan_id = clean_plan_id.split(".")[-1]
+                p_res = telecom.purchase_data(
+                    network=network_key,
+                    phone=phone,
+                    plan_id=clean_plan_id,
+                    request_id=target_ref
+                )
+            elif p_name == "autosync":
+                from app.providers.autosync_provider import AutosyncProvider
+                autosync = AutosyncProvider()
+                p_res = autosync.purchase_network_data(
+                    network=network_key,
+                    phone=phone,
+                    plan_id=target_plan_id,
+                    client_request_id=target_ref,
+                    data_type=getattr(plan, "data_type", "Gifting")
+                )
+            elif p_name == "boltnet":
+                from app.providers.boltnet_provider import BoltnetProvider
+                boltnet = BoltnetProvider()
+                boltnet_network_map = {"mtn": 1, "airtel": 2, "glo": 3, "9mobile": 4}
+                net_id = boltnet_network_map.get(network_key, 1)
+                p_res = boltnet.purchase_network_data(net_id, phone, str(target_plan_id), target_ref)
+            elif p_name and p_name not in ("amigo", "clubkonnect", "smeplug", "sim", "autosync", "mzdata", "boltnet", "telecom_abode", "telecomabode"):
+                from app.core.database import SessionLocal
+                import requests
+                _db = SessionLocal()
+                try:
+                    prov = _db.query(IntegrationProvider).filter(IntegrationProvider.identifier == p_name).first()
+                    if prov and prov.api_key:
+                        raw_b = str(prov.base_url or "").strip().rstrip("/")
+                        if raw_b.endswith("/developer"):
+                            raw_b = raw_b[:-10].rstrip("/")
+                        if not raw_b.endswith("/api/v1"):
+                            b_url = f"{raw_b}/api/v1"
+                        else:
+                            b_url = raw_b
+
+                        buy_url = f"{b_url}/developer/data/purchase"
+                        hdrs = {
+                            "Authorization": f"Bearer {prov.api_key}",
+                            "X-API-Key": prov.api_key,
+                            "Content-Type": "application/json",
+                            "Accept": "application/json",
+                        }
+                        c_plan_id = str(target_plan_id).strip()
+                        if ":" in c_plan_id:
+                            c_plan_id = c_plan_id.split(":")[-1]
+                        body = {
+                            "network": network_key,
+                            "phone_number": phone,
+                            "plan_id": int(c_plan_id) if c_plan_id.isdigit() else c_plan_id,
+                            "reference": target_ref,
+                        }
+                        resp = requests.post(buy_url, json=body, headers=hdrs, timeout=20)
+                        if resp.status_code in (200, 201):
+                            p_data = resp.json()
+                            if p_data.get("status"):
+                                p_res = {"status": "success", "provider_reference": str(p_data.get("reference") or target_ref)}
+                            else:
+                                p_res = {"status": "failed", "error": p_data.get("message") or "Provider reported failure"}
+                        else:
+                            p_res = {"status": "failed", "error": f"HTTP {resp.status_code}: {resp.text[:100]}"}
+                    else:
+                        p_res = {"status": "failed", "error": f"Provider '{p_name}' not configured or inactive"}
+                except Exception as dyn_err:
+                    p_res = {"status": "failed", "error": str(dyn_err)}
+                finally:
+                    _db.close()
+            else:
+                p_res = {"status": "failed", "error": f"No active provider route configured for '{p_name or 'unknown'}'"}
         except Exception as exc:
             logger.error("Developer purchase provider call exception: %s", exc)
             p_res = {"status": "pending", "error": str(exc)}

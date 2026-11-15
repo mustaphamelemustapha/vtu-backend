@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 # Persistent connection pool with Keep-Alive to eliminate TLS/TCP handshake latency
 _MELEDATA_CLIENT = httpx.Client(
-    timeout=httpx.Timeout(connect=8.0, read=25.0, write=10.0, pool=10.0),
+    timeout=httpx.Timeout(connect=10.0, read=45.0, write=15.0, pool=15.0),
     limits=httpx.Limits(max_keepalive_connections=20, max_connections=50, keepalive_expiry=60.0),
 )
 
