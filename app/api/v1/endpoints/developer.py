@@ -282,6 +282,10 @@ def reset_sandbox_balance(user: User = Depends(get_developer_user)):
 
 @router.get("/data/status", response_model=DeveloperDataStatusResponse)
 @router.get("/data/status/", response_model=DeveloperDataStatusResponse)
+@router.get("/airtime/status", response_model=DeveloperDataStatusResponse)
+@router.get("/airtime/status/", response_model=DeveloperDataStatusResponse)
+@router.get("/transaction/status", response_model=DeveloperDataStatusResponse)
+@router.get("/transaction/status/", response_model=DeveloperDataStatusResponse)
 def get_data_purchase_status(ref: str, user: User = Depends(get_developer_user), db: Session = Depends(get_db)):
     from app.core.exceptions import DeveloperAPIException
     ref = ref.strip()
