@@ -86,6 +86,39 @@ def test_kulloma_forgot_password_and_pin_reset_override_stale_meledata_brand():
             mock_otp_mele.assert_called_once()
             _, kwargs = mock_otp_mele.call_args
             assert kwargs.get("brand") == "meledata"
+
+        # 4. Verify mobile app phone-number variants (+234, 080..., 80...) find user & send OTP to email
+        user.phone_number = "+2348039998877"
+        db.commit()
+        with patch("app.api.v1.endpoints.auth.send_password_reset_otp_email", autospec=True) as mock_otp_phone:
+            res = client.post(
+                "/api/v1/auth/forgot-password",
+                json={"identifier": "08039998877"},
+                headers={"X-App-Brand": "kullomadata"},
+            )
+            assert res.status_code == 200
+            body = res.json()
+            assert body.get("masked_email") == "ku***@example.com"
+            mock_otp_phone.assert_called_once()
+            args, kwargs = mock_otp_phone.call_args
+            assert args[0] == email
+            assert kwargs.get("brand") == "kullomadata"
+
+            # Verify OTP verification and password reset also work with 080... against +234... DB phone
+            db.refresh(user)
+            otp_code = user.reset_token
+            v_res = client.post(
+                "/api/v1/auth/verify-reset-token",
+                json={"identifier": "08039998877", "otp": otp_code},
+                headers={"X-App-Brand": "kullomadata"},
+            )
+            assert v_res.status_code == 200
+            r_res = client.post(
+                "/api/v1/auth/reset-password",
+                json={"identifier": "08039998877", "otp": otp_code, "new_password": "NewPassword123!"},
+                headers={"X-App-Brand": "kullomadata"},
+            )
+            assert r_res.status_code == 200
     finally:
         db.query(User).filter(User.email == email).delete()
         db.commit()

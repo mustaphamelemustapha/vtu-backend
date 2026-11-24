@@ -96,6 +96,7 @@ class ForgotPasswordRequest(BaseModel):
 class ForgotPasswordResponse(BaseModel):
     message: str
     reset_token: Optional[str] = None
+    masked_email: Optional[str] = None
 
 
 class VerifyResetTokenRequest(BaseModel):

@@ -229,61 +229,96 @@ def refresh(request: Request, payload: RefreshRequest, db: Session = Depends(get
     )
 
 
+def _phone_variants(value: str | None) -> list[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    variants: list[str] = [raw]
+    norm = _normalize_phone(raw)
+    if norm:
+        if norm not in variants:
+            variants.append(norm)
+        if norm.startswith("0") and len(norm) == 11:
+            ten = norm[1:]
+            for cand in (f"+234{ten}", f"234{ten}", ten):
+                if cand not in variants:
+                    variants.append(cand)
+    return variants
+
+
+def _find_user_by_identifier(db: Session, raw_identifier: str | None) -> User | None:
+    ident = str(raw_identifier or "").strip()
+    if not ident:
+        return None
+    if "@" in ident:
+        return db.query(User).filter(User.email.ilike(ident)).first()
+    variants = _phone_variants(ident)
+    if variants:
+        user = db.query(User).filter(User.phone_number.in_(variants)).first()
+        if user:
+            return user
+    return db.query(User).filter(User.email.ilike(ident)).first()
+
+
+def _dispatch_password_reset_otp(to_email: str, otp: str, target_brand: str | None) -> None:
+    try:
+        import inspect
+        sig = inspect.signature(send_password_reset_otp_email)
+        if "brand" in sig.parameters:
+            send_password_reset_otp_email(to_email, otp, brand=target_brand)
+        else:
+            send_password_reset_otp_email(to_email, otp)
+    except Exception as exc:
+        logger.warning(
+            "Password reset email send failed to=%s brand=%s error=%s",
+            to_email,
+            target_brand,
+            exc,
+        )
+
+
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
-@limiter.limit("5/minute")
-def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(
-        (User.email == payload.identifier) | (User.phone_number == payload.identifier)
-    ).first()
+@limiter.limit("10/minute")
+def forgot_password(
+    request: Request,
+    payload: ForgotPasswordRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    user = _find_user_by_identifier(db, payload.identifier)
     reset_token = None
-    if user:
+    masked = None
+    if user and user.email:
         # Generate 6-digit numeric OTP
         import random
         reset_token = str(random.randint(100000, 999999))
         user.reset_token = reset_token
         user.reset_token_expires_at = _utcnow() + timedelta(minutes=15)
-        db.commit()
         from app.core.tenant import get_tenant_brand
         req_brand = get_tenant_brand(request)
         if req_brand and req_brand != "default":
             target_brand = req_brand
             if getattr(user, "brand", None) != req_brand:
                 user.brand = req_brand
-                db.commit()
         else:
             target_brand = getattr(user, "brand", None) or "meledata"
-        try:
-            # Send OTP via Email with brand
-            import inspect
-            sig = inspect.signature(send_password_reset_otp_email)
-            if "brand" in sig.parameters:
-                send_password_reset_otp_email(user.email, reset_token, brand=target_brand)
-            else:
-                send_password_reset_otp_email(user.email, reset_token)
-        except Exception as exc:
-            logger.warning(
-                "Password reset email send failed to=%s brand=%s error=%s",
-                user.email,
-                target_brand,
-                exc,
-            )
+        db.commit()
+        masked = _mask_email(user.email)
+        background_tasks.add_task(_dispatch_password_reset_otp, user.email, reset_token, target_brand)
 
     # Avoid user enumeration: always return the same message.
-    message = "If the email exists, a reset token has been generated"
+    message = "If the account exists, a 6-digit verification code has been sent to its registered email"
     env = (settings.environment or "").lower()
     if env and env != "production" and reset_token:
-        return ForgotPasswordResponse(message=message, reset_token=reset_token)
-    return ForgotPasswordResponse(message=message)
+        return ForgotPasswordResponse(message=message, reset_token=reset_token, masked_email=masked)
+    return ForgotPasswordResponse(message=message, masked_email=masked)
 
 
 @router.post("/verify-reset-token", response_model=Message)
 @limiter.limit("10/minute")
 def verify_reset_token(request: Request, payload: VerifyResetTokenRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(
-        (User.email == payload.identifier) | (User.phone_number == payload.identifier),
-        User.reset_token == payload.otp
-    ).first()
-    if not user or not user.reset_token_expires_at:
+    user = _find_user_by_identifier(db, payload.identifier)
+    if not user or user.reset_token != (payload.otp or "").strip() or not user.reset_token_expires_at:
         raise HTTPException(status_code=400, detail="Invalid or expired token")
     if _as_utc(user.reset_token_expires_at) < _utcnow():
         raise HTTPException(status_code=400, detail="Invalid or expired token")
@@ -293,11 +328,8 @@ def verify_reset_token(request: Request, payload: VerifyResetTokenRequest, db: S
 @router.post("/reset-password", response_model=Message)
 @limiter.limit("10/minute")
 def reset_password(request: Request, payload: ResetPasswordRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(
-        (User.email == payload.identifier) | (User.phone_number == payload.identifier),
-        User.reset_token == payload.otp
-    ).first()
-    if not user or not user.reset_token_expires_at:
+    user = _find_user_by_identifier(db, payload.identifier)
+    if not user or user.reset_token != (payload.otp or "").strip() or not user.reset_token_expires_at:
         raise HTTPException(status_code=400, detail="Invalid or expired token")
     if _as_utc(user.reset_token_expires_at) < _utcnow():
         raise HTTPException(status_code=400, detail="Invalid or expired token")
