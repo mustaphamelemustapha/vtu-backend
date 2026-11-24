@@ -244,7 +244,14 @@ def forgot_password(request: Request, payload: ForgotPasswordRequest, db: Sessio
         user.reset_token_expires_at = _utcnow() + timedelta(minutes=15)
         db.commit()
         from app.core.tenant import get_tenant_brand
-        target_brand = getattr(user, "brand", None) or get_tenant_brand(request)
+        req_brand = get_tenant_brand(request)
+        if req_brand and req_brand != "default":
+            target_brand = req_brand
+            if getattr(user, "brand", None) != req_brand:
+                user.brand = req_brand
+                db.commit()
+        else:
+            target_brand = getattr(user, "brand", None) or "meledata"
         try:
             # Send OTP via Email with brand
             import inspect

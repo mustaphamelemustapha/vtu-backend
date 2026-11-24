@@ -74,6 +74,19 @@ def get_tenant_brand(request: Optional[Request] = None) -> str:
     if "kulloma" in env_brand:
         return "kullomadata"
 
+    # 5. Configured FRONTEND_BASE_URL fallback
+    raw_frontend = (
+        os.environ.get("FRONTEND_BASE_URL")
+        or getattr(settings, "frontend_base_url", "")
+        or ""
+    ).strip().lower()
+    if "kulloma" in raw_frontend:
+        return "kullomadata"
+    if "meledata" in raw_frontend:
+        return "meledata"
+    if "mzdata" in raw_frontend:
+        return "mzdata"
+
     return "default"
 
 
