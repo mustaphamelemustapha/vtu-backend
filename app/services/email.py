@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import smtplib
 from email.message import EmailMessage
@@ -268,12 +269,13 @@ def _build_otp_email_html(otp: str, brand_meta: Dict[str, Any]) -> str:
       If you did not initiate this request, you can safely ignore this email. Your account remains completely secure.
     </p>
     """
+    is_mz = brand_meta.get("key") == "mzdata"
     return _get_base_email_template(
         title="Password Reset Verification Code",
         preheader=f"Your {brand_name} password reset verification code is {otp}",
         content=content,
-        action_url=brand_meta["url"],
-        action_text=f"Open {brand_name}",
+        action_url="" if is_mz else brand_meta["url"],
+        action_text="" if is_mz else f"Open {brand_name}",
         brand_meta=brand_meta,
     )
 
@@ -664,6 +666,14 @@ def _send_via_brevo(
         res = client.post("https://api.brevo.com/v3/smtp/email", json=payload, headers=headers)
         if res.status_code >= 400:
             raise RuntimeError(f"Brevo error: {res.status_code} {res.text}")
+        logging.getLogger(__name__).info(
+            "Brevo accepted email from='%s <%s>' to=%s subject='%s' resp=%s",
+            from_name,
+            from_email,
+            to_email,
+            subject,
+            res.text[:160],
+        )
 
 
 def _send_via_smtp(
