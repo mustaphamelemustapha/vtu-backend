@@ -151,9 +151,8 @@ def get_brand_from_address(brand_meta: Dict[str, Any]) -> tuple[str, str]:
 def _resolve_frontend_base_url(brand_meta: Optional[Dict[str, Any]] = None) -> str:
     meta = brand_meta or BRAND_CONFIGS["meledata"]
     settings = get_settings()
-    env = (settings.environment or "").lower()
     raw = (settings.frontend_base_url or "").strip().rstrip("/")
-    if env == "development" and raw and ("localhost" in raw or "127.0.0.1" in raw):
+    if os.environ.get("ALLOW_LOCALHOST_EMAIL_LINKS") == "1" and raw and ("localhost" in raw or "127.0.0.1" in raw):
         return raw
 
     return meta.get("url") or f"https://{meta.get('domain', 'meledata.ng')}"

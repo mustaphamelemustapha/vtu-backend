@@ -137,6 +137,29 @@ def test_kulloma_forgot_password_and_pin_reset_override_stale_meledata_brand():
         mz_meta = resolve_brand_meta("mzdata")
         assert mz_meta["name"] == "MZ DATA"
         assert _resolve_frontend_base_url(mz_meta) == "https://www.mzdata.org"
+
+        # 6. Verify /referrals/me NEVER returns localhost for Kulloma Data, MZ Data, or Mele Data
+        auth_token = create_access_token(str(user.id), user.role.value)
+        ref_k = client.get(
+            "/api/v1/referrals/me",
+            headers={"Authorization": f"Bearer {auth_token}", "X-App-Brand": "kullomadata"},
+        )
+        assert ref_k.status_code == 200
+        assert ref_k.json()["referral_link"] == "https://www.kullomadata.com/register?ref=KULLRESET1"
+
+        ref_mz = client.get(
+            "/api/v1/referrals/me",
+            headers={"Authorization": f"Bearer {auth_token}", "Host": "api.mzdata.org", "X-App-Brand": "mzdata"},
+        )
+        assert ref_mz.status_code == 200
+        assert ref_mz.json()["referral_link"] == "https://www.mzdata.org/register?ref=KULLRESET1"
+
+        ref_mele = client.get(
+            "/api/v1/referrals/me",
+            headers={"Authorization": f"Bearer {auth_token}", "X-App-Brand": "meledata"},
+        )
+        assert ref_mele.status_code == 200
+        assert ref_mele.json()["referral_link"] == "https://meledata.ng/register?ref=KULLRESET1"
     finally:
         db.query(User).filter(User.email == email).delete()
         db.commit()

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -11,5 +11,5 @@ router = APIRouter()
 
 
 @router.get('/me', response_model=ReferralDashboardOut)
-def get_my_referrals(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return get_referral_dashboard(db, user=user)
+def get_my_referrals(request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return get_referral_dashboard(db, user=user, request=request)

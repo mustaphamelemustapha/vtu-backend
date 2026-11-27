@@ -336,7 +336,7 @@ def record_referral_data_activity(db: Session, *, user: User, tx_type: str, amou
     return referral
 
 
-def get_referral_dashboard(db: Session, *, user: User) -> dict:
+def get_referral_dashboard(db: Session, *, user: User, request=None) -> dict:
     code = normalize_referral_code(user.referral_code)
     if not code and getattr(user, "id", None):
         code = ensure_user_referral_code(db, user)
@@ -351,10 +351,15 @@ def get_referral_dashboard(db: Session, *, user: User) -> dict:
     # Reward is dynamic (2% of each referred user's first successful deposit),
     # so there is no fixed "reward per referral" amount to expose globally.
     reward_amount = Decimal("0.00")
-    referral_link = None
-    if settings.frontend_base_url:
-        base = str(settings.frontend_base_url).rstrip("/")
-        referral_link = f"{base}/register?ref={code}" if code else None
+
+    from app.core.tenant import get_tenant_brand
+    from app.services.email import resolve_brand_meta, _resolve_frontend_base_url
+
+    req_brand = get_tenant_brand(request) if request is not None else "default"
+    active_brand = req_brand if (req_brand and req_brand != "default") else (getattr(user, "brand", None) or None)
+    brand_meta = resolve_brand_meta(active_brand)
+    base = _resolve_frontend_base_url(brand_meta).rstrip("/")
+    referral_link = f"{base}/register?ref={code}" if code else None
 
     items = []
     for item in referrals:
