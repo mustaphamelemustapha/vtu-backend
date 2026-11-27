@@ -140,7 +140,7 @@ def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)
     from app.core.tenant import get_tenant_brand
     t_brand = get_tenant_brand(request)
     if t_brand and t_brand != "default":
-        if not user.brand or (t_brand == "kullomadata" and user.brand != "kullomadata"):
+        if user.brand != t_brand:
             user.brand = t_brand
             db.commit()
 
@@ -176,7 +176,7 @@ def pin_login(request: Request, payload: PinLoginRequest, db: Session = Depends(
     from app.core.tenant import get_tenant_brand
     t_brand = get_tenant_brand(request)
     if t_brand and t_brand != "default":
-        if not user.brand or (t_brand == "kullomadata" and user.brand != "kullomadata"):
+        if user.brand != t_brand:
             user.brand = t_brand
 
     db.commit()
@@ -458,14 +458,19 @@ def app_config(request: Request, db: Session = Depends(get_db)):
     brand = get_tenant_brand(request)
     default_name = "KULLOMA DATA" if brand == "kullomadata" else ("MZ DATA" if brand == "mzdata" else settings.app_name)
     default_msg = f"{default_name} is currently undergoing scheduled server upgrades. Services will resume shortly."
-    default_phone = "+2348034283352" if brand == "kullomadata" else "+2348141114647"
-    default_whatsapp = "+2348034283352" if brand == "kullomadata" else "+2348141114647"
+    default_phone = "+2348034283352" if brand == "kullomadata" else ("09067054672" if brand == "mzdata" else "+2348141114647")
+    default_whatsapp = "+2348034283352" if brand == "kullomadata" else ("+2349067054672" if brand == "mzdata" else "+2348141114647")
+    default_play_store = (
+        "https://play.google.com/store/apps/details?id=com.kullomadata.app"
+        if brand == "kullomadata"
+        else ("https://play.google.com/store/apps/details?id=com.mzdata.app" if brand == "mzdata" else settings.play_store_url)
+    )
 
     return {
         "app_name": getattr(cfg, "app_name", None) or default_name,
         "min_app_version": getattr(cfg, "min_app_version", None) or settings.min_app_version,
         "latest_app_version": getattr(cfg, "latest_app_version", None) or settings.latest_app_version,
-        "play_store_url": getattr(cfg, "play_store_url", None) or ("https://play.google.com/store/apps/details?id=com.kullomadata.app" if brand == "kullomadata" else settings.play_store_url),
+        "play_store_url": getattr(cfg, "play_store_url", None) or default_play_store,
         "app_store_url": getattr(cfg, "app_store_url", None) or settings.app_store_url,
         "maintenance_mode": bool(getattr(cfg, "maintenance_mode", False)),
         "maintenance_message": getattr(cfg, "maintenance_message", None) or default_msg,

@@ -119,6 +119,24 @@ def test_kulloma_forgot_password_and_pin_reset_override_stale_meledata_brand():
                 headers={"X-App-Brand": "kullomadata"},
             )
             assert r_res.status_code == 200
+
+        # 5. Verify MZ DATA requests (via Host api.mzdata.org or X-App-Brand mzdata) send MZ DATA emails, never Kulloma Data
+        user.brand = "kullomadata"
+        db.commit()
+        with patch("app.api.v1.endpoints.auth.send_password_reset_otp_email", autospec=True) as mock_otp_mz:
+            res = client.post(
+                "/api/v1/auth/forgot-password",
+                json={"identifier": "08039998877"},
+                headers={"Host": "api.mzdata.org", "X-App-Brand": "mzdata"},
+            )
+            assert res.status_code == 200
+            mock_otp_mz.assert_called_once()
+            _, kwargs = mock_otp_mz.call_args
+            assert kwargs.get("brand") == "mzdata"
+
+        mz_meta = resolve_brand_meta("mzdata")
+        assert mz_meta["name"] == "MZ DATA"
+        assert _resolve_frontend_base_url(mz_meta) == "https://www.mzdata.org"
     finally:
         db.query(User).filter(User.email == email).delete()
         db.commit()
